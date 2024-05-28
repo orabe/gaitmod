@@ -1,0 +1,13 @@
+name: gait_modulation
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - matplotlib
+  - seaborn
+  - scipy
+  - tqdm
+prefix: /Users/orabe/miniconda3/envs/gait_modulation
