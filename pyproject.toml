@@ -1,0 +1,11 @@
+[project]
+name = 'gait_modulation'
+version = '1.0'
+description = '<DESCRIPTION FOR GAIT MODULATION>'
+author='Mohammad Orabe'
+author_email='orabe.mhd@gmail.com'
+
+
+[build-system]
+build-backend = "flit_core.buildapi"
+requires = ["flit_core >=3.2,<4"]
