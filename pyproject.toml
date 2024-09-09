@@ -1,11 +1,24 @@
 [project]
-name = 'gait_modulation'
-version = '1.0'
-description = '<DESCRIPTION FOR GAIT MODULATION>'
-author='Mohammad Orabe'
-author_email='orabe.mhd@gmail.com'
+name = "gait_modulation"
+version = "1.1"
+description = "<DESCRIPTION FOR GAIT MODULATION>"
+authors = [{name = "Mohammad Orabe", email = "orabe.mhd@gmail.com"}]
+dependencies = [
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "seaborn",
+    "scipy",
+    "tqdm",
+]
 
+keywords = ["gait", "modulation", "LFP", "ML"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
 
 [build-system]
-build-backend = "flit_core.buildapi"
 requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
