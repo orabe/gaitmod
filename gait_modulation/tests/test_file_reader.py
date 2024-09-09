@@ -1,5 +1,5 @@
 import unittest
-from gait_modulation.file_reader import MatFileReader
+from gait_modulation._file_reader import MatFileReader
 
 class TestMatFileReader(unittest.TestCase):
     def setUp(self) -> None:

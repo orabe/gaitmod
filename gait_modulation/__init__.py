@@ -1,4 +1,4 @@
-from .file_reader import MatFileReader
+from ._file_reader import MatFileReader
 from .data_processor import DataProcessor
 from .feature_extractor import FeatureExtractor
 

@@ -430,3 +430,65 @@ class DataProcessor:
 # check_lfp_start
 # create_events_array
 
+
+
+# ----
+
+
+    def trim_data(
+        lfp_data: np.ndarray,
+        events: np.ndarray,
+        sfreq: float,
+        threshold: float = 1e-6
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Trims the beginning of the LFP data by removing leading segments where the signal contains only zero or NaN values,
+        and adjusts the events' onsets accordingly. Only trims at the beginning if it is empty.
+
+        Args:
+            lfp_data (np.ndarray): 2D array of LFP data with shape (n_channels, n_samples).
+            events (np.ndarray): 2D array of events with shape (n_events, 3), where the second column represents onsets.
+            sfreq (float): Sampling frequency of the LFP data.
+            threshold (float, optional): Value below which the data is considered as "no recorded data". Defaults to 1e-6.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Tuple containing:
+                - Trimmed LFP data (2D array with shape (n_channels, trimmed_n_samples)).
+                - Adjusted events (2D array with shape (n_events, 3)).
+
+        Prints:
+            - Number of samples removed.
+            - Number of seconds removed.
+            - Number of samples shifted for the onsets.
+        """
+        # Identify the indices where the data is not NaN or zero
+        non_zero_indices = np.any(np.abs(lfp_data) > threshold, axis=0)
+
+        # Find the start index of valid data
+        start_index = np.argmax(non_zero_indices)
+        
+        # If the start index is 0, there is no need to trim
+        if start_index == 0:
+            print("No trimming needed as the beginning of the data is already valid.")
+            return lfp_data, events
+
+        # Trim the LFP data
+        trimmed_lfp_data = lfp_data[:, start_index:]
+
+        # Calculate the number of samples removed
+        samples_removed = start_index
+        seconds_removed = samples_removed / sfreq
+
+        # Adjust the events by shifting the onsets
+        adjusted_events = events.copy()
+        adjusted_events[:, 0] -= start_index  # Shift event onsets
+
+        # Calculate the number of samples shifted for onsets
+        samples_shifted_for_onsets = -start_index
+        seconds_shifted_for_onsets = samples_shifted_for_onsets / sfreq
+
+        # Print the number of samples removed and shifted
+        print(f"Number of samples removed: {samples_removed}")
+        print(f"Number of seconds removed: {seconds_removed:.2f} seconds")
+
+        return trimmed_lfp_data, adjusted_events
