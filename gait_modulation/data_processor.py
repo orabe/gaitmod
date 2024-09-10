@@ -1,5 +1,7 @@
 import numpy as np
 from typing import Dict, Any, Tuple
+import mne
+import pandas as pd
 
 class DataProcessor:
     @staticmethod
@@ -114,22 +116,6 @@ class DataProcessor:
         
         return converted_labels
 
-# # Example input data
-# lfp_metadata = {
-#     'labels': np.array([
-#         [np.array(['ZERO_THREE_LEFT'], dtype='<U15')],
-#         [np.array(['ONE_THREE_LEFT'], dtype='<U14')],
-#         [np.array(['ZERO_TWO_LEFT'], dtype='<U13')],
-#         [np.array(['ZERO_THREE_RIGHT'], dtype='<U16')],
-#         [np.array(['ONE_THREE_RIGHT'], dtype='<U15')],
-#         [np.array(['ZERO_TWO_RIGHT'], dtype='<U14')]
-#     ], dtype=object)
-# }
-
-# # Call the function to demonstrate
-# print("Conversion Process:")
-# converted_labels = convert_lfp_label(lfp_metadata['labels'])
-
     @staticmethod
     def rename_lfp_channels(labels: np.ndarray) -> list:
         """
@@ -222,48 +208,6 @@ class DataProcessor:
         return mne_events, event_id
 
 
-    # @staticmethod
-    # def create_events_array(events_kin: Dict[str, Any], sfreq: float) -> Tuple[np.ndarray, Dict[str, int]]:
-    #     """
-    #     Create an MNE-compatible events array from events_KIN data, handling NaN values.
-
-    #     Parameters:
-    #     -----------
-    #     events_kin : Dict[str, Any]
-    #         Dictionary containing events_KIN data with 'times' and 'label' keys.
-    #     sfreq : float
-    #         Sampling frequency of the LFP data.
-
-    #     Returns:
-    #     --------
-    #     mne_events : np.ndarray
-    #         MNE-compatible events array (shape: [n_events, 3]).
-    #     event_id : Dict[str, int]
-    #         Dictionary mapping event labels to unique event IDs.
-    #     """
-    #     # Extract event labels and times
-    #     event_labels = events_kin['label'][0]
-    #     events_kin_times = events_kin['times']
-        
-    #     # Map event labels to unique integer IDs
-    #     event_id = {label[0]: idx + 1 for idx, label in enumerate(event_labels)}
-        
-    #     # Initialize an empty list for MNE events
-    #     mne_events = []
-        
-    #     # Iterate over non-NaN event times and create MNE events array
-    #     for event_idx, label in enumerate(event_labels):
-    #         for trial in range(events_kin_times.shape[1]):
-    #             time = events_kin_times[event_idx, trial]
-    #             if not np.isnan(time):  # Ignore NaN values
-    #                 sample = int(time * sfreq)  # Convert time to sample index
-    #                 mne_events.append([sample, 0, event_id[label[0]]])
-        
-    #     # Convert list of lists to numpy array
-    #     mne_events = np.array(mne_events)
-        
-    #     return mne_events, event_id
-
     @staticmethod
     def crop_lfp_to_event_times(lfp_data, events_KIN, lfp_sfreq):
         """
@@ -306,133 +250,6 @@ class DataProcessor:
             print(f"Error during cropping LFP data: {e}")
         
         return first_non_zero_indices, lfp_data
-
-# # Example usage:
-# lfp_data = np.array([
-#     [0, 0, 0, 5, 0, 8],
-#     [0, 0, 0, 0, 9, 0],
-#     [0, 0, 0, 0, 0, 0],
-#     [0, 7, 0, 0, 0, 0]
-# ])
-# events_KIN = {'times': [[0, 1, 2], [3, 4, 5]]}  # Example events data
-# lfp_sfreq = 1000  # Example sampling frequency
-
-# indices, cropped_lfp_data = crop_lfp_to_event_times(lfp_data, events_KIN, lfp_sfreq)
-# print("First non-zero indices:", indices)
-# print("Cropped LFP data shape:", cropped_lfp_data.shape)
-
-
-    # @staticmethod
-    # def check_lfp_start(lfp_data: np.ndarray, events_KIN: Dict, lfp_sfreq: float):
-    #     """
-    #     Check if the LFP data starts before the event and find the indices of the first non-zero values in each row.
-    #     Prints the result and values of event and LFP data when the condition is met.
-
-    #     Parameters:
-    #     lfp_data (np.ndarray): 2D array of LFP data with shape (channels, samples).
-    #     events_KIN (Dict): Dictionary containing event times.
-    #     lfp_sfreq (float): Sampling frequency of the LFP data.
-    #     """
-    #     # Create a mask for non-zero values
-    #     mask = lfp_data != 0
-        
-    #     # Find the indices of the first True in each row
-    #     first_non_zero_indices = np.argmax(mask, axis=1)
-        
-    #     # Handle rows that have no valid non-zero elements
-    #     valid_rows = mask.any(axis=1)
-    #     first_non_zero_indices[~valid_rows] = -1  # Mark invalid rows with -1
-        
-    #     # Index of the first non-zero value across all channels
-    #     max_index = np.max(first_non_zero_indices[valid_rows])
-        
-    #     # Map from event timestamp into the sample index of the LFP signals
-    #     ts_session_start = int(events_KIN['times'][0][0] * lfp_sfreq)
-        
-    #     # Check if LFP data starts before the first event
-    #     lfp_starts_before_event = max_index < ts_session_start
-        
-    #     # Print result and values
-    #     if lfp_starts_before_event:
-    #         print("LFP data starts before the first event trial.")
-    #     else:
-    #         print("LFP data starts after or at the same time as the first event trial.")
-    
-    
-    # @staticmethod
-    # def create_mne_events(events_kin: Dict[str, Any], sfreq: float) -> Tuple[np.ndarray, Dict[str, int]]:
-    #     """
-    #     Create an MNE-compatible events array from events_KIN data, handling NaN values.
-
-    #     Parameters:
-    #     -----------
-    #     events_kin : Dict[str, Any]
-    #         Dictionary containing events_KIN data with 'times' and 'label' keys.
-    #     sfreq : float
-    #         Sampling frequency of the LFP data.
-
-    #     Returns:
-    #     --------
-    #     mne_events : np.ndarray
-    #         MNE-compatible events array (shape: [n_events, 3]).
-    #     event_id : Dict[str, int]
-    #         Dictionary mapping event labels to unique event IDs.
-    #     """
-    #     # Extract event labels
-    #     event_labels = [str(label[0][0]) for label in events_kin['label'][0]]
-        
-    #     # Map event labels to unique integer IDs
-    #     event_id = {label: idx + 1 for idx, label in enumerate(event_labels)}
-        
-    #     events_kin_times = events_kin['times']
-    #     n_events, n_trials = events_kin_times.shape
-
-    #     mne_events = []
-
-    #     # Iterate over trials and events to create the MNE events array
-    #     for trial in range(n_trials):
-    #         for event_idx, label in enumerate(event_labels):
-    #             time = events_kin_times[event_idx, trial]
-    #             if not np.isnan(time):  # Ignore NaN values
-    #                 sample = int(float(time) * sfreq)  # Convert time to sample index
-    #                 mne_events.append([sample, 0, event_id[label]])
-
-    #     mne_events = np.array(mne_events)
-    #     return mne_events, event_id
-
-
-
-
-
-# # Example usage:
-# lfp_data = np.array([
-#     [0, 0, 0, 5, 0, 8],
-#     [0, 0, 0, 0, 9, 0],
-#     [0, 0, 0, 0, 0, 0],
-#     [0, 7, 0, 0, 0, 0]
-# ])
-# events_KIN = {'times': [[0, 1, 2], [3, 4, 5]]}  # Example events data
-# lfp_sfreq = 1000  # Example sampling frequency
-
-# indices, lfp_starts_before_event = check_lfp_start(lfp_data, events_KIN, lfp_sfreq)
-# print("First non-zero indices:", indices)
-# print("LFP starts before event:", lfp_starts_before_event)
-
-
-
-
-# convert_lfp_label
-# create_mne_events
-
-
-# np_to_dict
-# rename_lfp_channels
-# check_lfp_start
-# create_events_array
-
-
-
-# ----
 
 
     def trim_data(
@@ -492,3 +309,112 @@ class DataProcessor:
         print(f"Number of seconds removed: {seconds_removed:.2f} seconds")
 
         return trimmed_lfp_data, adjusted_events
+
+
+    def define_normal_walking_events(normal_walking_event_id: int, 
+                                    events_mod_start: np.ndarray, 
+                                    gap_sample_length: int, 
+                                    epoch_sample_length: int, 
+                                    n_samples: int) -> np.ndarray:
+        """
+        Defines normal walking events by creating intervals between modulation events
+        and constructing an array of event onsets for normal walking periods.
+
+        Args:
+            normal_walking_event_id (int): The event ID assigned to normal walking events.
+            events_mod_start (np.ndarray): Array of modulation event start times, where each row
+                                        contains the sample onset of a modulation event.
+            gap_sample_length (int): Length of the gap in samples to create before and after each modulation event.
+            epoch_sample_length (int): The length of the epochs in samples for normal walking events.
+            n_samples (int): Total number of samples in the signal.
+
+        Returns:
+            np.ndarray: Array containing the normal walking events. Each row contains three values:
+                        - The onset of the normal walking event in samples.
+                        - A dummy value (always zero).
+                        - The event ID (as provided in `normal_walking_event_id`).
+        """
+        # Calculate gap boundaries (before and after each modulation event)
+        gap_boundaries = np.column_stack(
+            (events_mod_start[:, 0] - gap_sample_length,
+            events_mod_start[:, 0] + gap_sample_length)
+        )
+
+        # Construct the output array (normal walking ranges)
+        normal_walking_ranges = np.vstack((
+            np.array([500, gap_boundaries[0, 0]]),  # First interval
+            np.column_stack((gap_boundaries[:-1, 1], gap_boundaries[1:, 0])),  # Middle intervals
+            np.array([gap_boundaries[-1, 1], n_samples])  # Last interval
+        ))
+
+        # Ensure no events are generated in gap areas by creating a mask
+        mask = normal_walking_ranges[:, 0] <= normal_walking_ranges[:, 1]
+
+        # Apply the mask to filter out invalid ranges
+        normal_walking_ranges = normal_walking_ranges[mask]
+
+        # Generate walking onsets by constructing intervals based on epoch_sample_length
+        walking_onsets = np.concatenate(
+            [np.arange(boundary[0], boundary[1] + epoch_sample_length, epoch_sample_length) for boundary in normal_walking_ranges]
+        )
+
+        # Create the normal walking event array with the provided event ID
+        normal_walking_events = np.column_stack((
+            walking_onsets.astype(int),
+            np.zeros_like(walking_onsets, dtype=int),
+            np.ones_like(walking_onsets, dtype=int) * normal_walking_event_id
+        ))
+
+        return normal_walking_events
+
+
+    
+    
+    def create_epochs_with_events(lfp_raw: mne.io.Raw, 
+                                  events_mod_start: np.ndarray, 
+                                  normal_walking_events: np.ndarray, 
+                              gait_modulation_event_id: int, 
+                              normal_walking_event_id: int, 
+                              epoch_tmin: float, 
+                              epoch_tmax: float,
+                              event_dict: Dict[str, int]) -> Tuple[np.ndarray, mne.Epochs]:
+        """
+        Combines modulation and normal walking events, sorts them by onset time, and creates MNE epochs.
+
+        Args:
+            lfp_raw (mne.io.Raw): The raw LFP signal data.
+            events_mod_start (np.ndarray): Array of modulation event start times.
+            normal_walking_events (np.ndarray): Array of normal walking events.
+            gait_modulation_event_id (int): Event ID for gait modulation events.
+            normal_walking_event_id (int): Event ID for normal walking events.
+            epoch_tmin (float): Start time for epochs (in seconds).
+            epoch_tmax (float): End time for epochs (in seconds).
+            event_dict (Dict[str, int]): Dictionary mapping event class names to event IDs.
+            
+
+        Returns:
+            Tuple[np.ndarray, mne.Epochs]: 
+                - Array containing the combined and sorted events.
+                - The MNE Epochs object containing the epoched data for both modulation and normal walking events.
+        """
+        # Combine modulation and normal walking events
+        events = np.vstack((events_mod_start, normal_walking_events))
+        events = events[np.argsort(events[:, 0])]  # Sort events by onset time
+
+        # Create MNE Epochs object
+        epochs = mne.Epochs(
+            lfp_raw,
+            events,
+            event_dict,
+            tmin=epoch_tmin,
+            tmax=epoch_tmax,
+            baseline=None,
+            preload=True,
+        )
+
+        # Print details about the created epochs
+        print(f"Epochs info: {epochs}")
+        print(f"Number of epochs: {len(epochs)}")
+
+        return events, epochs
+
