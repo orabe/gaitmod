@@ -304,13 +304,9 @@ class DataProcessor:
         adjusted_events = events.copy()
         adjusted_events[:, 0] -= start_index  # Shift event onsets
 
-        # Calculate the number of samples shifted for onsets
-        samples_shifted_for_onsets = -start_index
-        seconds_shifted_for_onsets = samples_shifted_for_onsets / sfreq
-
         # Print the number of samples removed and shifted
-        print(f"Number of samples removed: {samples_shifted_for_onsets}")
-        print(f"Number of seconds removed: {seconds_shifted_for_onsets:.2f} seconds")
+        print(f"Number of samples removed: {start_index}")
+        print(f"Number of seconds removed: {seconds_removed:.2f} seconds")
 
         return trimmed_lfp_data, adjusted_events
 
@@ -346,7 +342,7 @@ class DataProcessor:
 
         # Construct the output array (normal walking ranges)
         normal_walking_ranges = np.vstack((
-            np.array([500, gap_boundaries[0, 0]]),  # First interval
+            np.array([epoch_sample_length, gap_boundaries[0, 0]]),  # First interval
             np.column_stack((gap_boundaries[:-1, 1], gap_boundaries[1:, 0])),  # Middle intervals
             np.array([gap_boundaries[-1, 1], n_samples])  # Last interval
         ))
@@ -359,8 +355,12 @@ class DataProcessor:
 
         # Generate walking onsets by constructing intervals based on epoch_sample_length
         walking_onsets = np.concatenate(
-            [np.arange(boundary[0], boundary[1] + epoch_sample_length, epoch_sample_length) for boundary in normal_walking_ranges]
+            [np.arange(boundary[0], min(boundary[1], n_samples - epoch_sample_length) + epoch_sample_length, epoch_sample_length)
+            for boundary in normal_walking_ranges]
         )
+
+        # Filter out any walking onsets that exceed n_samples
+        walking_onsets = walking_onsets[walking_onsets + epoch_sample_length <= n_samples]
 
         # Create the normal walking event array with the provided event ID
         normal_walking_events = np.column_stack((
@@ -414,7 +414,7 @@ class DataProcessor:
             tmax=epoch_tmax,
             baseline=None,
             preload=True,
-            verbose=False
+            # verbose=False
         )
 
         # Print details about the created epochs
