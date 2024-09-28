@@ -192,18 +192,22 @@ class DataProcessor:
         events_kin_times_valid = events_kin_times[valid_mask]
 
         # Generate time indices in samples for valid times
-        try:
-            time_samples = (events_kin_times_valid * sfreq).astype(int)
-        except TypeError as e:
-            raise TypeError("Invalid type encountered in events_kin_times or sfreq. Ensure events_kin['times'] is a numeric array and sfreq is a numeric value.") from e
-        except Exception as e:
-            raise RuntimeError("Error occurred while converting times to samples.") from e
+        # try:
+        time_samples = (events_kin_times_valid * sfreq).astype(int)
+        # except TypeError as e:
+        #     raise TypeError("Invalid type encountered in events_kin_times or sfreq. Ensure events_kin['times'] is a numeric array and sfreq is a numeric value.") from e
+        # except Exception as e:
+        #     raise RuntimeError("Error occurred while converting times to samples.") from e
 
         # Create indices for events and trials based on valid times
         event_indices = np.nonzero(valid_mask)[0]
 
         # Construct the MNE events array with sample indices
-        mne_events = np.column_stack([time_samples, np.zeros_like(event_indices), np.array([event_id[event_labels[event_idx]] for event_idx in event_indices])])
+        mne_events = np.column_stack([
+            time_samples,
+            np.zeros_like(event_indices),
+            np.array([event_id[event_labels[event_idx]] for event_idx in event_indices])
+        ])
 
         return mne_events, event_id
 
@@ -260,7 +264,7 @@ class DataProcessor:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Trims the beginning of the LFP data by removing leading segments where the signal contains only zero or NaN values,
-        and adjusts the events' onsets accordingly. Only trims at the beginning if it is empty.
+        and adjusts the events' onsets accordingly. Only trims at the beginning if it contains no signal data.
 
         Args:
             lfp_data (np.ndarray): 2D array of LFP data with shape (n_channels, n_samples).
@@ -305,8 +309,8 @@ class DataProcessor:
         seconds_shifted_for_onsets = samples_shifted_for_onsets / sfreq
 
         # Print the number of samples removed and shifted
-        print(f"Number of samples removed: {samples_removed}")
-        print(f"Number of seconds removed: {seconds_removed:.2f} seconds")
+        print(f"Number of samples removed: {samples_shifted_for_onsets}")
+        print(f"Number of seconds removed: {seconds_shifted_for_onsets:.2f} seconds")
 
         return trimmed_lfp_data, adjusted_events
 
@@ -373,11 +377,11 @@ class DataProcessor:
     def create_epochs_with_events(lfp_raw: mne.io.Raw, 
                                   events_mod_start: np.ndarray, 
                                   normal_walking_events: np.ndarray, 
-                              gait_modulation_event_id: int, 
-                              normal_walking_event_id: int, 
-                              epoch_tmin: float, 
-                              epoch_tmax: float,
-                              event_dict: Dict[str, int]) -> Tuple[np.ndarray, mne.Epochs]:
+                                  gait_modulation_event_id: int, 
+                                  normal_walking_event_id: int, 
+                                  epoch_tmin: float, 
+                                  epoch_tmax: float,
+                                  event_dict: Dict[str, int]) -> Tuple[np.ndarray, mne.Epochs]:
         """
         Combines modulation and normal walking events, sorts them by onset time, and creates MNE epochs.
 
@@ -399,7 +403,7 @@ class DataProcessor:
         """
         # Combine modulation and normal walking events
         events = np.vstack((events_mod_start, normal_walking_events))
-        events = events[np.argsort(events[:, 0])]  # Sort events by onset time
+        events = events[np.argsort(events[:, 0])]  #TODO Sort events by onset time
 
         # Create MNE Epochs object
         epochs = mne.Epochs(
@@ -410,6 +414,7 @@ class DataProcessor:
             tmax=epoch_tmax,
             baseline=None,
             preload=True,
+            verbose=False
         )
 
         # Print details about the created epochs
