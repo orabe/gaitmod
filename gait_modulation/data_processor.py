@@ -290,7 +290,7 @@ class DataProcessor:
         
         # If the start index is 0, there is no need to trim
         if start_index == 0:
-            print("No trimming needed as the beginning of the data is already valid.")
+            print("No trimming needed as the beginning of signal is not flat.")
             return lfp_data, events
 
         # Trim the LFP data
@@ -414,12 +414,8 @@ class DataProcessor:
             tmax=epoch_tmax,
             baseline=None,
             preload=True,
-            # verbose=False
+            verbose=40
         )
-
-        # Print details about the created epochs
-        print(f"Epochs info: {epochs}")
-        print(f"Number of epochs: {len(epochs)}")
 
         return events, epochs
 
