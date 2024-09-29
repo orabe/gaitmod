@@ -73,15 +73,15 @@ class Visualise:
                 ax.text(bar.get_x() + bar.get_width() / 2.0, height, f'{int(height)}', 
                         ha='center', va='bottom', fontsize=10, color='black')
 
-            # Set labels and title for each subplot
-            ax.set_xlabel('Event Class', fontsize=10)
-            ax.set_ylabel('Occurrences', fontsize=10)
             ax.set_title(f'Session {s}', fontsize=12)
             ax.grid(axis='y', linestyle='--', alpha=0.7)
             ax.set_xticklabels(class_labels, ha='right', fontsize=9)
             
             # Step 3: Set consistent y-axis limits
             ax.set_ylim(0, max_count)
+
+        fig.supxlabel('Event Class', fontsize=10)
+        fig.supylabel('Occurrences', fontsize=10)
 
         # Turn off any unused subplots
         for ax in axes.ravel()[n_sessions:]:
