@@ -1,0 +1,13 @@
+data:
+  root_directory: '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/Chiara/organized_data'
+
+events:
+  event_of_interest: "mod_start"
+  other_events: "normal_walking"
+  mod_start_event_id: 1
+  normal_walking_event_id: -1
+
+segmentation:
+  epoch_tmin: -3.0
+  epoch_tmax: 0.0
+  gap_duration: 5 # At least 10 seconds away from modulation events

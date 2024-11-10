@@ -1,0 +1,33 @@
+model:
+  name: "LSTM"
+  layers:
+    - type: "LSTM"
+      units: 128
+      activation: relu
+      return_sequences: true
+    - type: "Dropout"
+      rate: 0.2
+    - type: "LSTM"
+      units: 64
+      activation: relu
+      return_sequences: false
+  dense_layer:
+    units: 1
+    activation: "linear"
+
+training:
+  epochs: 50
+  batch_size: 32
+
+features:
+  type: "PSD"
+  bands: ["theta", "alpha", "beta"]
+
+data:
+  input_shape: [501, 6]
+  scaling: true
+
+data_preprocessing:
+  scaling: standard
+  window_size: 256
+  stride: 128
