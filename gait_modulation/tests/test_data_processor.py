@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from gait_modulation.data_processor import DataProcessor
+from gait_modulation.utils.data_processor import DataProcessor
 
 class TestDataProcessor(unittest.TestCase):
     def setUp(self) -> None:

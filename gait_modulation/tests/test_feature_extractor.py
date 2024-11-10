@@ -1,6 +1,6 @@
 import unittest
 import numpy as np
-from gait_modulation.feature_extractor import FeatureExtractor
+from gait_modulation.utils.feature_extractor import FeatureExtractor
 
 class TestFeatureExtractor(unittest.TestCase):
     def setUp(self):
