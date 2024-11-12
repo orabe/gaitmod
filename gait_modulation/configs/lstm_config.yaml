@@ -1,23 +1,38 @@
 model:
-  name: "LSTM"
+  name: "LSTMModel"
   layers:
     - type: "LSTM"
       units: 128
-      activation: relu
+      activation: "relu"
       return_sequences: true
+
     - type: "Dropout"
       rate: 0.2
+
     - type: "LSTM"
       units: 64
-      activation: relu
+      activation: "relu"
       return_sequences: false
-  dense_layer:
-    units: 1
-    activation: "linear"
 
-training:
-  epochs: 50
-  batch_size: 32
+    - type: "Dense"
+      units: 32
+      activation: "relu"
+      
+    - type: "Dropout"
+      rate: 0.5
+
+    - type: "Dense"
+      units: 1
+      activation: "sigmoid"
+
+  training:
+    epochs: 50
+    batch_size: 32
+    loss: "binary_crossentropy"
+
+  optimizer:
+    type: "Adam"
+    learning_rate: 0.001
 
 features:
   type: "PSD"
@@ -31,3 +46,11 @@ data_preprocessing:
   scaling: standard
   window_size: 256
   stride: 128
+
+evaluation:
+  metrics:
+    accuracy: true
+    precision: true
+    recall: true
+    f1: true
+    confusion_matrix: true

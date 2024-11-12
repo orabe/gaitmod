@@ -1,3 +1,4 @@
+# Root directory and events configuration
 data:
   root_directory: '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/Chiara/organized_data'
 
@@ -10,4 +11,15 @@ events:
 segmentation:
   epoch_tmin: -3.0
   epoch_tmax: 0.0
-  gap_duration: 5 # At least 10 seconds away from modulation events
+  gap_duration: 5  # Ensure modulation events are spaced by at least 10 seconds
+
+data_preprocessing:
+  padding:
+    enabled: false  # Set to true if padding is required
+    padding_value: 0
+    padding_position: "end"  # Can be "start" or "end"
+  
+  truncation:
+    enabled: true  # Set to true if truncation is required
+    target_length: "min"  # If set to "min", truncate all trials to the shortest length among them; otherwise, specify a custom integer value for truncation length.
+    truncation_position: "end"  # Can be "start" or "end"
