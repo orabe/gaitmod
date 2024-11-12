@@ -13,8 +13,7 @@ class FeatureExtractor:
         - freq_bands: Dictionary where keys are the band names, and values are tuples with (low_freq, high_freq).
         
         Returns:
-        - psd_dict: A dictionary where each key corresponds to a frequency band, and values are arrays
-                    of shape (n_epochs, n_channels, n_frequencies) representing the raw PSD values for each band.
+        - psd_dict: A dictionary where each key corresponds to a frequency band, and values are arrays of shape (n_epochs, n_channels, n_frequencies) representing the raw PSD values for each band.
         """
         psd_dict = {band: [] for band in freq_bands}  # Initialize the dictionary for each band
         
@@ -117,6 +116,60 @@ class FeatureExtractor:
         psds_flat = psds.reshape(psds.shape[0], -1)
         band_power_flat = band_power.reshape(band_power.shape[0], -1)
         return np.concatenate((psds_flat, band_power_flat), axis=1)
+        
+    @staticmethod
+    def extract_windowed_stat_features(trials, methods=['mean'], window_size=100, step_size=50, verbose=False):
+        features_dict = {method: [] for method in methods}
+        
+        for method in methods:
+            trial_features = []
+            for trial_idx, trial in enumerate(trials):
+                trial_windows = []
+                for start_idx in range(0, trial.shape[1] - window_size + 1, step_size):
+                    window = trial[:, start_idx:start_idx + window_size]
+                    
+                    # Compute the required statistic based on method
+                    if method == 'mean':
+                        window_stat = np.mean(window, axis=1)
+                    elif method == 'std':
+                        window_stat = np.std(window, axis=1)
+                    elif method == 'median':
+                        window_stat = np.median(window, axis=1)
+                    
+                    trial_windows.append(window_stat)
+                
+                if verbose:
+                    print(f"Method: {method}, Trial {trial_idx}, Number of windows: {len(trial_windows)}")
+                
+                trial_features.append(np.array(trial_windows).T)
+            
+            # Add computed features for this method to the dictionary
+            features_dict[method] = np.array(trial_features)
+        
+        return features_dict
+
+    @staticmethod  
+    def extract_epoched_stat_features(epochs, methods=['mean', 'std', 'median']):
+        statistics_dict = {
+            'epochs': {},
+            'channels': {},
+            'times': {}
+        }
+        data = epochs.get_data(copy=False)  # shape (n_epochs, n_channels, n_times)
+        
+        # Compute statistics along each axis
+        for axis, axis_name in zip([0, 1, 2], ['epochs', 'channels', 'times']):
+            for method in methods:
+                if method == 'mean':
+                    stat = np.mean(data, axis=axis)
+                elif method == 'std':
+                    stat = np.std(data, axis=axis)
+                elif method == 'median':
+                    stat = np.median(data, axis=axis)
+                
+                statistics_dict[axis_name][method] = stat
+
+        return statistics_dict
     # @staticmethod
     # def compute_overall_psd(epochs, fmin=1, fmax=50):
     #     """
