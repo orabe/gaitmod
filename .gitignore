@@ -1,6 +1,17 @@
 # macOS system files
 .DS_Store
 
+# Image files
+images/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+*.webp
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
