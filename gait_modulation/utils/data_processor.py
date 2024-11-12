@@ -419,3 +419,58 @@ class DataProcessor:
 
         return events, epochs
 
+    @staticmethod
+    def pad_data(trials, max_length, padding_value=0, position="end"):
+        """Pad all trials to the specified max_length with the given padding value."""
+        padded_trials = []
+        for trial in trials:
+            pad_size = max(0, max_length - trial.shape[1])  # Calculate required padding based on trial length
+            if position == "end":
+                padded_trial = np.pad(trial, ((0, 0), (0, pad_size)), mode='constant', constant_values=padding_value)
+            else:  # position == "start"
+                padded_trial = np.pad(trial, ((0, 0), (pad_size, 0)), mode='constant', constant_values=padding_value)
+            padded_trials.append(padded_trial)
+        
+        return np.array(padded_trials)
+
+    @staticmethod
+    def truncate_data(trials, target_length, position="end"):
+        """Truncate all trials to the specified target_length."""
+        truncated_trials = []
+        for trial in trials:
+            if trial.shape[1] > target_length:
+                if position == "end":
+                    truncated_trial = trial[:, :target_length]
+                else:  # position == "start"
+                    truncated_trial = trial[:, -target_length:]
+                truncated_trials.append(truncated_trial)
+            else:
+                truncated_trials.append(trial)
+        
+        return np.array(truncated_trials)
+
+    @staticmethod
+    def pad_or_truncate(trials, config):
+        """Preprocess trials based on padding and truncation settings in config."""
+        # Apply padding if enabled
+        if config['data_preprocessing']['padding']['enabled']:
+            max_length = max([trial.shape[1] for trial in trials])
+            trials = DataProcessor.pad_data(
+                trials,
+                max_length=max_length,
+                padding_value=config['data_preprocessing']['padding']['padding_value'],
+                position=config['data_preprocessing']['padding']['padding_position']
+            )
+        
+        # Apply truncation if enabled
+        if config['data_preprocessing']['truncation']['enabled']:
+            target_length = config['data_preprocessing']['truncation']['target_length']            
+            if target_length == "min":
+                target_length = min([trial.shape[1] for trial in trials])
+
+            trials = DataProcessor.truncate_data(
+                trials,
+                target_length=target_length,
+                position=config['data_preprocessing']['truncation']['truncation_position']
+            )
+        return trials
