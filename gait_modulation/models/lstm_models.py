@@ -1,30 +1,55 @@
-
 from gait_modulation import BaseModel
 
 from keras.models import Sequential
 from keras.layers import LSTM, Dense, Dropout
-from keras.optimizers import Adam
+from keras.optimizers import Adam, SGD, RMSprop
 import numpy as np
 
 class LSTMModel(BaseModel):
-    def __init__(self, lstm_units=32, dropout_rate=0.2, learning_rate=0.001, epochs=50, batch_size=32):
-        super().__init__("LSTM Model")
-        self.lstm_units = lstm_units
-        self.dropout_rate = dropout_rate
-        self.learning_rate = learning_rate
-        self.epochs = epochs
-        self.batch_size = batch_size
+    def __init__(self, config_file):
+        super().__init__("LSTM Model", config_file=None)
         
+    # Build layers from config
     def build_model(self, input_shape):
         model = Sequential()
-        model.add(LSTM(self.lstm_units, input_shape=input_shape, return_sequences=True))
-        model.add(Dropout(self.dropout_rate))
-        model.add(LSTM(self.lstm_units // 2))
-        model.add(Dropout(self.dropout_rate))
-        model.add(Dense(1, activation='sigmoid'))
-        optimizer = Adam(learning_rate=self.learning_rate)
-        model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+
+        for layer in self.config['model']['layers']:
+            if layer['type'] == 'LSTM':
+                model.add(LSTM(
+                    units=layer['units'],
+                    activation=layer.get('activation', None),
+                    return_sequences=layer.get('return_sequences', False),
+                    input_shape=input_shape if len(model.layers) == 0 else None))
+                
+            elif layer['type'] == 'Dropout':
+                model.add(Dropout(rate=layer['rate']))
+            
+            elif layer['type'] == 'Dense':
+                model.add(Dense(
+                    units=layer['units'],
+                    activation=layer['activation']))
+                
+        # Compile model with parameters from config
+        optimizer_config = self.config['model'].get(
+            'optimizer', {'type': 'Adam', 'learning_rate': 0.001})
+        
+        if optimizer_config['type'] == 'Adam':
+            optimizer = Adam(learning_rate=optimizer_config['learning_rate'])
+        elif optimizer_config['type'] == 'SGD':
+            optimizer = SGD(learning_rate=optimizer_config['learning_rate'])
+        elif optimizer_config['type'] == 'RMSprop':
+            optimizer = RMSprop(learning_rate=optimizer_config['learning_rate'])
+        else:
+            raise ValueError(f"Unsupported optimizer type: {optimizer_config['type']}")
+
+        model.compile(
+            loss=self.config['model']['training'].get('loss', 'binary_crossentropy'),
+            optimizer=optimizer,
+            metrics=self.metrics
+            )
+        
         return model
+        
     
     def fit(self, X_train, y_train):
         self.model = self.build_model((X_train.shape[1], X_train.shape[2]))
