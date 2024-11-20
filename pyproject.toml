@@ -10,6 +10,9 @@ dependencies = [
     "seaborn",
     "scipy",
     "tqdm",
+    "sphinx",
+    "sphinx_rtd_theme",
+    "sphinxcontrib-napoleon"
 ]
 
 keywords = ["gait", "modulation", "LFP", "ML"]
