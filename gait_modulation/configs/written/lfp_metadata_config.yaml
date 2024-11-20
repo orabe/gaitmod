@@ -1,0 +1,20 @@
+EVENTS:
+  mod_start: 1
+  normal_walking: -1
+LFP_METADATA:
+  lfp_ch_names:
+  - LFP_L03
+  - LFP_L13
+  - LFP_L02
+  - LFP_R03
+  - LFP_R13
+  - LFP_R02
+  lfp_n_channels: 6
+  lfp_sfreq: 250
+SEGMENTATION:
+  epoch_duration: 3.0
+  epoch_sample_length: 750
+  epoch_tmax: 0.0
+  epoch_tmin: -3.0
+  gap_duration: 5
+  gap_sample_length: 1250

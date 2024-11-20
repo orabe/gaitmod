@@ -23,3 +23,6 @@ data_preprocessing:
     enabled: true  # Set to true if truncation is required
     target_length: "min"  # If set to "min", truncate all trials to the shortest length among them; otherwise, specify a custom integer value for truncation length.
     truncation_position: "end"  # Can be "start" or "end"
+
+reject_criteria:
+  dbs_threshold: 150 # Dictionary of rejection thresholds for each channel
