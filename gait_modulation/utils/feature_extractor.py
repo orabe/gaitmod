@@ -170,6 +170,40 @@ class FeatureExtractor:
                 statistics_dict[axis_name][method] = stat
 
         return statistics_dict
+    
+    
+        import numpy as np
+
+    @staticmethod
+    def reshape_lfp_data(lfp_data, mode="flat_time"):
+        """
+        Reform the LFP data based on the specified mode.
+        
+        Parameters:
+        ----------
+        lfp_data : np.ndarray
+            The input LFP data with shape (trials, channels, times).
+        mode : str
+            The reshaping mode. Options:
+            - "flat_time": Reshape to (trials * times, channels).
+            - "flat_channel": Reshape to (trials, times * channels).
+        
+        Returns:
+        -------
+        reshaped_data : np.ndarray
+            The reshaped data based on the selected mode.
+        """
+        n_trials, n_channels, n_times = lfp_data.shape
+        if mode == "flat_time":
+            # Reshape to (trials * times, channels)
+            reshaped_data = lfp_data.transpose(0, 2, 1).reshape(-1, n_channels)  # Flatten time dimension
+        elif mode == "flat_channel":
+            # Reshape to (trials, times * channels)
+            reshaped_data = lfp_data.transpose(0, 2, 1).reshape(n_trials, -1)  # Flatten channel dimension
+        else:
+            raise ValueError("Invalid mode. Use 'flat_time' or 'flat_channel'.")
+        
+        return reshaped_data
     # @staticmethod
     # def compute_overall_psd(epochs, fmin=1, fmax=50):
     #     """

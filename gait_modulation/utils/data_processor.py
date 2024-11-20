@@ -5,6 +5,115 @@ import pandas as pd
 
 class DataProcessor:
     @staticmethod
+    def process_lfp_data(all_data, n_sessions, lfp_sfreq, event_of_interest, mod_start_event_id, normal_walking_event_id, gap_sample_length, epoch_sample_length, epoch_tmin, epoch_tmax, epoch_duration, event_dict, info, reject_criteria, verbose=False):
+        
+        lfp_raw_list = []
+        epochs_list = []
+        events_list = []
+        all_lfp_data = []
+
+        for s in range(n_sessions):
+            print(f'Session: {s}')
+            session = all_data[s]  # Access specific patient/sessions
+
+            # Extract events and lfp data of the subject/session
+            lfp_data = session['data_LFP'] #* 1e-6  # Convert microvolts to volts
+
+            # Handle events
+            events_KIN = DataProcessor.np_to_dict(session['events_KIN'])
+            events_before_trim, event_dict_before_trim = DataProcessor.create_events_array(events_KIN, lfp_sfreq)
+
+            # Trim the data and adjust the event onsets accordingly
+            lfp_data, events_after_trim = DataProcessor.trim_data(lfp_data, events_before_trim, lfp_sfreq)
+            lfp_duration = lfp_data.shape[1] / lfp_sfreq
+            n_samples = int(lfp_duration * lfp_sfreq)
+
+            all_lfp_data.append(lfp_data)
+
+            # Update raw data after trimming
+            lfp_raw = mne.io.RawArray(lfp_data, info, verbose=40)
+            
+            events_mod_start = events_after_trim[events_after_trim[:, 2] == event_dict_before_trim[event_of_interest]]
+            events_mod_start[:, 1] = s  # mark the session nr
+
+            # Rename Gait Modulation Events
+            events_mod_start[:, 2] = mod_start_event_id
+
+            # Define normal walking events
+            normal_walking_events = DataProcessor.define_normal_walking_events(
+                normal_walking_event_id, events_mod_start,
+                gap_sample_length, epoch_sample_length, n_samples
+            )
+
+            events_mod_start[:, 1] = s  # mark the session nr
+            normal_walking_events[:, 1] = s  # mark the session nr
+
+            # Combine events and create epochs
+            events, epochs = DataProcessor.create_epochs_with_events(
+                lfp_raw,
+                events_mod_start,
+                normal_walking_events,
+                mod_start_event_id,
+                normal_walking_event_id,
+                epoch_tmin,
+                epoch_tmax,
+                event_dict
+            )
+            if verbose:
+                print(f"Total epochs: {len(epochs)}")
+                for cls in event_dict.keys():
+                    print(f"{cls}: {len(epochs[cls])} epochs", end='; ')
+
+            epochs.events[:, 1] = s  # mark the session nr
+            my_annot = mne.Annotations(
+                onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
+                duration=len(events) * [epoch_duration],  # in seconds, too
+                description=events[:, 2]
+            )
+            lfp_raw.set_annotations(my_annot)
+            
+            lfp_raw_list.append(lfp_raw)         
+            epochs_list.append(epochs)
+            events_list.append(events)
+            
+            print("\n==========================================================")
+
+        epochs = mne.concatenate_epochs(epochs_list, verbose=40)
+        events = np.vstack(events_list)
+        events = events[np.argsort(events[:, 0])]  # Sort by onset time
+
+        # Remove bad epochs
+        epochs.drop_bad(reject=reject_criteria)
+        
+        # Generate the channel locations
+        ch_locs = DataProcessor.generate_ch_locs(ch_names=lfp_raw.ch_names)
+        montage = mne.channels.make_dig_montage(ch_pos=ch_locs)
+        epochs.set_montage(montage)
+
+        return epochs, events, lfp_raw_list, all_lfp_data
+    
+    @staticmethod
+    def generate_ch_locs(ch_names):
+        ch_locs = {
+        'LFP_L03': [-1, -1, -1],
+        'LFP_L13': [-1, 0, 0],
+        'LFP_L02': [-1, 1, 1],
+        'LFP_R03': [1, -1, -1],
+        'LFP_R13': [1, 0, 0],
+        'LFP_R02': [1, 1, 1]}
+        
+        # ch_locs = {}
+        # for i, ch in enumerate(ch_names):
+        #     if 'LFP_L' in ch:
+        #         # Example locations for left channels
+        #         ch_locs[ch] = [-1, i % 3, i // 3]
+        #     elif 'LFP_R' in ch:
+        #         # Example locations for right channels
+        #         ch_locs[ch] = [1, i % 3, i // 3]
+        return ch_locs
+
+
+    @staticmethod
     def print_data_shapes(data: Dict[str, Any]) -> None:
         """Prints the shapes of the data arrays in the dictionary.
 
