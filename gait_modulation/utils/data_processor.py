@@ -65,14 +65,20 @@ class DataProcessor:
                     print(f"{cls}: {len(epochs[cls])} epochs", end='; ')
 
             epochs.events[:, 1] = s  # mark the session nr
+            # Remove bad epochs
+            epochs.drop_bad(reject=reject_criteria)
+            
             my_annot = mne.Annotations(
                 onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
                 duration=len(events) * [epoch_duration],  # in seconds, too
                 description=events[:, 2]
             )
+            
             lfp_raw.set_annotations(my_annot)
+            # lfp_raw.add_events(epochs.events)
             
             lfp_raw_list.append(lfp_raw)         
+            
             epochs_list.append(epochs)
             events_list.append(events)
             
@@ -81,9 +87,6 @@ class DataProcessor:
         epochs = mne.concatenate_epochs(epochs_list, verbose=40)
         events = np.vstack(events_list)
         events = events[np.argsort(events[:, 0])]  # Sort by onset time
-
-        # Remove bad epochs
-        epochs.drop_bad(reject=reject_criteria)
         
         # Generate the channel locations
         ch_locs = DataProcessor.generate_ch_locs(ch_names=lfp_raw.ch_names)

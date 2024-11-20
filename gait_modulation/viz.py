@@ -173,7 +173,7 @@ class Visualise:
         plt.close(fig)
         
     @staticmethod
-    def plot_raw_data_with_annotations(lfp_raw_list, folder_path='images'):
+    def plot_raw_data_with_annotations(lfp_raw_list, scaling=5e1, folder_path='images'):
         """
         Plot the raw LFP data with annotations for each session.
 
@@ -184,7 +184,7 @@ class Visualise:
             Folder where the plots will be saved.
         """
         for s, lfp_raw in enumerate(lfp_raw_list):
-            fig = lfp_raw.plot(start=0, duration=np.inf, show=False)  # lfp_duration
+            fig = lfp_raw.plot(start=0, duration=np.inf, scalings=dict(dbs=scaling) ,show=False)  # lfp_duration
             fig.suptitle(f'Session {s}', fontsize=16)
             plt.tight_layout()
             plt.savefig(f'{folder_path}/session{s}.png')         
