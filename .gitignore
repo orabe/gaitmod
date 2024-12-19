@@ -24,8 +24,8 @@ images/
 *.webp
 
 # Numpy and FIF files
-processed/
-processed/**
+# processed/
+# processed/**
 # *.npz
 # *.npy
 *.fif

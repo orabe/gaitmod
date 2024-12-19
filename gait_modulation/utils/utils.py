@@ -111,7 +111,52 @@ def generate_continuous_labels(lfp_raw_list, epoch_tmin=-3, epoch_tmax=0, event_
 
     return labels
 
-# Log available devices and GPU details
+# # Log available devices and GPU details
+# def _log_device_details():
+#     print("Available devices:")
+#     for device in tf.config.list_logical_devices():
+#         print(device)
+
+#     gpus = tf.config.list_physical_devices('GPU')
+#     if gpus:
+#         print("Running on GPU")
+#         print(f"Num GPUs Available: {len(gpus)}")
+#         for i, gpu in enumerate(gpus):
+#             print(f"\nGPU {i} Details:")
+#             gpu_details = tf.config.experimental.get_device_details(gpu)
+#             for key, value in gpu_details.items():
+#                 print(f"{key}: {value}")
+#     else:
+#         print("Running on CPU")
+
+#     # Log logical GPUs (useful for multi-GPU setups)
+#     logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+#     print(f"\nLogical GPUs Available: {len(logical_gpus)}")
+#     for i, lgpu in enumerate(logical_gpus):
+#         print(f"Logical GPU {i}: {lgpu}")
+
+# # Enable device placement logging
+# def _configure_tf_logs():
+#     tf.debugging.set_log_device_placement(True)
+#     tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
+#     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
+
+# # Clear TensorFlow session and log build details
+# def _reset_tf_session():
+#     tf.keras.backend.clear_session()
+#     print("Built with CUDA:", tf.test.is_built_with_cuda())
+#     print("Available GPUs:", tf.config.list_physical_devices('GPU'))
+
+# # Combine all configuration and logging calls
+# def initialize_tf():
+#     _log_device_details()
+#     _configure_tf_logs()
+#     _reset_tf_session()
+
+
+import tensorflow as tf
+import os
+
 def _log_device_details():
     print("Available devices:")
     for device in tf.config.list_logical_devices():
@@ -135,20 +180,51 @@ def _log_device_details():
     for i, lgpu in enumerate(logical_gpus):
         print(f"Logical GPU {i}: {lgpu}")
 
-# Enable device placement logging
 def _configure_tf_logs():
     tf.debugging.set_log_device_placement(True)
     tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
 
-# Clear TensorFlow session and log build details
 def _reset_tf_session():
     tf.keras.backend.clear_session()
     print("Built with CUDA:", tf.test.is_built_with_cuda())
     print("Available GPUs:", tf.config.list_physical_devices('GPU'))
+    if tf.test.is_built_with_cuda():
+        print("CUDA version:", tf.__version__)
+    else:
+        print("TensorFlow is not built with CUDA.")
 
-# Combine all configuration and logging calls
+def _enable_memory_growth():
+    # This won't be applicable on Mac unless you have NVIDIA GPU or Metal API (for Apple Silicon).
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                print(f"Memory growth enabled for GPU {gpu}")
+            except RuntimeError as e:
+                print(f"Failed to enable memory growth for GPU {gpu}: {e}")
+    else:
+        print("No GPU available for memory growth settings.")
+
 def initialize_tf():
+    # Log available devices
     _log_device_details()
+
+    # Configure TensorFlow logs
     _configure_tf_logs()
+
+    # Reset TensorFlow session and log details
     _reset_tf_session()
+
+    # Enable memory growth for GPUs if applicable
+    _enable_memory_growth()
+
+    # Additional Mac-specific checks (if using Metal API for Apple Silicon)
+    if tf.config.list_physical_devices('GPU'):
+        if not tf.test.is_built_with_cuda():
+            # If TensorFlow is built for Metal (Apple Silicon) but not CUDA, it indicates Metal backend is used
+            print("\nUsing Metal API for Apple Silicon (if applicable).")
+        else:
+            print("\nCUDA-compatible GPU detected, using NVIDIA GPU.")
+            
