@@ -67,7 +67,7 @@ class DataProcessor:
             epochs.events[:, 1] = s  # mark the session nr
             # Remove bad epochs
             epochs.drop_bad(reject=reject_criteria)
-            
+            # my_annot = mne.annotations_from_events(epochs.events, lfp_sfreq)
             my_annot = mne.Annotations(
                 onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
                 duration=len(events) * [epoch_duration],  # in seconds, too

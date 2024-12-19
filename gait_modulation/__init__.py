@@ -4,7 +4,9 @@ from .utils.feature_extractor import FeatureExtractor
 from .viz import Visualise  # Add this line
 
 from .models.base_model import BaseModel
-from .models.regression_models import RegressionModel
-from .models.lstm_models import LSTMModel
+from .models.regression_models import RegressionModels, LinearRegressionModel, RegressionLSTMModel
+from .models.classification_models import ClassificationModels, ClassificationLSTMModel
+from .utils.utils import create_directory, split_data_stratified, load_config, create_lagged_data, generate_continuous_labels
 
-__all__ = ['MatFileReader', 'DataProcessor', 'FeatureExtractor', 'Visualise', 'BaseModel', 'RegressionModel', 'LSTMModel']
+
+__all__ = ['MatFileReader', 'DataProcessor', 'FeatureExtractor', 'Visualise', 'BaseModel', 'RegressionModels', 'LinearRegressionModel', 'RegressionLSTMModel', 'ClassificationModels', 'ClassificationLSTMModel']

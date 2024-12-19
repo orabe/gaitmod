@@ -170,9 +170,6 @@ class FeatureExtractor:
                 statistics_dict[axis_name][method] = stat
 
         return statistics_dict
-    
-    
-        import numpy as np
 
     @staticmethod
     def reshape_lfp_data(lfp_data, mode="flat_time"):
