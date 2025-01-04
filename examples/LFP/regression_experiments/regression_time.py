@@ -12,7 +12,7 @@ from sklearn.metrics import mean_squared_error
 
 from gait_modulation import MatFileReader, DataProcessor, Visualise, FeatureExtractor
 from gait_modulation import BaseModel, RegressionModels, LinearRegressionModel, RegressionLSTMModel
-from gait_modulation.utils.utils import split_data_stratified, load_config, create_lagged_data, initialize_tf
+from gait_modulation.utils.utils import split_data_stratified, load_config, create_lagged_data, initialize_tf, disable_xla
 
 from multiprocessing import Pool
 
@@ -21,7 +21,8 @@ from multiprocessing import Pool
 lfp_metadata_config = load_config('gait_modulation/configs/written/lfp_metadata_config.yaml')
 sfreq = lfp_metadata_config['LFP_METADATA']['lfp_sfreq']
 
-time_continuous_uniform = np.load('processed/features/time_continuous_uniform-feat.npz')['times_uniform']
+# time_continuous_uniform = np.load('processed/features/time_continuous_uniform-feat.npz')['times_uniform']
+time_continuous_uniform = np.load('/data/orabem/processed/features/time_continuous_uniform-feat.npz')['times_uniform']
 time_continuous_uniform.shape
 
 
@@ -64,7 +65,7 @@ horizons_ms
 # ------------------ Model Training ------------------ #
 # Log available devices and GPU details
 # Initialize TensorFlow configuration
-
+disable_xla()
 initialize_tf()
 
 # ------------------ Load model config ------------------ #
@@ -73,9 +74,9 @@ config_path_lstm = 'gait_modulation/configs/regression_lstm_config.yaml'
 
 # Define a set of models to evaluate
 models = {
-    "linear_regression": LinearRegressionModel(config_path_linear, model_type='linear'),
-    "ridge_regression": LinearRegressionModel(config_path_linear, model_type='ridge'),
-    "lasso_regression": LinearRegressionModel(config_path_linear, model_type='lasso'),
+    # "linear_regression": LinearRegressionModel(config_path_linear, model_type='linear'),
+    # "ridge_regression": LinearRegressionModel(config_path_linear, model_type='ridge'),
+    # "lasso_regression": LinearRegressionModel(config_path_linear, model_type='lasso'),
     "lstm_regression": RegressionLSTMModel(config_path_lstm),
 }
 
@@ -123,15 +124,13 @@ def train_model_on_fold(fold_data):
             'error': "Zero-sized split",
     }
         
-    print(f"\n### Fold {fold} | Model: {model_name} ###\n")
-    print(f"Training {model_name} on fold {fold}...")
 
     # Define the callbacks
-    tensorboard_callback = TensorBoard(log_dir='regression_logs/fit', histogram_freq=0)  # Set to 0 to disable histogram logging
+    tensorboard_callback = TensorBoard(log_dir='./regression_logs/fit', histogram_freq=0)  # Set to 0 to disable histogram logging
 
     checkpoint_callback = ModelCheckpoint(
-        filepath='regression_LSTM_best_model.h5', 
-        monitor='loss', 
+        filepath='regression_LSTM_best_model.keras',  # Use the correct extension
+        monitor='loss',
         save_best_only=True
     )
     
@@ -143,6 +142,8 @@ def train_model_on_fold(fold_data):
         ReduceLROnPlateau(monitor='loss', factor=0.5, patience=1, min_lr=1e-5)
     ]
 
+    print(f"Training {horizon} samples ({horizon / sfreq * 1000} ms) {model_name} on fold {fold}...")
+
     # Train the model
     if model.model_type == 'lstm':
         model.fit(X_train, y_train, callbacks)  # Callbacks defined globally
@@ -152,6 +153,7 @@ def train_model_on_fold(fold_data):
     # Make predictions
     y_pred = model.predict(X_test)
 
+    print(f"Evaluating model {model_name} on fold {fold}...")
     # Evaluate metrics
     evaluation_results = model.evaluate(y_test, y_pred)
 
@@ -184,7 +186,7 @@ if __name__ == '__main__':
         # Reshape data for each model
         for model_name, model in models.items():
             if model_name == 'lstm_regression':
-                reshaped_flat_time = time_continuous_uniform.transpose(0, 2, 1)[:, 0:500, :]
+                reshaped_flat_time = time_continuous_uniform.transpose(0, 2, 1)[:, 0:10, :]
             else:
                 reshaped_flat_time = FeatureExtractor.reshape_lfp_data(
                     time_continuous_uniform, mode="flat_time")
@@ -218,5 +220,5 @@ if __name__ == '__main__':
 
     print(f'Regression results saved to {results_path}')
     
-# tensorboard --logdir=./logs or tensorboard --logdir=logs/fit
+# tensorboard --logdir=./logs or tensorboard --logdir=./regression_logs/fit
 # http://localhost:6006/

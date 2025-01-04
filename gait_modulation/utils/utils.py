@@ -153,10 +153,10 @@ def generate_continuous_labels(lfp_raw_list, epoch_tmin=-3, epoch_tmax=0, event_
 #     _configure_tf_logs()
 #     _reset_tf_session()
 
-
-import tensorflow as tf
 import os
+import tensorflow as tf
 
+# Function to log available devices
 def _log_device_details():
     print("Available devices:")
     for device in tf.config.list_logical_devices():
@@ -180,11 +180,13 @@ def _log_device_details():
     for i, lgpu in enumerate(logical_gpus):
         print(f"Logical GPU {i}: {lgpu}")
 
+# Function to configure TensorFlow logs
 def _configure_tf_logs():
     tf.debugging.set_log_device_placement(True)
     tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
 
+# Function to reset the TensorFlow session
 def _reset_tf_session():
     tf.keras.backend.clear_session()
     print("Built with CUDA:", tf.test.is_built_with_cuda())
@@ -194,6 +196,7 @@ def _reset_tf_session():
     else:
         print("TensorFlow is not built with CUDA.")
 
+# Function to enable memory growth for GPUs
 def _enable_memory_growth():
     # This won't be applicable on Mac unless you have NVIDIA GPU or Metal API (for Apple Silicon).
     gpus = tf.config.list_physical_devices('GPU')
@@ -207,6 +210,7 @@ def _enable_memory_growth():
     else:
         print("No GPU available for memory growth settings.")
 
+# Function to initialize TensorFlow configuration
 def initialize_tf():
     # Log available devices
     _log_device_details()
@@ -227,4 +231,7 @@ def initialize_tf():
             print("\nUsing Metal API for Apple Silicon (if applicable).")
         else:
             print("\nCUDA-compatible GPU detected, using NVIDIA GPU.")
-            
+
+# Optional: Disable XLA if needed
+def disable_xla():
+    os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
