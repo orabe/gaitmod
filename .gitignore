@@ -2,7 +2,7 @@
 .DS_Store
 
 # training log files
-logs/
+# logs/
 *.log
 *.out
 *.err
@@ -13,7 +13,7 @@ tensorboard_logs/
 events.out.tfevents.*
 
 # Image files
-images/
+# images/
 *.png
 *.jpg
 *.jpeg
@@ -26,10 +26,11 @@ images/
 # Numpy and FIF files
 # processed/
 # processed/**
-# *.npz
-# *.npy
+*.npz
+*.npy
 *.fif
-# *.pkl
+*.pkl
+*.h5
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
