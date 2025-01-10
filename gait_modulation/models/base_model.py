@@ -25,6 +25,34 @@ class BaseModel(ABC):
             self.model.save(model_path)
         else:
             raise ValueError("The model is not built or trained yet.")
+    
+    def train(self, X, y, train_idx, test_idx, callbacks=None):
+        """
+        Trains a model for a specific fold.
+
+        Args:
+            model: The model to be trained.
+            X: Input features.
+            y: Target values.
+            train_idx: Training indices.
+            test_idx: Testing indices.
+            callbacks: Callbacks for LSTM training (optional).
+
+        Returns:
+            Dictionary containing predictions and true values for the fold.
+        """
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+        
+        # Train the model
+        if self.model_type == 'lstm':
+            self.fit(X_train, y_train, callbacks)
+        else:
+            self.fit(X_train, y_train)
+        
+        y_pred = self.predict(X_test)
+        
+        return {'y_test': y_test, 'y_pred': y_pred}
 
     @staticmethod
     def load(model_path, model_type, config_path, **kwargs):
@@ -76,13 +104,20 @@ class BaseModel(ABC):
 
         return metrics_list
     
-    def evaluate(self, y_true, y_pred):
+    def evaluate(self, results, fold=None):
         """
         Evaluate metrics based on true labels and predictions.
+
         Parameters:
-        - y_true: Ground truth labels
-        - y_pred: Predicted labels or values
+        - results: Dictionary containing predictions (y_pred) and true values (y_test or y_true) for the fold.
+        # - y_true: Ground truth labels, usually y_test
+        # - y_pred: Predicted labels or values
+        - fold: Fold number to print in the logs. If None, the fold number is not printed.
         """
+        # TODO: improve hardcoding of metrics
+        y_true = results['y_test']
+        y_pred = results['y_pred']
+    
         # Mean of true values
         y_mean = np.mean(y_true)
 
@@ -96,11 +131,22 @@ class BaseModel(ABC):
         r2_score = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0.0
 
         # Return all metrics
-        results = {
+        results.update({
+            # "y_test": y_true,
+            # "y_pred": y_pred,
             "mse": np.mean((y_true - y_pred) ** 2),
             "mae": np.mean(np.abs(y_true - y_pred)),
             "r2": r2_score
-        }
+        })
+        
+        # Log metrics for the fold
+        if fold:
+            metrics = self.metrics or ['mse', 'mae', 'r2']
+            metrics_str = ", ".join(
+                f"{metric.upper()}: {results[metric]:.4f}"
+                for metric in metrics
+            )
+            print(f"Fold {fold} | {metrics_str}") 
         return results
 
     # #TODO: this method does not support serialization! 

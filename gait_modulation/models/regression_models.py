@@ -166,7 +166,7 @@ class RegressionLSTMModel(RegressionModels):
                     train_generator, 
                     epochs=self.config['model']['training']['epochs'],
                     steps_per_epoch=steps_per_epoch,
-                    verbose=1,
+                    verbose=0,
                     callbacks=callbacks
                 )
         else:
@@ -175,7 +175,7 @@ class RegressionLSTMModel(RegressionModels):
                 train_generator, 
                 epochs=self.config['model']['training']['epochs'],
                 steps_per_epoch=steps_per_epoch,
-                verbose=1,
+                verbose=0,
                 callbacks=callbacks
             )
                 

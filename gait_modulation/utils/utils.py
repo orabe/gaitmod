@@ -4,6 +4,7 @@ from sklearn.model_selection import StratifiedKFold
 import numpy as np
 import mne
 import tensorflow as tf
+import pickle
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -111,6 +112,15 @@ def generate_continuous_labels(lfp_raw_list, epoch_tmin=-3, epoch_tmax=0, event_
 
     return labels
 
+# Define a helper function to save pickle files
+def save_pickle(data, filename):
+    with open(filename, 'wb') as f:
+        pickle.dump(data, f)
+
+def load_pkl(file_path):
+    with open(file_path, 'rb') as file:
+        data = pickle.load(file)
+    return data
 # # Log available devices and GPU details
 # def _log_device_details():
 #     print("Available devices:")
