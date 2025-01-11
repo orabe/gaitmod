@@ -30,8 +30,8 @@ model:
       activation: "linear"  # Linear activation for continuous output
 
   training:
-    epochs: 5  # number of complete passes through the entire training dataset during training. Determines how many times the model will see all the training data.
-    batch_size: 64
+    epochs: 50  # number of complete passes through the entire training dataset during training. Determines how many times the model will see all the training data.
+    batch_size: 64  # number of samples processed before the model is updated. Smaller batch sizes provide a regularizing effect and reduce generalization error.
     loss: "mean_squared_error"  # MSE is common for regression
     metrics: ["mean_squared_error", "mean_absolute_error"]  # Additional metrics
 

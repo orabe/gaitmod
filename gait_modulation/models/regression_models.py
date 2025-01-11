@@ -124,7 +124,7 @@ class RegressionLSTMModel(RegressionModels):
     def data_generator(self, X, y, batch_size=32):
         while True:
             for i in range(0, len(X), batch_size):
-                print(f"Batch {i // batch_size}: X shape = {X[i:i + batch_size].shape}, y shape = {y[i:i + batch_size].shape}")
+                # print(f"Batch {i // batch_size}: X shape = {X[i:i + batch_size].shape}, y shape = {y[i:i + batch_size].shape}")
                 yield X[i:i + batch_size], y[i:i + batch_size]
             
     def fit(self, X_train, y_train, callbacks):

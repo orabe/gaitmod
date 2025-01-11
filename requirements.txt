@@ -8,3 +8,4 @@ sphinx
 sphinx-rtd-theme
 sphinxcontrib-napoleon
 scikit-learn===1.5.1
+ipykernel
