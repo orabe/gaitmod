@@ -1,88 +1,95 @@
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 import mne
 import pandas as pd
 
 class DataProcessor:
     @staticmethod
-    def process_lfp_data(all_data, n_sessions, lfp_sfreq, event_of_interest, mod_start_event_id, normal_walking_event_id, gap_sample_length, epoch_sample_length, epoch_tmin, epoch_tmax, epoch_duration, event_dict, info, reject_criteria, verbose=False):
+    def process_lfp_data(all_data, n_sessions, lfp_sfreq, event_of_interest, mod_start_event_id, normal_walking_event_id, gap_sample_length, epoch_sample_length, epoch_tmin, epoch_tmax, epoch_duration, event_dict, info, reject_criteria, config, verbose=False):
         
         lfp_raw_list = []
         epochs_list = []
         events_list = []
         all_lfp_data = []
+        all_lfp_data_dict = {}
 
-        for s in range(n_sessions):
-            print(f'Session: {s}')
-            session = all_data[s]  # Access specific patient/sessions
-
-            # Extract events and lfp data of the subject/session
-            lfp_data = session['data_LFP'] #* 1e-6  # Convert microvolts to volts
-
-            # Handle events
-            events_KIN = DataProcessor.np_to_dict(session['events_KIN'])
-            events_before_trim, event_dict_before_trim = DataProcessor.create_events_array(events_KIN, lfp_sfreq)
-
-            # Trim the data and adjust the event onsets accordingly
-            lfp_data, events_after_trim = DataProcessor.trim_data(lfp_data, events_before_trim, lfp_sfreq)
-            lfp_duration = lfp_data.shape[1] / lfp_sfreq
-            n_samples = int(lfp_duration * lfp_sfreq)
-
-            all_lfp_data.append(lfp_data)
-
-            # Update raw data after trimming
-            lfp_raw = mne.io.RawArray(lfp_data, info, verbose=40)
+        # for s in range(n_sessions):
+        for subject_idx, subject in enumerate(all_data.keys()):
+            print(f'subject {subject_idx}: {subject}')
+            all_lfp_data_dict[subject] = {}
             
-            events_mod_start = events_after_trim[events_after_trim[:, 2] == event_dict_before_trim[event_of_interest]]
-            events_mod_start[:, 1] = s  # mark the session nr
+            for session_idx, session in enumerate(all_data[subject].keys()):
+                all_lfp_data_dict[subject][session] = {}
+                session_data = all_data[subject][session]
 
-            # Rename Gait Modulation Events
-            events_mod_start[:, 2] = mod_start_event_id
+                # Extract events and lfp data of the subject/session
+                lfp_data = session_data['data_LFP'] # * 1e-6 # Convert microvolts to volts
 
-            # Define normal walking events
-            normal_walking_events = DataProcessor.define_normal_walking_events(
-                normal_walking_event_id, events_mod_start,
-                gap_sample_length, epoch_sample_length, n_samples
-            )
+                # Handle events
+                events_KIN = DataProcessor.np_to_dict(session_data['events_KIN'])
+                events_before_trim, event_dict_before_trim = DataProcessor.create_events_array(events_KIN, lfp_sfreq)
 
-            events_mod_start[:, 1] = s  # mark the session nr
-            normal_walking_events[:, 1] = s  # mark the session nr
+                # Trim the data and adjust the event onsets accordingly
+                lfp_data, events_after_trim = DataProcessor.trim_data(lfp_data, events_before_trim, lfp_sfreq)
+                lfp_duration = lfp_data.shape[1] / lfp_sfreq
+                n_samples = int(lfp_duration * lfp_sfreq)
 
-            # Combine events and create epochs
-            events, epochs = DataProcessor.create_epochs_with_events(
-                lfp_raw,
-                events_mod_start,
-                normal_walking_events,
-                mod_start_event_id,
-                normal_walking_event_id,
-                epoch_tmin,
-                epoch_tmax,
-                event_dict
-            )
-            if verbose:
-                print(f"Total epochs: {len(epochs)}")
-                for cls in event_dict.keys():
-                    print(f"{cls}: {len(epochs[cls])} epochs", end='; ')
+                all_lfp_data.append(lfp_data)
+                all_lfp_data_dict[subject][session] = lfp_data
+                
+                # Update raw data after trimming
+                lfp_raw = mne.io.RawArray(lfp_data, info, verbose=40)
+                
+                events_mod_start = events_after_trim[events_after_trim[:, 2] == event_dict_before_trim[event_of_interest]]
+                events_mod_start[:, 1] = subject_idx  # mark the subject index
 
-            epochs.events[:, 1] = s  # mark the session nr
-            # Remove bad epochs
-            epochs.drop_bad(reject=reject_criteria)
-            # my_annot = mne.annotations_from_events(epochs.events, lfp_sfreq)
-            my_annot = mne.Annotations(
-                onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
-                duration=len(events) * [epoch_duration],  # in seconds, too
-                description=events[:, 2]
-            )
-            
-            lfp_raw.set_annotations(my_annot)
-            # lfp_raw.add_events(epochs.events)
-            
-            lfp_raw_list.append(lfp_raw)         
-            
-            epochs_list.append(epochs)
-            events_list.append(events)
-            
-            print("\n==========================================================")
+                # Rename Gait Modulation Events
+                events_mod_start[:, 2] = mod_start_event_id
+
+                # Define normal walking events
+                normal_walking_events = DataProcessor.define_normal_walking_events(
+                    normal_walking_event_id, events_mod_start,
+                    gap_sample_length, epoch_sample_length, n_samples
+                )
+
+                events_mod_start[:, 1] = subject_idx  # mark the session nr
+                normal_walking_events[:, 1] = subject_idx  # mark the session nr
+
+                # Combine events and create epochs
+                events, epochs = DataProcessor.create_epochs_with_events(
+                    lfp_raw,
+                    events_mod_start,
+                    normal_walking_events,
+                    mod_start_event_id,
+                    normal_walking_event_id,
+                    epoch_tmin,
+                    epoch_tmax,
+                    event_dict
+                )
+                if verbose:
+                    print(f"Total epochs: {len(epochs)}")
+                    for cls in event_dict.keys():
+                        print(f"{cls}: {len(epochs[cls])} epochs", end='; ')
+
+                epochs.events[:, 1] = subject_idx  # mark the subject index
+                # Remove bad epochs
+                epochs.drop_bad(reject=reject_criteria)
+                # my_annot = mne.annotations_from_events(epochs.events, lfp_sfreq)
+                my_annot = mne.Annotations(
+                    onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
+                    duration=len(events) * [epoch_duration],  # in seconds, too
+                    description=events[:, 2]
+                )
+                
+                lfp_raw.set_annotations(my_annot)
+                # lfp_raw.add_events(epochs.events)
+                
+                lfp_raw_list.append(lfp_raw)         
+                
+                epochs_list.append(epochs)
+                events_list.append(events)
+                
+                print("\n==========================================================")
 
         epochs = mne.concatenate_epochs(epochs_list, verbose=40)
         events = np.vstack(events_list)
@@ -94,6 +101,274 @@ class DataProcessor:
         epochs.set_montage(montage)
 
         return epochs, events, lfp_raw_list, all_lfp_data
+    
+    
+    @staticmethod
+    def remove_nan_events(events_kin: Dict[str, Any], sfreq: float) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Remove NaN values from event times and generate corresponding sample indices.
+
+        Parameters:
+        events_kin (Dict[str, Any]): Dictionary containing event times and labels. 
+                                     Expected keys are 'times' (numpy array of event times) 
+                                     and 'label' (list of event labels).
+        sfreq (float): Sampling frequency.
+
+        Returns:
+        Tuple[np.ndarray, np.ndarray]: A tuple containing:
+            - events_kin_times_valid (np.ndarray): Array of valid event times with NaN values removed.
+            - events_kin_samples_valid (np.ndarray): Array of valid event times converted to sample indices.
+        """
+        events_kin_times = events_kin['times']
+        event_labels = [label[0] for label in events_kin['label'][0]]
+
+        # Map event labels to unique integer IDs
+        event_id = {label: idx + 1 for idx, label in enumerate(event_labels)}
+
+        # Remove NaN values in events_kin_times
+        valid_mask = ~np.isnan(events_kin_times)
+        valid_mask = valid_mask.all(axis=0)
+        
+        # Remove trials that contain at least one NaN value
+        events_kin_times_valid = events_kin_times[:, valid_mask]
+
+        # Generate time indices in samples for valid times
+        events_kin_samples_valid = (events_kin_times_valid * sfreq).astype(int)
+        
+        return events_kin_times_valid, events_kin_samples_valid
+
+    @staticmethod
+    def create_lfp_trials(events_kin_samples: np.ndarray, 
+                          lfp_data: np.ndarray,
+                          sfreq: float,
+                          config: Dict[str, Any]
+                          ) -> np.ndarray:
+        """
+        Extracts LFP trials based on event kinematic samples.
+        Args:
+            events_kin_samples (np.ndarray): A 2D numpy array containing kinematic event samples with shape (n_events, n_trials).
+            lfp_data (np.ndarray): A 2D numpy array containing LFP data with shape (n_channels, n_times).
+            sfreq (float): Sampling frequency of the LFP data.
+            config (Dict[str, Any]): Configuration settings for padding and truncating the LFP data.
+        Returns:
+            np.ndarray: A 3D numpy array containing LFP trials with shape (n_trials, n_channels, n_times).
+        Notes:
+            - The function pads or truncates the LFP data based on the configuration settings.
+            - The function extracts LFP trials based on the event kinematic samples.
+        """
+        n_events = events_kin_samples.shape[0]
+        n_trials = events_kin_samples.shape[1]
+        lfp_trials = []
+        
+        for trial in range(n_trials):
+            # Get trial start and stop times for this trial
+            trial_start_idx = events_kin_samples[0, trial]
+            trial_stop_idx = events_kin_samples[n_events-1, trial]
+            
+            # Extract LFP data for this trial
+            trial_lfp_data = lfp_data[:, trial_start_idx:trial_stop_idx]
+            
+            # Append trial data to the list
+            lfp_trials.append(trial_lfp_data)
+        
+
+        # Ensure all trials have a common length by either truncating or padding them, and save the result as a 3D numpy array (n_trials, n_channels, n_times)
+        # lfp_trials = DataProcessor.pad_or_truncate(lfp_trials, config)
+        
+        return lfp_trials
+
+
+    @staticmethod
+    def get_trial_event_indices(
+        events_kin_samples: np.ndarray,
+        events_kin_labels: np.ndarray | List,
+        trial_idx: int
+    ) -> np.ndarray:
+        """
+        Compute relative indices of all events within a given trial.
+
+        Args:
+            events_kin_samples (np.ndarray): A 2D array of shape (n_events, n_trials) containing the sample indices of each event.
+            events_kin_labels (np.ndarray | List): A 1D array of shape (n_events,) or a list containing the event names.
+            trial_idx (int): The index of the trial for which to compute event indices.
+
+        Returns:
+            np.ndarray (int): Event indices relative to the start of the trial.
+
+        Notes:
+            - If an event occurs outside the trial boundaries, a random valid index 
+              within the trial range is assigned.
+            - The returned indices are relative to the trial's start index.
+        """
+        n_events = events_kin_samples.shape[0]
+        trial_start_idx = events_kin_samples[0, trial_idx]
+        trial_end_idx = events_kin_samples[n_events - 1, trial_idx]
+
+        trial_event_indices = []
+
+        for event_name_idx, event_name in enumerate(events_kin_labels):
+            event_idx = events_kin_samples[event_name_idx, trial_idx]
+
+            # Handle cases where the event index is outside trial boundaries
+            if event_idx < trial_start_idx or event_idx >= trial_end_idx:
+                print(f"Event '{event_name}' at index {event_idx} is outside trial boundaries " f"({trial_start_idx}-{trial_end_idx}). Assigning a random valid index.")
+                event_idx = np.random.randint(trial_start_idx, trial_end_idx)
+
+            # Compute event index relative to trial start
+            event_idx_relative_to_trial_start = event_idx - trial_start_idx
+            trial_event_indices.append(event_idx_relative_to_trial_start)
+
+        return np.array(trial_event_indices)
+
+
+    @staticmethod
+    def process_lfp_trials_and_events(all_data: Dict[str, Dict[str, dict]], 
+                                      lfp_sfreq: float, 
+                                      config: dict, 
+                                      verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+        """
+        Prepares LFP data and event indices for each subject across multiple sessions.
+
+        This function processes LFP data by extracting trials from kinematic events and storing them in two dictionaries:
+        - subject_lfp_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is 6 and n_times is variable.
+        - subject_event_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events), with n_events fixed at 8. Each column corresponds to a specific event label's index.
+
+        Args:
+            all_data (Dict[str, Dict[str, dict]]): Nested dictionary where the outer key is the subject name, and the inner dictionary contains session data for each subject.
+            lfp_sfreq (float): Sampling frequency of the LFP data (in Hz).
+            config (dict): Configuration dictionary used in the data processing.
+            verbose (bool, optional): Whether to print processing details for each subject and session. Defaults to True.
+
+        Returns:
+            Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+                - subject_lfp_data_dict: Dictionary of subjects with LFP trials as 2D NumPy arrays.
+                - subject_event_idx_dict: Dictionary of subjects with event indices across trials.
+        """
+        subject_lfp_data_dict = {}  # Stores LFP data for each trial
+        subject_event_idx_dict = {}  # Stores event indices per trial
+
+        for subject_idx, subject in enumerate(all_data.keys()):
+            if verbose: 
+                print(f'subject {subject_idx}: {subject}')
+            
+            subject_lfp_data_dict[subject] = []  # List of LFP data for trials
+            subject_event_idx_dict[subject] = np.empty((0, 8), dtype=np.float32)  # Initialize with an empty array
+
+            for session_idx, session in enumerate(all_data[subject].keys()):
+                if verbose: 
+                    print(f'session {session_idx}: {session}')
+                
+                session_data = all_data[subject][session]                
+                session_lfp_data = session_data['data_LFP']  # LFP data in microvolts (to be converted to volts)
+
+                # Handle event data
+                events_KIN = DataProcessor.np_to_dict(session_data['events_KIN'])
+                events_kin_times_valid, events_kin_samples_valid = DataProcessor.remove_nan_events(events_KIN, lfp_sfreq)
+
+                # Extract LFP trials based on event kinematic samples
+                lfp_trials = DataProcessor.create_lfp_trials(events_kin_samples_valid, session_lfp_data, lfp_sfreq, config)
+                subject_lfp_data_dict[subject].extend(lfp_trials)  # Add trials to the subject's data
+
+                n_trials_pro_session = events_kin_samples_valid.shape[1]
+
+                for session_trial_idx in range(n_trials_pro_session):
+                    session_event_indices = DataProcessor.get_trial_event_indices(
+                        events_kin_samples_valid,
+                        events_KIN['label'][0],
+                        trial_idx=session_trial_idx
+                    )  # Shape (8,)
+
+                    # Append the event indices for this trial to the event dictionary
+                    subject_event_idx_dict[subject] = np.vstack((
+                        subject_event_idx_dict[subject], 
+                        session_event_indices[np.newaxis, :]  # Convert shape (8,) to (1, 8)
+                    ))
+
+        return subject_lfp_data_dict, subject_event_idx_dict
+            
+            
+            
+        #         lfp_raw_list = []
+        #         epochs_list = []
+        #         events_list = []
+        #         all_lfp_data = []
+                
+        #         events_before_trim, event_dict_before_trim = DataProcessor.create_events_array(events_KIN, lfp_sfreq)
+
+            
+        #         # Trim the data and adjust the event onsets accordingly
+        #         sessoin_lfp_data, events_after_trim = DataProcessor.trim_data(sessoin_lfp_data, events_before_trim, lfp_sfreq)
+        #         lfp_duration = lfp_sessoin_lfp_datadata.shape[1] / lfp_sfreq
+        #         n_samples = int(lfp_duration * lfp_sfreq)
+
+        #         all_lfp_data.append(sessoin_lfp_data)
+        #         all_lfp_data_dict[subject][session] = sessoin_lfp_data
+                
+        #         # Update raw data after trimming
+        #         lfp_raw = mne.io.RawArray(sessoin_lfp_data, info, verbose=40)
+                
+        #         events_mod_start = events_after_trim[events_after_trim[:, 2] == event_dict_before_trim[event_of_interest]]
+        #         events_mod_start[:, 1] = subject_idx  # mark the subject index
+
+        #         # Rename Gait Modulation Events
+        #         events_mod_start[:, 2] = mod_start_event_id
+
+        #         # Define normal walking events
+        #         normal_walking_events = DataProcessor.define_normal_walking_events(
+        #             normal_walking_event_id, events_mod_start,
+        #             gap_sample_length, epoch_sample_length, n_samples
+        #         )
+
+        #         events_mod_start[:, 1] = subject_idx  # mark the session nr
+        #         normal_walking_events[:, 1] = subject_idx  # mark the session nr
+
+        #         # Combine events and create epochs
+        #         events, epochs = DataProcessor.create_epochs_with_events(
+        #             lfp_raw,
+        #             events_mod_start,
+        #             normal_walking_events,
+        #             mod_start_event_id,
+        #             normal_walking_event_id,
+        #             epoch_tmin,
+        #             epoch_tmax,
+        #             event_dict
+        #         )
+        #         if verbose:
+        #             print(f"Total epochs: {len(epochs)}")
+        #             for cls in event_dict.keys():
+        #                 print(f"{cls}: {len(epochs[cls])} epochs", end='; ')
+
+        #         epochs.events[:, 1] = subject_idx  # mark the subject index
+        #         # Remove bad epochs
+        #         epochs.drop_bad(reject=reject_criteria)
+        #         # my_annot = mne.annotations_from_events(epochs.events, lfp_sfreq)
+        #         my_annot = mne.Annotations(
+        #             onset=(events[:, 0] - epoch_sample_length) / lfp_sfreq,  # in seconds
+        #             duration=len(events) * [epoch_duration],  # in seconds, too
+        #             description=events[:, 2]
+        #         )
+                
+        #         lfp_raw.set_annotations(my_annot)
+        #         # lfp_raw.add_events(epochs.events)
+                
+        #         lfp_raw_list.append(lfp_raw)         
+                
+        #         epochs_list.append(epochs)
+        #         events_list.append(events)
+                
+        #         print("\n==========================================================")
+
+        # epochs = mne.concatenate_epochs(epochs_list, verbose=40)
+        # events = np.vstack(events_list)
+        # events = events[np.argsort(events[:, 0])]  # Sort by onset time
+        
+        # # Generate the channel locations
+        # ch_locs = DataProcessor.generate_ch_locs(ch_names=lfp_raw.ch_names)
+        # montage = mne.channels.make_dig_montage(ch_pos=ch_locs)
+        # epochs.set_montage(montage)
+
+        # return epochs, events, lfp_raw_list, all_lfp_data
+    
     
     @staticmethod
     def generate_ch_locs(ch_names):
@@ -566,10 +841,13 @@ class DataProcessor:
         """Preprocess trials based on padding and truncation settings in config."""
         # Apply padding if enabled
         if config['data_preprocessing']['padding']['enabled']:
-            max_length = max([trial.shape[1] for trial in trials])
+            target_length = config['data_preprocessing']['padding']['target_length']            
+            if target_length == "max":
+                target_length = max([trial.shape[1] for trial in trials])
+            
             trials = DataProcessor.pad_data(
                 trials,
-                max_length=max_length,
+                max_length=target_length,
                 padding_value=config['data_preprocessing']['padding']['padding_value'],
                 position=config['data_preprocessing']['padding']['padding_position']
             )
