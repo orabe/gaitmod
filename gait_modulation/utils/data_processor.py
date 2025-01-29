@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional, Union
 import mne
 import pandas as pd
 
@@ -138,27 +138,23 @@ class DataProcessor:
         return events_kin_times_valid, events_kin_samples_valid
 
     @staticmethod
-    def create_lfp_trials(events_kin_samples: np.ndarray, 
-                          lfp_data: np.ndarray,
-                          sfreq: float,
-                          config: Dict[str, Any]
-                          ) -> np.ndarray:
+    def create_trials(events_kin_samples: np.ndarray, 
+                      data: np.ndarray,
+                      sfreq: float,
+                      config: Dict[str, Any]) -> np.ndarray:
         """
-        Extracts LFP trials based on event kinematic samples.
+        Extracts trial data based on event kinematic samples.
         Args:
             events_kin_samples (np.ndarray): A 2D numpy array containing kinematic event samples with shape (n_events, n_trials).
-            lfp_data (np.ndarray): A 2D numpy array containing LFP data with shape (n_channels, n_times).
-            sfreq (float): Sampling frequency of the LFP data.
-            config (Dict[str, Any]): Configuration settings for padding and truncating the LFP data.
+            data (np.ndarray): A 2D numpy array containing measurement data (LFP, EEG, IMU, etc.) with shape (n_channels, n_times).
+            sfreq (float): Sampling frequency of the LFP data (Hz).
+            config (Dict[str, Any]): Configuration settings for padding and truncating the data.
         Returns:
             np.ndarray: A 3D numpy array containing LFP trials with shape (n_trials, n_channels, n_times).
-        Notes:
-            - The function pads or truncates the LFP data based on the configuration settings.
-            - The function extracts LFP trials based on the event kinematic samples.
         """
         n_events = events_kin_samples.shape[0]
         n_trials = events_kin_samples.shape[1]
-        lfp_trials = []
+        trials_data = []
         
         for trial in range(n_trials):
             # Get trial start and stop times for this trial
@@ -166,16 +162,12 @@ class DataProcessor:
             trial_stop_idx = events_kin_samples[n_events-1, trial]
             
             # Extract LFP data for this trial
-            trial_lfp_data = lfp_data[:, trial_start_idx:trial_stop_idx]
+            trial_data = data[:, trial_start_idx:trial_stop_idx]
             
             # Append trial data to the list
-            lfp_trials.append(trial_lfp_data)
-        
-
-        # Ensure all trials have a common length by either truncating or padding them, and save the result as a 3D numpy array (n_trials, n_channels, n_times)
-        # lfp_trials = DataProcessor.pad_or_truncate(lfp_trials, config)
-        
-        return lfp_trials
+            trials_data.append(trial_data)
+                
+        return trials_data
 
 
     @staticmethod
@@ -220,71 +212,84 @@ class DataProcessor:
 
         return np.array(trial_event_indices)
 
-
     @staticmethod
-    def process_lfp_trials_and_events(all_data: Dict[str, Dict[str, dict]], 
-                                      lfp_sfreq: float, 
-                                      config: dict, 
-                                      verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+    def process_trials_and_events(all_data: Dict[str, Dict[str, dict]], 
+                                  data_type: str,
+                                  sfreq: float, 
+                                  config: dict, 
+                                  verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
         """
-        Prepares LFP data and event indices for each subject across multiple sessions.
+        Prepares data and event indices for each subject across multiple sessions.
 
-        This function processes LFP data by extracting trials from kinematic events and storing them in two dictionaries:
-        - subject_lfp_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is 6 and n_times is variable.
-        - subject_event_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events), with n_events fixed at 8. Each column corresponds to a specific event label's index.
+        This function processes data such as LFP, IMU, EEG, etc by extracting trials from kinematic events and storing them in two dictionaries:
+            - subjects_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is the number of channels or sensors.
+            - subjects_event_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events). Each row corresponds to a specifc trial index and each column to a specific event label's index.
 
         Args:
             all_data (Dict[str, Dict[str, dict]]): Nested dictionary where the outer key is the subject name, and the inner dictionary contains session data for each subject.
-            lfp_sfreq (float): Sampling frequency of the LFP data (in Hz).
+            data_type (str): Type of data to be processed. Must be one of the following: 'data_acc', 'data_EEG', 'data_EMG', 'data_giro', 'data_LFP'.
+            sfreq (float): Sampling frequency of the specified data (in Hz).
             config (dict): Configuration dictionary used in the data processing.
             verbose (bool, optional): Whether to print processing details for each subject and session. Defaults to True.
 
         Returns:
             Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
-                - subject_lfp_data_dict: Dictionary of subjects with LFP trials as 2D NumPy arrays.
-                - subject_event_idx_dict: Dictionary of subjects with event indices across trials.
+                - subjects_data_dict: Dictionary of subjects with trials as 2D NumPy arrays.
+                - subjects_event_idx_dict: Dictionary of subjects with event indices across trials.
         """
-        subject_lfp_data_dict = {}  # Stores LFP data for each trial
-        subject_event_idx_dict = {}  # Stores event indices per trial
+        valid_data_types = ['data_acc', 'data_EEG', 'data_EMG', 'data_giro', 'data_LFP']
+        try:
+            first_subject = list(all_data.keys())[0]
+            first_session = list(all_data[first_subject].keys())[0]
+            first_data = all_data[first_subject][first_session]
+            if data_type not in valid_data_types:
+                raise ValueError("Invalid data type specified.")
+        except Exception as e:
+            raise ValueError(f"Error processing data: {e}")
+        
+        subjects_data_dict = {}  # Stores data for each trial
+        subjects_event_idx_dict = {}  # Stores event indices per trial
 
         for subject_idx, subject in enumerate(all_data.keys()):
             if verbose: 
                 print(f'subject {subject_idx}: {subject}')
             
-            subject_lfp_data_dict[subject] = []  # List of LFP data for trials
-            subject_event_idx_dict[subject] = np.empty((0, 8), dtype=np.float32)  # Initialize with an empty array
+            subjects_data_dict[subject] = []  # List of data for trials
+            subjects_event_idx_dict[subject] = []  # Initialize with an empty list
 
             for session_idx, session in enumerate(all_data[subject].keys()):
                 if verbose: 
                     print(f'session {session_idx}: {session}')
                 
-                session_data = all_data[subject][session]                
-                session_lfp_data = session_data['data_LFP']  # LFP data in microvolts (to be converted to volts)
+                session_all_data = all_data[subject][session]                
+                session_data_specific = session_all_data[data_type]
 
                 # Handle event data
-                events_KIN = DataProcessor.np_to_dict(session_data['events_KIN'])
-                events_kin_times_valid, events_kin_samples_valid = DataProcessor.remove_nan_events(events_KIN, lfp_sfreq)
+                events_KIN = DataProcessor.np_to_dict(session_all_data['events_KIN'])
+                events_kin_times_valid, events_kin_samples_valid = DataProcessor.remove_nan_events(events_KIN, sfreq)
 
                 # Extract LFP trials based on event kinematic samples
-                lfp_trials = DataProcessor.create_lfp_trials(events_kin_samples_valid, session_lfp_data, lfp_sfreq, config)
-                subject_lfp_data_dict[subject].extend(lfp_trials)  # Add trials to the subject's data
+                data_specific_trials = DataProcessor.create_trials(
+                    events_kin_samples_valid, session_data_specific, sfreq, config)
+                
+                subjects_data_dict[subject].extend(data_specific_trials)  # Add trials to the subject's data
 
-                n_trials_pro_session = events_kin_samples_valid.shape[1]
+                n_trials_per_session = events_kin_samples_valid.shape[1]
 
-                for session_trial_idx in range(n_trials_pro_session):
+                for session_trial_idx in range(n_trials_per_session):
                     session_event_indices = DataProcessor.get_trial_event_indices(
                         events_kin_samples_valid,
                         events_KIN['label'][0],
                         trial_idx=session_trial_idx
-                    )  # Shape (8,)
+                    )
 
                     # Append the event indices for this trial to the event dictionary
-                    subject_event_idx_dict[subject] = np.vstack((
-                        subject_event_idx_dict[subject], 
-                        session_event_indices[np.newaxis, :]  # Convert shape (8,) to (1, 8)
-                    ))
+                    subjects_event_idx_dict[subject].append(session_event_indices)
 
-        return subject_lfp_data_dict, subject_event_idx_dict
+            # Convert the list of event indices to a numpy array
+            subjects_event_idx_dict[subject] = np.array(subjects_event_idx_dict[subject], dtype=np.float32)
+
+        return subjects_data_dict, subjects_event_idx_dict
             
             
             
@@ -431,10 +436,6 @@ class DataProcessor:
         times = events_steps.get('times', [])
         print(f"Step event labels: {labels}")
         print(f"Step event times: {times}")
-        
-      
-      
-# ------
       
       
     @staticmethod
@@ -837,11 +838,23 @@ class DataProcessor:
         return np.array(truncated_trials)
 
     @staticmethod
-    def pad_or_truncate(trials, config):
-        """Preprocess trials based on padding and truncation settings in config."""
+    def pad_or_truncate(trials: np.ndarray, config: Dict[str, Any], target_length: Optional[Union[int, float, str]] = None) -> List[np.ndarray]:
+        """
+        Pads or truncates the given trials to the target length based on the provided configuration.
+        
+        Parameters:
+            trials (List[np.ndarray]): List of trial data arrays to be padded or truncated.
+            target_length (Optional[Union[int, float, str]]): The target length to pad or truncate the trials to. If None, the target length will be determined from the config.
+            config (Dict[str, Any]): Configuration dictionary containing padding and truncation settings.
+        
+        Returns:
+            List[np.ndarray]: List of trial data arrays after padding or truncation.
+        """
+        
         # Apply padding if enabled
         if config['data_preprocessing']['padding']['enabled']:
-            target_length = config['data_preprocessing']['padding']['target_length']            
+            if not target_length:
+                target_length = config['data_preprocessing']['padding']['target_length']            
             if target_length == "max":
                 target_length = max([trial.shape[1] for trial in trials])
             
@@ -854,7 +867,8 @@ class DataProcessor:
         
         # Apply truncation if enabled
         if config['data_preprocessing']['truncation']['enabled']:
-            target_length = config['data_preprocessing']['truncation']['target_length']            
+            if not target_length:
+                target_length = config['data_preprocessing']['truncation']['target_length']            
             if target_length == "min":
                 target_length = min([trial.shape[1] for trial in trials])
 
