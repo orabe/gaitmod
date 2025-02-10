@@ -1,6 +1,6 @@
 # Root directory and events configuration
 data:
-  root_directory: '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/Chiara/organized_data'
+  root_directory: '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/Rita/Gait_Modulation_Prediction_DATA'
   subject_id:
     - 'PW_EM59'
     - 'PW_FH57'

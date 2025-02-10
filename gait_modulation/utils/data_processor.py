@@ -5,7 +5,7 @@ import pandas as pd
 
 class DataProcessor:
     @staticmethod
-    def process_lfp_data(all_data, n_sessions, lfp_sfreq, event_of_interest, mod_start_event_id, normal_walking_event_id, gap_sample_length, epoch_sample_length, epoch_tmin, epoch_tmax, epoch_duration, event_dict, info, reject_criteria, config, verbose=False):
+    def process_lfp_data(data, n_sessions, lfp_sfreq, event_of_interest, mod_start_event_id, normal_walking_event_id, gap_sample_length, epoch_sample_length, epoch_tmin, epoch_tmax, epoch_duration, event_dict, info, reject_criteria, config, verbose=False):
         
         lfp_raw_list = []
         epochs_list = []
@@ -14,13 +14,13 @@ class DataProcessor:
         all_lfp_data_dict = {}
 
         # for s in range(n_sessions):
-        for subject_idx, subject in enumerate(all_data.keys()):
+        for subject_idx, subject in enumerate(data.keys()):
             print(f'subject {subject_idx}: {subject}')
             all_lfp_data_dict[subject] = {}
             
-            for session_idx, session in enumerate(all_data[subject].keys()):
+            for session_idx, session in enumerate(data[subject].keys()):
                 all_lfp_data_dict[subject][session] = {}
-                session_data = all_data[subject][session]
+                session_data = data[subject][session]
 
                 # Extract events and lfp data of the subject/session
                 lfp_data = session_data['data_LFP'] # * 1e-6 # Convert microvolts to volts
@@ -101,10 +101,97 @@ class DataProcessor:
         epochs.set_montage(montage)
 
         return epochs, events, lfp_raw_list, all_lfp_data
-    
-    
+
     @staticmethod
-    def remove_nan_events(events_kin: Dict[str, Any], sfreq: float) -> Tuple[np.ndarray, np.ndarray]:
+    def check_and_fix_lfp_chs_name(data: Dict[str, Any], fix_chs_name: Optional[Union[bool, List[str]]] = False) -> None:
+        """
+        Check the LFP channel names in the data and optionally fix them.
+
+        Args:
+            data (Dict[str, Any]): The dataset containing LFP channel information.
+            fix_chs_name (Optional[Union[bool, List[str]]]): If True, fix the channel names to a default list. If a list is provided, use it to fix the channel names. Defaults to False.
+        """
+        for patient_id, sessions in data.items():
+            print(f"Patient ID: {patient_id}")
+            for session_id, session_data in sessions.items():
+                labels = session_data['hdr_LFP']['labels']
+                if isinstance(labels, np.ndarray):
+                    length = len(labels)
+                    if length != 6:
+                        print(f"\033[93m{session_id}: {length} channels found\033[0m")
+                    else:
+                        print(f"{session_id}: {length} channels found")
+                elif isinstance(labels, str):
+                    print(f"\033[93m{session_id}: {labels}\033[0m")
+                    if fix_chs_name:
+                        new_labels = np.array(fix_chs_name)
+                        data[patient_id][session_id]['hdr_LFP']['labels'] = new_labels
+                        print(f"Fixed: {new_labels}")
+                print('-' * 50)
+            print('=' * 70)
+            
+    @staticmethod
+    def rename_keys(data, key_map):
+        """Recursively renames keys in a dictionary or list in place.
+
+        Args:
+            data (dict, list, or any data structure): The data to process.
+            key_map (dict): A dictionary mapping old key names to new key names.
+
+        Returns:
+            None: Modifies the input data in place.
+        """
+        if isinstance(data, dict):
+            keys_to_rename = [key for key in data.keys() if key.lower() in key_map]  # Find keys to rename
+
+            for key in keys_to_rename:
+                new_key = key_map[key.lower()]
+                data[new_key] = data.pop(key)  # Rename key
+                DataProcessor.rename_keys(data[new_key], key_map)  # Recursive call on the value
+
+            # Recursively process other values safely
+            for key in list(data.keys()):  # Iterate over a copy to avoid runtime issues
+                DataProcessor.rename_keys(data[key], key_map)
+
+        elif isinstance(data, list):  # Handle lists
+            for item in data:
+                DataProcessor.rename_keys(item, key_map)
+        # return data
+        
+
+    @staticmethod
+    def sort_and_filter_events(data: Dict[str, Any], new_order: List[str]) -> Dict[str, Any]:
+        """
+        Reorder events in the 'events_KIN' key of the provided data based on a new order. Can also be used to filter out events by excluding those not in the new order.
+
+        Parameters:
+            data (Dict[str, Dict[str, dict]]): The input data containing events to be reordered and filtered.
+            new_order (List[str]): The desired order of event labels. Events not in this list will be filtered out.
+
+        Raises:
+            KeyError: If 'events_KIN' is not found in any data_type.
+        """
+        for subject, sessions in data.items():
+            for session, data_type in sessions.items():
+                if 'events_KIN' not in data_type:
+                    raise KeyError("events_KIN not found in data_type.")  
+
+                events_KIN_labels = data_type['events_KIN']['labels']
+                events_KIN_times = data_type['events_KIN']['times']
+
+                # Map labels to their indices for fast lookup
+                label_to_index = {label: idx for idx, label in enumerate(events_KIN_labels)}
+
+                # Get indices for sorting (only for labels that exist)
+                order_indices = [label_to_index[event] for event in new_order if event in label_to_index]
+
+                # Apply sorted order
+                data[subject][session]['events_KIN']['labels'] = events_KIN_labels[order_indices]
+                data[subject][session]['events_KIN']['times'] = events_KIN_times[order_indices]
+                
+                
+    @staticmethod
+    def remove_nan_events(data: Dict[str, Any], sfreq: float):
         """
         Remove NaN values from event times and generate corresponding sample indices.
 
@@ -119,29 +206,167 @@ class DataProcessor:
             - events_kin_times_valid (np.ndarray): Array of valid event times with NaN values removed.
             - events_kin_samples_valid (np.ndarray): Array of valid event times converted to sample indices.
         """
-        events_kin_times = events_kin['times']
-        event_labels = [label[0] for label in events_kin['label'][0]]
+        for subject, sessions in data.items():
+            for session, data_type in sessions.items():
+                events_KIN_labels = data_type['events_KIN']['labels']
+                events_KIN_times = data_type['events_KIN']['times']
 
-        # Map event labels to unique integer IDs
-        event_id = {label: idx + 1 for idx, label in enumerate(event_labels)}
+                # Map event labels to unique integer IDs
+                event_id = {label: idx + 1 for idx, label in enumerate(events_KIN_labels)}
 
-        # Remove NaN values in events_kin_times
-        valid_mask = ~np.isnan(events_kin_times)
-        valid_mask = valid_mask.all(axis=0)
+                # Remove NaN values in events_kin_times
+                valid_mask = ~np.isnan(events_KIN_times)
+                valid_mask = valid_mask.all(axis=0)
+                
+                # Remove trials that contain at least one NaN value
+                events_kin_times_valid = events_KIN_times[:, valid_mask]
+
+                # Update the data with valid times
+                data[subject][session]['events_KIN']['times'] = events_kin_times_valid  
+ 
+    # TODO: this method is not used in the current implementation as it operates on a single patietn/session and not on the entire data.
+    # def sort_and_filter_events(events_KIN, new_order: List[str]):
+    #     """
+    #     Reorder and filter events in the 'events_KIN' dictionary based on a new order.
+    #         events_KIN (dict): The input dictionary containing 'label' and 'times' keys, where 'label' is a list of event labels and 'times' is a list of corresponding event times.
+    #     Returns:
+    #         dict: The updated 'events_KIN' dictionary with events reordered and filtered according to 'new_order'.
+    #     """
+    #     # Map labels to their indices for fast lookup
+    #     label_to_index = {label: idx for idx, label in enumerate(events_KIN['label'])}
+
+    #     # Get indices for sorting (only for labels that exist)
+    #     order_indices = [label_to_index[event] for event in new_order if event in label_to_index]
+
+    #     # Apply sorted order
+    #     events_KIN['label'] = events_KIN['label'][order_indices]
+    #     events_KIN['times'] = events_KIN['times'][order_indices]
         
-        # Remove trials that contain at least one NaN value
-        events_kin_times_valid = events_kin_times[:, valid_mask]
+    #     return events_KIN
+           
 
-        # Generate time indices in samples for valid times
-        events_kin_samples_valid = (events_kin_times_valid * sfreq).astype(int)
+    @staticmethod
+    def clean_data(
+        data: Dict[str, Any], 
+        data_type: str, 
+        key_map: Dict[str, str], 
+        new_events_order: list, 
+        sfreq: float, 
+        fix_chs_names: Optional[Union[bool, List[str]]] = False,
+        verbose: bool = False
+    ):
+        """Cleans data by applying renaming, sorting/filtering, and removing NaNs.
+
+        Args:
+            data (dict): The dataset to clean.
+            data_type (str): The type of data being processed.
+            key_map (dict): Mapping of old keys to new keys.
+            new_events_order (list): Ordered list of events to keep.
+            sfreq (float): Sampling frequency for processing.
+            verbose (bool, optional): Whether to print debug information. Defaults to False.
+        """
+        if verbose:
+            print(f"Cleaning data of type: {data_type}...")
+            
+        DataProcessor.check_and_fix_lfp_chs_name(data, fix_chs_names)
+        DataProcessor.rename_keys(data, key_map)
+        DataProcessor.sort_and_filter_events(data, new_events_order)
+        DataProcessor.remove_nan_events(data, sfreq)
         
-        return events_kin_times_valid, events_kin_samples_valid
+        if verbose:
+            print("Data cleaning completed.")
+            
+        # return data
+        
+                
+    @staticmethod
+    def process_trials_and_events(data: Dict[str, Dict[str, dict]], 
+                                  data_type: str,
+                                  sfreq: float, 
+                                  config: dict, 
+                                  verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+        """
+        Prepares data and event indices for each subject across multiple sessions.
 
+        This function processes data such as LFP, IMU, EEG, etc by extracting trials from kinematic events and storing them in two dictionaries:
+            - subjects_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is the number of channels or sensors.
+            - subjects_event_sample_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events). Each row corresponds to a specifc trial index and each column to a specific event label's index.
+
+        Args:
+            data (Dict[str, Dict[str, dict]]): Nested dictionary where the outer key is the subject name, and the inner dictionary contains session data for each subject.
+            data_type (str): Type of data to be processed. Must be one of the following: 'data_acc', 'data_EEG', 'data_EMG', 'data_giro', 'data_LFP'.
+            sfreq (float): Sampling frequency of the specified data (in Hz).
+            config (dict): Configuration dictionary used in the data processing.
+            verbose (bool, optional): Whether to print processing details for each subject and session. Defaults to True.
+
+        Returns:
+            Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+                - subjects_data_dict: Dictionary of subjects with trials as 2D NumPy arrays.
+                - subjects_event_sample_idx_dict: Dictionary of subjects with event indices across trials.
+        """        
+        subjects_data_dict = {}  # Stores data for each trial
+        subjects_event_sample_idx_dict = {}  # Stores event indices per trial
+
+        for subject_idx, subject in enumerate(data.keys()):
+            if verbose: 
+                print(f'subject {subject_idx}: {subject}')
+            
+            subjects_data_dict[subject] = []  # List of data for trials
+            subjects_event_sample_idx_dict[subject] = []  # Initialize with an empty list
+
+            for session_idx, session in enumerate(data[subject].keys()):
+                if verbose: 
+                    print(f'session {session_idx}: {session}')
+                
+                session_data = data[subject][session]
+                        
+                # Generate time indices in samples for valid times
+                events_kin_samples_valid = (session_data['events_KIN']['times'] * sfreq).astype(int)
+                
+                # Extract trials based on event kinematic samples
+                data_specific_trials = DataProcessor.create_trials(
+                    events_kin_samples_valid,
+                    session_data[data_type],
+                    sfreq,
+                    config,
+                    session_data['pt'],
+                    session_data['session']
+                )
+                
+                subjects_data_dict[subject].extend(data_specific_trials)  # Add trials to the subject's data
+
+                n_trials_per_session = events_kin_samples_valid.shape[1]
+                for session_trial_idx in range(n_trials_per_session):
+                    
+                    DataProcessor.check_event_order(
+                        events_kin_samples_valid,
+                        session_data['events_KIN']['labels'],
+                        trial_idx=session_trial_idx,
+                        exclude_label_names=['VA_cross', 'min_vel', 'min_dist'])
+                            
+                            
+                    session_event_indices = DataProcessor.get_trial_event_indices(
+                        events_kin_samples_valid,
+                        session_data['events_KIN']['labels'],
+                        trial_idx=session_trial_idx
+                    )
+
+                    # Append the event indices for this trial to the event dictionary
+                    subjects_event_sample_idx_dict[subject].append(session_event_indices)
+
+            # Convert the list of event indices to a numpy array
+            subjects_event_sample_idx_dict[subject] = np.array(subjects_event_sample_idx_dict[subject], dtype=np.float32)
+
+        return subjects_data_dict, subjects_event_sample_idx_dict
+
+    # TODO: Transpose the shape of events_kin_samples to (n_trials, n_events) before passing it to this method for a more intuitive API.
     @staticmethod
     def create_trials(events_kin_samples: np.ndarray, 
                       data: np.ndarray,
                       sfreq: float,
-                      config: Dict[str, Any]) -> np.ndarray:
+                      config: Dict[str, Any],
+                      subject_id: str,
+                      session_id: str) -> np.ndarray:
         """
         Extracts trial data based on event kinematic samples.
         Args:
@@ -161,7 +386,11 @@ class DataProcessor:
             trial_start_idx = events_kin_samples[0, trial]
             trial_stop_idx = events_kin_samples[n_events-1, trial]
             
-            # Extract LFP data for this trial
+            if trial_start_idx > data.shape[1] or trial_stop_idx > data.shape[1]:
+                print(f"\033[93mTrial {trial} is outside the data range -- Subject {subject_id}, session {session_id}.\033[0m")
+                # continue
+            
+            # Extract data for this trial
             trial_data = data[:, trial_start_idx:trial_stop_idx]
             
             # Append trial data to the list
@@ -169,7 +398,34 @@ class DataProcessor:
                 
         return trials_data
 
+    @staticmethod
+    def check_event_order(
+        events_kin_samples: np.ndarray,
+        events_kin_labels: np.ndarray | List,
+        trial_idx: int,
+        exclude_label_names: List[str] = []):
+        """
+        Check if the values in each column of events_kin_samples are in ascending order for the given trial index.
 
+        Args:
+            events_kin_samples (np.ndarray): A 2D array of shape (n_events, n_trials) containing the sample indices of each event.
+            events_kin_labels (np.ndarray | List): A 1D array of shape (n_events,) or a list containing the event names.
+            trial_idx (int): The index of the trial to check.
+
+        Raises:
+            ValueError: If the values in the column are not in ascending order.
+        """
+        n_events = events_kin_samples.shape[0]
+        exclude_labels_idx = np.where(np.isin(events_kin_labels, exclude_label_names))[0]
+        # Exclude values from event_idx_subsequent_diff with exclude_labels_idx
+        events_kin_samples = np.delete(events_kin_samples, exclude_labels_idx, axis=0)
+        
+        # Check if the values in the column are in ascending order
+        event_idx_subsequent_diff = np.diff(events_kin_samples[:, trial_idx]) >= 0
+        
+        if not np.all(event_idx_subsequent_diff):
+            print(f"\033[93mWarning: Values in trial {trial_idx} are not in ascending order.\033[0m")
+        
     @staticmethod
     def get_trial_event_indices(
         events_kin_samples: np.ndarray,
@@ -177,7 +433,7 @@ class DataProcessor:
         trial_idx: int
     ) -> np.ndarray:
         """
-        Compute relative indices of all events within a given trial.
+        Computes the sample indices of event occurrences relative to the start of a given trial.
 
         Args:
             events_kin_samples (np.ndarray): A 2D array of shape (n_events, n_trials) containing the sample indices of each event.
@@ -202,97 +458,15 @@ class DataProcessor:
             event_idx = events_kin_samples[event_name_idx, trial_idx]
 
             # Handle cases where the event index is outside trial boundaries
-            if event_idx < trial_start_idx or event_idx >= trial_end_idx:
-                print(f"Event '{event_name}' at index {event_idx} is outside trial boundaries " f"({trial_start_idx}-{trial_end_idx}). Assigning a random valid index.")
-                event_idx = np.random.randint(trial_start_idx, trial_end_idx)
+            if event_idx < trial_start_idx or event_idx > trial_end_idx:
+                print(f"Event '{event_name}' at index {event_idx} is outside trial boundaries " f"[{trial_start_idx}-{trial_end_idx}]. Assigning a random valid index.")
 
             # Compute event index relative to trial start
             event_idx_relative_to_trial_start = event_idx - trial_start_idx
             trial_event_indices.append(event_idx_relative_to_trial_start)
 
         return np.array(trial_event_indices)
-
-    @staticmethod
-    def process_trials_and_events(all_data: Dict[str, Dict[str, dict]], 
-                                  data_type: str,
-                                  sfreq: float, 
-                                  config: dict, 
-                                  verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
-        """
-        Prepares data and event indices for each subject across multiple sessions.
-
-        This function processes data such as LFP, IMU, EEG, etc by extracting trials from kinematic events and storing them in two dictionaries:
-            - subjects_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is the number of channels or sensors.
-            - subjects_event_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events). Each row corresponds to a specifc trial index and each column to a specific event label's index.
-
-        Args:
-            all_data (Dict[str, Dict[str, dict]]): Nested dictionary where the outer key is the subject name, and the inner dictionary contains session data for each subject.
-            data_type (str): Type of data to be processed. Must be one of the following: 'data_acc', 'data_EEG', 'data_EMG', 'data_giro', 'data_LFP'.
-            sfreq (float): Sampling frequency of the specified data (in Hz).
-            config (dict): Configuration dictionary used in the data processing.
-            verbose (bool, optional): Whether to print processing details for each subject and session. Defaults to True.
-
-        Returns:
-            Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
-                - subjects_data_dict: Dictionary of subjects with trials as 2D NumPy arrays.
-                - subjects_event_idx_dict: Dictionary of subjects with event indices across trials.
-        """
-        valid_data_types = ['data_acc', 'data_EEG', 'data_EMG', 'data_giro', 'data_LFP']
-        try:
-            first_subject = list(all_data.keys())[0]
-            first_session = list(all_data[first_subject].keys())[0]
-            first_data = all_data[first_subject][first_session]
-            if data_type not in valid_data_types:
-                raise ValueError("Invalid data type specified.")
-        except Exception as e:
-            raise ValueError(f"Error processing data: {e}")
-        
-        subjects_data_dict = {}  # Stores data for each trial
-        subjects_event_idx_dict = {}  # Stores event indices per trial
-
-        for subject_idx, subject in enumerate(all_data.keys()):
-            if verbose: 
-                print(f'subject {subject_idx}: {subject}')
-            
-            subjects_data_dict[subject] = []  # List of data for trials
-            subjects_event_idx_dict[subject] = []  # Initialize with an empty list
-
-            for session_idx, session in enumerate(all_data[subject].keys()):
-                if verbose: 
-                    print(f'session {session_idx}: {session}')
-                
-                session_all_data = all_data[subject][session]                
-                session_data_specific = session_all_data[data_type]
-
-                # Handle event data
-                events_KIN = DataProcessor.np_to_dict(session_all_data['events_KIN'])
-                events_kin_times_valid, events_kin_samples_valid = DataProcessor.remove_nan_events(events_KIN, sfreq)
-
-                # Extract LFP trials based on event kinematic samples
-                data_specific_trials = DataProcessor.create_trials(
-                    events_kin_samples_valid, session_data_specific, sfreq, config)
-                
-                subjects_data_dict[subject].extend(data_specific_trials)  # Add trials to the subject's data
-
-                n_trials_per_session = events_kin_samples_valid.shape[1]
-
-                for session_trial_idx in range(n_trials_per_session):
-                    session_event_indices = DataProcessor.get_trial_event_indices(
-                        events_kin_samples_valid,
-                        events_KIN['label'][0],
-                        trial_idx=session_trial_idx
-                    )
-
-                    # Append the event indices for this trial to the event dictionary
-                    subjects_event_idx_dict[subject].append(session_event_indices)
-
-            # Convert the list of event indices to a numpy array
-            subjects_event_idx_dict[subject] = np.array(subjects_event_idx_dict[subject], dtype=np.float32)
-
-        return subjects_data_dict, subjects_event_idx_dict
-            
-            
-            
+    
         #         lfp_raw_list = []
         #         epochs_list = []
         #         events_list = []
@@ -438,24 +612,24 @@ class DataProcessor:
         print(f"Step event times: {times}")
       
       
-    @staticmethod
-    def np_to_dict(data_structure: np.ndarray) -> Dict[str, Any]:
-        """
-        Converts a numpy array-based data structure to a dictionary-like structure.
+    # NOTE: This method is not used in the current implementation
+    # @staticmethod
+    # def np_to_dict(data_structure: np.ndarray) -> Dict[str, Any]:
+    #     """
+    #     Converts a numpy array-based data structure to a dictionary-like structure.
 
-        Parameters:
-        -----------
-        data_structure : np.ndarray
-            Numpy array-based data structure from which to extract metadata and events.
+    #     Parameters:
+    #     -----------
+    #     data_structure : np.ndarray
+    #         Numpy array-based data structure from which to extract metadata and events.
 
-        Returns:
-        --------
-        dict
-            A dictionary-like structure containing the extracted data from the input numpy array-based structure.
-        """
-        extracted_data = {n: data_structure[n][0, 0] for n in data_structure.dtype.names}
-        return extracted_data
-  
+    #     Returns:
+    #     --------
+    #     dict
+    #         A dictionary-like structure containing the extracted data from the input numpy array-based structure.
+    #     """
+    #     extracted_data = {n: data_structure[n][0, 0] for n in data_structure.dtype.names}
+    #     return extracted_data
 
     @staticmethod
     def convert_lfp_label(labels: np.ndarray) -> list:
@@ -528,11 +702,11 @@ class DataProcessor:
         label_count = {}
 
         for label_array in labels:
-            label = label_array[0][0]  # Extract the label string from the array
+            label = label_array  # Extract the label string from the array
             parts = label.split('_')
             side = 'L' if parts[2] == 'LEFT' else 'R'
             
-            numeric_part = f"{text_to_num[parts[0]]}{text_to_num[parts[1]]}"
+            numeric_part = f"{text_to_num[parts[0]]}-{text_to_num[parts[1]]}"
             base_label = f"LFP_{side}{numeric_part}"
             
             # Ensure uniqueness by adding a suffix if the label already exists
