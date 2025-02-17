@@ -239,6 +239,193 @@ class Visualise:
             plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
         plt.show()
         plt.close()
+    
+    @staticmethod
+    def plot_individual_trial_counts(patients_events_array: Dict, save_path: str, fig_name: str):
+        """
+        Plots the label counts per trial for all patients.
+
+        Args:
+            patients_events_array (dict): Dictionary containing event data arrays for each patient. Each array should have shape (n_events, 3) with columns [patient_id, trial_index, label].
+            save_path (str): Directory path where the plot image will be saved.
+            fig_name (str): Name of the figure file to be saved (without extension).
+        """
+        num_patients = len(patients_events_array)
+        fig, axes = plt.subplots(num_patients, 1, figsize=(20, 5 * num_patients), sharex=True, sharey=True)
+
+        for i, (patient, events_array) in enumerate(patients_events_array.items()):
+            # Extract trial indices and labels from events_array
+            trial_indices = events_array[:, 1]
+            labels = events_array[:, 2]
+
+            # Create a dictionary to store label counts for each trial
+            trial_label_counts = {}
+
+            for trial_idx, label in zip(trial_indices, labels):
+                if trial_idx not in trial_label_counts:
+                    trial_label_counts[trial_idx] = [0, 0]  # Initialize counts for both labels
+                trial_label_counts[trial_idx][label] += 1
+
+            # Prepare data for plotting
+            trial_indices = sorted(trial_label_counts.keys())
+            normal_counts = [trial_label_counts[idx][0] for idx in trial_indices]
+            modulation_counts = [trial_label_counts[idx][1] for idx in trial_indices]
+
+            # Plot histogram of labels for each trial
+            bar_width = 0.35
+            index = np.arange(len(trial_indices))
+
+            ax = axes[i] if num_patients > 1 else axes
+
+            bar1 = ax.bar(index, normal_counts, bar_width, label='Normal walking', color='#1f77b4')
+            bar2 = ax.bar(index + bar_width, modulation_counts, bar_width, label='Modulation', color='#ff7f0e')
+
+            ax.set_xlabel('Trial Index', fontsize=16)
+            ax.set_ylabel('Count', fontsize=16)
+            ax.set_title(f'Label Counts per Trial ({patient})', fontsize=17)
+            ax.legend(fontsize=12)
+            ax.grid(axis='y', linestyle='--')
+            ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            ax.xaxis.set_major_locator(plt.FixedLocator(index + bar_width / 2))
+            
+            ax.set_xticks(index + bar_width / 2)  # Set all ticks
+            ax.set_xticklabels(trial_indices, rotation=45, ha="right", fontsize=12)  # Label all ticks
+            ax.xaxis.set_major_locator(plt.FixedLocator(index + bar_width / 2))  # Ensure all ticks are shown
+        
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+
+    @staticmethod
+    def plot_total_label_counts(patients_events_array: Dict, save_path: str, fig_name:str):
+        """
+        Plots the total label counts across all trials for all patients.
+
+        Args:
+            patients_events_array (dict): Dictionary containing event data arrays for each patient. Each array should have shape (n_events, 3) with columns [patient_id, trial_index, label].
+            save_path (str): Directory path where the plot image will be saved.
+            fig_name (str): Name of the figure file to be saved (without extension).
+        """
+        num_patients = len(patients_events_array)
+        fig, axes = plt.subplots(1, num_patients, figsize=(6 * num_patients, 10), sharey=True)
+
+        for i, (patient, events_array) in enumerate(patients_events_array.items()):
+            # Extract trial indices and labels from events_array
+            trial_indices = events_array[:, 1]
+            labels = events_array[:, 2]
+
+            # Create a dictionary to store label counts for each trial
+            trial_label_counts = {}
+
+            for trial_idx, label in zip(trial_indices, labels):
+                if trial_idx not in trial_label_counts:
+                    trial_label_counts[trial_idx] = [0, 0]  # Initialize counts for both labels
+                trial_label_counts[trial_idx][label] += 1
+
+            # Prepare data for plotting
+            normal_counts = sum([counts[0] for counts in trial_label_counts.values()])
+            modulation_counts = sum([counts[1] for counts in trial_label_counts.values()])
+
+            ax = axes[i] if num_patients > 1 else axes
+
+            # Plot total counts
+            bars = ax.bar(['Normal walking', 'Modulation'], [normal_counts, modulation_counts], color=['#1f77b4', '#ff7f0e'])
+
+            ax.set_xlabel('Label', fontsize=16)
+            ax.set_ylabel('Total Count', fontsize=16)
+            ax.set_title(f'{patient}', fontsize=17)
+            ax.grid(axis='y', linestyle='--')
+            ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+            ax.set_ylim(0, max(normal_counts, modulation_counts) * 1.1)
+            
+            # Add legend
+            ax.legend(bars, ['Normal walking', 'Modulation'], fontsize=12)
+        
+        fig.suptitle('Total Label Counts Across All Trials', fontsize=18)
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
+       
+    @staticmethod 
+    def plot_label_distribution_boxplot_all_patients(patients_events_array: Dict, save_path: str, fig_name:str):
+        """
+        Creates a boxplot showing the distribution of the number of labels of each class per trial for all patients.
+
+        Args:
+            patients_events_array (dict): Dictionary containing event data arrays for each patient.
+            fig_save_path (str): Path to save the figure.
+        """
+        fig, ax = plt.subplots(figsize=(15, 10))
+
+        all_normal_counts = []
+        all_modulation_counts = []
+        patient_labels = []
+
+        for patient, events_array in patients_events_array.items():
+            # Extract trial indices and labels from events_array
+            trial_indices = events_array[:, 1]
+            labels = events_array[:, 2]
+
+            # Create a dictionary to store label counts for each trial
+            trial_label_counts = {}
+
+            for trial_idx, label in zip(trial_indices, labels):
+                if trial_idx not in trial_label_counts:
+                    trial_label_counts[trial_idx] = [0, 0]  # Initialize counts for both labels
+
+                trial_label_counts[trial_idx][label] += 1  # Safely update count
+
+            # Prepare data for plotting
+            sorted_trials = sorted(trial_label_counts.keys())
+            normal_counts = [trial_label_counts[idx][0] for idx in sorted_trials]
+            modulation_counts = [trial_label_counts[idx][1] for idx in sorted_trials]
+
+            all_normal_counts.append(normal_counts)
+            all_modulation_counts.append(modulation_counts)
+            patient_labels.append(patient)
+
+        # Plot boxplot
+        box_data = [counts for pair in zip(all_normal_counts, all_modulation_counts) for counts in pair]
+        box_labels = [f"{patient} Normal" for patient in patient_labels] + [f"{patient} Modulation" for patient in patient_labels]
+        
+        # Adjust positions to decrease the distance between boxplots of the same trial
+        positions = []
+        for i in range(len(patient_labels)):
+            positions.extend([i * 2 + 1, i * 2 + 1.5])
+        
+        box = ax.boxplot(box_data, patch_artist=True, positions=positions)
+
+        # Customize boxplot colors
+        colors = ['lightblue', 'salmon']
+        for patch, color in zip(box['boxes'], colors * len(patient_labels)):
+            patch.set_facecolor(color)
+
+        # Customize the plot
+        ax.set_ylabel("Label Count", fontsize=14)
+        ax.set_title("Label Distribution across Trials for All Patients", fontsize=16)
+        ax.grid(axis='y', linestyle='--')
+        ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+        # Set x-ticks to be centered between the pairs of boxplots
+        xticks = np.arange(1.25, 2 * len(patient_labels), 2)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(patient_labels, rotation=45)
+        ax.set_xlabel("Patient", fontsize=14)
+        ax.legend([box["boxes"][0], box["boxes"][1]], ["Normal", "Modulation"], loc="upper right", fontsize=12)
+
+        plt.tight_layout()
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
+        plt.show()
+        plt.close()
         
     @staticmethod
     def plot_all_patients_trials(data: Dict[str, List[np.ndarray]],

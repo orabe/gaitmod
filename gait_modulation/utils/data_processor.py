@@ -355,7 +355,7 @@ class DataProcessor:
                     subjects_event_sample_idx_dict[subject].append(session_event_indices)
 
             # Convert the list of event indices to a numpy array
-            subjects_event_sample_idx_dict[subject] = np.array(subjects_event_sample_idx_dict[subject], dtype=np.float32)
+            subjects_event_sample_idx_dict[subject] = np.array(subjects_event_sample_idx_dict[subject], dtype=np.int64)
 
         return subjects_data_dict, subjects_event_sample_idx_dict
 
@@ -547,39 +547,125 @@ class DataProcessor:
         # epochs.set_montage(montage)
 
         # return epochs, events, lfp_raw_list, all_lfp_data
-    
-    
-    @staticmethod
-    def generate_ch_locs(ch_names):
-        ch_locs = {
-        'LFP_L03': [-1, -1, -1],
-        'LFP_L13': [-1, 0, 0],
-        'LFP_L02': [-1, 1, 1],
-        'LFP_R03': [1, -1, -1],
-        'LFP_R13': [1, 0, 0],
-        'LFP_R02': [1, 1, 1]}
         
-        # ch_locs = {}
-        # for i, ch in enumerate(ch_names):
-        #     if 'LFP_L' in ch:
-        #         # Example locations for left channels
-        #         ch_locs[ch] = [-1, i % 3, i // 3]
-        #     elif 'LFP_R' in ch:
-        #         # Example locations for right channels
-        #         ch_locs[ch] = [1, i % 3, i // 3]
-        return ch_locs
-
-
     @staticmethod
-    def print_data_shapes(data: Dict[str, Any]) -> None:
-        """Prints the shapes of the data arrays in the dictionary.
+    def segment_and_label_trials(
+        trials: list[np.ndarray],
+        subjects_event_idx_dict: list[np.ndarray],
+        ch_names: list[str],
+        sfreq: int = 250,
+        window_size: float = 0.5,
+        overlap: float = 0.5, 
+        expand_transition: float = 0.0, 
+        discard_ambiguous: bool = False) -> tuple[mne.Epochs, np.ndarray, np.ndarray]:
+        """
+        Segments LFP trials into overlapping windows, assigns labels (0: normal, 1: modulation),
+        and stores the results in an MNE Epochs object.
 
         Args:
-            data (Dict[str, Any]): Dictionary 
+            trials (list of np.ndarray): List of LFP trials, each with shape (n_channels, n_samples).
+            subjects_event_idx_dict (list of np.ndarray): List of event indices for each trial.
+            sfreq (int): Sampling frequency of the signals.
+            window_size (float): Size of each segment in seconds.
+            overlap (float): Overlap fraction between consecutive windows.
+            expand_transition (float): Amount of time (seconds) to expand mod_start/mod_end.
+            handle_short_trials (str): "truncate" to remove short trials, "pad" to zero-pad them.
+            discard_ambiguous (bool): Whether to remove windows that overlap both states.
+
+        Returns:
+            tuple: A tuple containing the segmented trials stored as MNE epochs, the epochs data, and the events array.
         """
-        for key, value in data.items():
-            if value is not None:
-                print(f"{key} shape: {value.shape if hasattr(value, 'shape') else 'Not an array'}")
+
+        epochs_data = []
+        epochs_labels = []
+        events_list = []
+        
+        window_samples = int(window_size * sfreq)  # Convert window size to samples
+        step_size = int(window_samples * (1 - overlap))  # Step size for overlapping windows
+
+        new_ch_names = DataProcessor.rename_lfp_channels(ch_names)
+        info = mne.create_info(ch_names=new_ch_names, sfreq=sfreq, ch_types="dbs")
+        event_dict = {"normal_walking": 0, "modulation": 1}
+
+        # epochs_list = []
+        for trial_idx, trial_data in enumerate(trials):
+            n_channels, n_samples = trial_data.shape
+
+            # Get event indices for this trial
+            event_indices = subjects_event_idx_dict[trial_idx]
+            mod_start = event_indices[2]  # mod_start
+            mod_end = event_indices[6]    # mod_end
+
+            # Apply expansion if enabled
+            mod_start = max(0, mod_start - int(expand_transition * sfreq))
+            mod_end = min(n_samples, mod_end + int(expand_transition * sfreq))
+
+            # Segment the trial into overlapping windows
+            window_start = 0
+            while window_start + window_samples <= n_samples:
+                window_end = window_start + window_samples
+                window_data = trial_data[:, window_start:window_end]
+
+                # Determine label based on overlap with mod_start-mod_end
+                mod_overlap = max(0, min(window_end, mod_end) - max(window_start, mod_start))
+                mod_ratio = mod_overlap / window_samples
+
+                if mod_ratio > 0.5:
+                    label = 1  # Modulation
+                else:
+                    label = 0  # Normal walking
+
+                if discard_ambiguous and 0 < mod_ratio < 0.5:
+                    window_start += step_size
+                    continue  # Skip this window
+
+                # Store window data and event (window_start is now used correctly)
+                epochs_data.append(window_data)
+                epochs_labels.append(label)
+                events_list.append([window_start, trial_idx, label])
+
+                window_start += step_size
+
+        # Convert data to MNE Epochs format
+        epochs_data = np.array(epochs_data)
+        epochs_labels = np.array(epochs_labels)
+        events_array = np.array(events_list)
+        
+        epochs = mne.EpochsArray(
+            epochs_data,
+            info,
+            # events=events_array,
+            # event_id={"normal": 0, "modulation": 1},
+            on_missing='raise',
+        )
+
+        # Generate the channel locations
+        ch_locs = DataProcessor.generate_ch_locs(ch_names=new_ch_names)
+        montage = mne.channels.make_dig_montage(ch_pos=ch_locs)
+        epochs.set_montage(montage)
+
+        # TODO: add annotations to the epochs object
+        return epochs, epochs_data, events_array
+
+    @staticmethod
+    def generate_ch_locs(ch_names):
+        # ch_locs = {
+        # 'LFP_L03': [-1, -1, -1],
+        # 'LFP_L13': [-1, 0, 0],
+        # 'LFP_L02': [-1, 1, 1],
+        # 'LFP_R03': [1, -1, -1],
+        # 'LFP_R13': [1, 0, 0],
+        # 'LFP_R02': [1, 1, 1]}
+        
+        ch_locs = {}
+        for i, ch in enumerate(ch_names):
+            if 'LFP_L' in ch:
+                # Example locations for left channels
+                ch_locs[ch] = [-1, i % 3, i // 3]
+            elif 'LFP_R' in ch:
+                # Example locations for right channels
+                ch_locs[ch] = [1, i % 3, i // 3]
+        return ch_locs
                 
     @staticmethod
     def process_events_kin(events_kin: Dict[str, Any]) -> None:
@@ -932,8 +1018,6 @@ class DataProcessor:
         ))
 
         return normal_walking_events
-
-
     
     
     def create_epochs_with_events(lfp_raw: mne.io.Raw, 
