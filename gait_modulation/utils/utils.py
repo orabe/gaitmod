@@ -113,7 +113,7 @@ def generate_continuous_labels(lfp_raw_list, epoch_tmin=-3, epoch_tmax=0, event_
     return labels
 
 # Define a helper function to save pickle files
-def save_pickle(data, filename):
+def save_pkl(data, filename):
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
 

@@ -557,7 +557,7 @@ class DataProcessor:
         window_size: float = 0.5,
         overlap: float = 0.5, 
         expand_transition: float = 0.0, 
-        discard_ambiguous: bool = False) -> tuple[mne.Epochs, np.ndarray, np.ndarray]:
+        discard_ambiguous: bool = False) -> mne.epochs.EpochsArray:
         """
         Segments LFP trials into overlapping windows, assigns labels (0: normal, 1: modulation),
         and stores the results in an MNE Epochs object.
@@ -573,9 +573,9 @@ class DataProcessor:
             discard_ambiguous (bool): Whether to remove windows that overlap both states.
 
         Returns:
-            tuple: A tuple containing the segmented trials stored as MNE epochs, the epochs data, and the events array.
-        """
+            mne.epochs.EpochsArray: MNE Epochs object containing the segmented data.
 
+        """
         epochs_data = []
         epochs_labels = []
         events_list = []
@@ -631,21 +631,24 @@ class DataProcessor:
         epochs_labels = np.array(epochs_labels)
         events_array = np.array(events_list)
         
+        # shift the event times by the trial index
+        events_array[:, 0] = events_array[:, 0] + events_array[:, 1] 
+        
         epochs = mne.EpochsArray(
             epochs_data,
             info,
-            # events=events_array,
-            # event_id={"normal": 0, "modulation": 1},
+            events=events_array,
+            event_id={"normal": 0, "modulation": 1},
             on_missing='raise',
         )
 
-        # Generate the channel locations
+        # Optional: Generate the channel locations
         ch_locs = DataProcessor.generate_ch_locs(ch_names=new_ch_names)
         montage = mne.channels.make_dig_montage(ch_pos=ch_locs)
         epochs.set_montage(montage)
 
         # TODO: add annotations to the epochs object
-        return epochs, epochs_data, events_array
+        return epochs
 
     @staticmethod
     def generate_ch_locs(ch_names):
@@ -700,22 +703,22 @@ class DataProcessor:
       
     # NOTE: This method is not used in the current implementation
     # @staticmethod
-    # def np_to_dict(data_structure: np.ndarray) -> Dict[str, Any]:
-    #     """
-    #     Converts a numpy array-based data structure to a dictionary-like structure.
+    def np_to_dict(data_structure: np.ndarray) -> Dict[str, Any]:
+        """
+        Converts a numpy array-based data structure to a dictionary-like structure.
 
-    #     Parameters:
-    #     -----------
-    #     data_structure : np.ndarray
-    #         Numpy array-based data structure from which to extract metadata and events.
+        Parameters:
+        -----------
+        data_structure : np.ndarray
+            Numpy array-based data structure from which to extract metadata and events.
 
-    #     Returns:
-    #     --------
-    #     dict
-    #         A dictionary-like structure containing the extracted data from the input numpy array-based structure.
-    #     """
-    #     extracted_data = {n: data_structure[n][0, 0] for n in data_structure.dtype.names}
-    #     return extracted_data
+        Returns:
+        --------
+        dict
+            A dictionary-like structure containing the extracted data from the input numpy array-based structure.
+        """
+        extracted_data = {n: data_structure[n][0, 0] for n in data_structure.dtype.names}
+        return extracted_data
 
     @staticmethod
     def convert_lfp_label(labels: np.ndarray) -> list:
