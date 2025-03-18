@@ -163,48 +163,9 @@ def load_pkl(file_path):
 #     _configure_tf_logs()
 #     _reset_tf_session()
 
-import os
-import tensorflow as tf
 
-# Function to log available devices
-def _log_device_details():
-    print("Available devices:")
-    for device in tf.config.list_logical_devices():
-        print(device)
-
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        print("Running on GPU")
-        print(f"Num GPUs Available: {len(gpus)}")
-        for i, gpu in enumerate(gpus):
-            print(f"\nGPU {i} Details:")
-            gpu_details = tf.config.experimental.get_device_details(gpu)
-            for key, value in gpu_details.items():
-                print(f"{key}: {value}")
-    else:
-        print("Running on CPU")
-
-    # Log logical GPUs (useful for multi-GPU setups)
-    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-    print(f"\nLogical GPUs Available: {len(logical_gpus)}")
-    for i, lgpu in enumerate(logical_gpus):
-        print(f"Logical GPU {i}: {lgpu}")
-
-# Function to configure TensorFlow logs
-def _configure_tf_logs():
-    tf.debugging.set_log_device_placement(True)
-    tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
-
-# Function to reset the TensorFlow session
-def _reset_tf_session():
-    tf.keras.backend.clear_session()
-    print("Built with CUDA:", tf.test.is_built_with_cuda())
-    print("Available GPUs:", tf.config.list_physical_devices('GPU'))
-    if tf.test.is_built_with_cuda():
-        print("CUDA version:", tf.__version__)
-    else:
-        print("TensorFlow is not built with CUDA.")
+# Suppress TensorFlow logs (should be set before importing TensorFlow)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs (0 = all, 1 = info, 2 = warnings, 3 = errors)
 
 # Function to enable memory growth for GPUs
 def _enable_memory_growth():
@@ -220,19 +181,56 @@ def _enable_memory_growth():
     else:
         print("No GPU available for memory growth settings.")
 
-# Function to initialize TensorFlow configuration
+
+# Log available devices and GPU details
+def _log_device_details():
+    print("Available devices:")
+    for device in tf.config.list_logical_devices():
+        print(f"  - {device}")
+
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        print(f"\nRunning on GPU ({len(gpus)} available):")
+        for i, gpu in enumerate(gpus):
+            print(f"  - GPU {i}: {gpu}")
+            try:
+                gpu_details = tf.config.experimental.get_device_details(gpu)
+                for key, value in gpu_details.items():
+                    print(f"    {key}: {value}")
+            except Exception:
+                print("    No additional GPU details available.")
+    else:
+        print("\nRunning on CPU.")
+    
+    # Log logical GPUs (useful for multi-GPU setups)
+    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+    print(f"\nLogical GPUs Available: {len(logical_gpus)}")
+    for i, lgpu in enumerate(logical_gpus):
+        print(f"Logical GPU {i}: {lgpu}")
+
+# Enable device placement logging
+def _configure_tf_logs():
+    tf.debugging.set_log_device_placement(True)
+    tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
+
+# Clear TensorFlow session and log CUDA details
+def _reset_tf_session():
+    tf.keras.backend.clear_session()
+    print("\nTensorFlow Build Details:")
+    print("Built with CUDA:", tf.test.is_built_with_cuda())
+    print("Available GPUs:", tf.config.list_physical_devices('GPU'))
+    if tf.test.is_built_with_cuda():
+        print("CUDA version:", tf.__version__)
+    else:
+        print("TensorFlow is not built with CUDA.")
+
+# Initialize TensorFlow configuration
 def initialize_tf():
-    # Log available devices
+    _enable_memory_growth() # Enable memory growth for GPUs before initializing TensorFlow
     _log_device_details()
-
-    # Configure TensorFlow logs
     _configure_tf_logs()
-
-    # Reset TensorFlow session and log details
     _reset_tf_session()
-
-    # Enable memory growth for GPUs if applicable
-    _enable_memory_growth()
 
     # Additional Mac-specific checks (if using Metal API for Apple Silicon)
     if tf.config.list_physical_devices('GPU'):
@@ -242,6 +240,8 @@ def initialize_tf():
         else:
             print("\nCUDA-compatible GPU detected, using NVIDIA GPU.")
 
+
 # Optional: Disable XLA if needed
 def disable_xla():
     os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
+   

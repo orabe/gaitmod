@@ -1,3 +1,4 @@
+# Regular dependencies
 antropy==0.1.9
 imbalanced_learn==0.12.4
 keras==3.9.0
@@ -5,11 +6,33 @@ matplotlib==3.8.4
 mne==1.7.1
 numpy==1.26.4
 pandas==2.2.1
+pyyaml==6.0.2
 scikit_learn==1.5.1
 scipy==1.13.0
+seaborn==0.13.2
 setuptools==69.5.1
-tensorflow==2.16.2
-# tensorflow-estimator==2.9.0
-# tensorflow-macos==2.16.2
-# tensorflow-metal==1.2.0
 tqdm==4.66.4
+pydot==3.0.4
+
+
+# TensorFlow dependencies (platform-dependent)
+# tensorflow==2.16.2 ; sys_platform != 'darwin'
+# tensorflow-cuda==12.2 ; sys_platform != 'darwin'  # GPU support on non-macOS platforms
+
+# macOS-specific TensorFlow dependencies
+# tensorflow-macos ; sys_platform == 'darwin'
+# tensorflow-metal ; sys_platform == 'darwin'
+# tensorflow-deps ; sys_platform == 'darwin'
+
+# Local package (editable mode)
+# -e .
+
+# Manually install the macOS-specific TensorFlow dependencies
+# conda install -c apple tensorflow-deps
+
+
+# Important notes:
+# conda remove --name gait_modulation --all -y
+# conda create --name gait_modulation python=3.10
+# conda activate gait_modulation
+# pip install -r requirements.txt

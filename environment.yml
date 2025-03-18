@@ -1,30 +1,63 @@
-name: TEST_gait_modulation
+name: gait_modulation
 channels:
   - conda-forge
   - defaults
   - apple
 dependencies:
-  - python=3.10
-  - antropy==0.1.9
-  - imbalanced-learn==0.12.4
-  - keras==3.9.0
-  - matplotlib==3.8.4
-  - mne==1.7.1
-  - numpy==1.26.4
-  - pandas==2.2.1
-  - scikit-learn==1.5.1
-  - scipy==1.13.0
-  - setuptools==69.5.1
-  - tqdm==4.66.4
-  - conda:
-    - tensorflow-deps
+  # - python==3.10
+  # - antropy==0.1.9
+  # - imbalanced-learn==0.12.4
+  # - keras==3.9.0
+  # - matplotlib==3.8.4
+  # - mne==1.7.1
+  # - numpy==1.26.4
+  # - pandas==2.2.1
+  # - scikit-learn==1.2.2 #1.5.1
+  # - scipy==1.13.0
+  # - setuptools==69.5.1
+  # - tqdm==4.66.4
+  # - seaborn==0.13.2
+  # - pyyaml==6.0.2
+  - python==3.10
+  - pip
   - pip:
-      # - tensorflow==2.16.2
-      - tensorflow-macos==2.16.2
-      - tensorflow-metal==1.2.0
-      # - imbalanced-learn==0.12.4
-      # - scikit-learn==1.5.1
-      - -e .
-    # - gait_modulation
+      # - python==3.10
+      - antropy==0.1.9
+      - imbalanced-learn==0.12.4
+      - keras==3.9.0
+      - matplotlib==3.8.4
+      - mne==1.7.1
+      - numpy==1.26.4
+      - pandas==2.2.1
+      - scikit-learn==1.2.2 # 1.6.1
+      - scipy==1.13.0
+      - setuptools==69.5.1
+      - tqdm==4.66.4
+      - seaborn==0.13.2
+      - pyyaml==6.0.2
 
+      # macOS (Apple Silicon) TensorFlow + Metal Acceleration
+      - "tensorflow-macos==2.16.2; sys_platform == 'darwin'"
+      - "tensorflow-metal==1.2.0; sys_platform == 'darwin'"
+
+      # Apple Silicon (M1/M2) dependency
+      # - "tensorflow-deps==2.16.2; sys_platform == 'darwin'"
+
+      # Linux (CPU/GPU) TensorFlow
+      - "tensorflow==2.16.2; sys_platform != 'darwin'"
+      - "tensorflow-cuda==12.2; sys_platform != 'darwin'"  # GPU support
+
+      # Local package
+      - "-e ."
 # prefix: /Users/orabe/miniconda3/envs/gait_modulation
+
+# If added or removed packages, update the current environment without recreating it:
+# NOTE: --prune removes packages that are no longer in environment.yml.
+# >>>conda env update --file environment.yml --prune
+
+# For significant changes:
+# conda remove --name gait_modulation --all -y
+# conda env create -f environment.yml
+
+# Add the environment to the PATH:
+# export PATH=/Users/orabe/miniconda3/envs/gait_modulation/bin:$PATH
