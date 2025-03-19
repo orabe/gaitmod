@@ -21,6 +21,7 @@ from gait_modulation import FeatureExtractor2
 from gait_modulation import LSTMClassifier
 from gait_modulation.utils.utils import load_pkl, initialize_tf, disable_xla
 
+# %%
 def load_data():
     """Load the preprocessed data from the pickles."""
     patient_epochs_path = os.path.join("results", "pickles", "patients_epochs.pickle")
@@ -33,6 +34,7 @@ def load_data():
     print(f"Loaded data for {len(patient_names)} patients.")
     return patient_epochs, subjects_event_idx_dict, patient_names
 
+# %%
 def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flatten_chs", mask_vals=(0.0, 2), features_config=None, n_windows_threshold=None):
 
     feature_extractor = FeatureExtractor2(sfreq, features_config)
@@ -86,6 +88,7 @@ def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flat
     
     return X_padded, y_padded, groups
 
+# %%
 def setup_logging():
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     model_dir = os.path.join("logs", "lstm", "models", f"logs_run_{timestamp}")
@@ -113,6 +116,7 @@ def setup_logging():
     
     return model_dir, history_dir, log_stream
 
+# %%
 def build_pipeline(input_shape, n_windows, mask_vals):
     models = {
         'lstm': LSTMClassifier(input_shape=input_shape)
@@ -155,6 +159,7 @@ def build_pipeline(input_shape, n_windows, mask_vals):
 
     return pipeline, param_grid, scoring
 
+# %%
 def main():
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     initialize_tf()
@@ -279,6 +284,7 @@ def main():
     with open(log_file_path, 'w') as f:
         f.write(log_stream.getvalue())
     print(f"Training logs saved at {log_file_path}.")
-    
+
+# %% 
 if __name__ == "__main__":
     main()
