@@ -1,5 +1,3 @@
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs (0 = all, 1 = info, 2 = warnings, 3 = errors)
 
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
@@ -7,12 +5,13 @@ from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from tensorflow.keras.metrics import Precision, Recall, AUC
 from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
 from tensorflow.keras.losses import binary_crossentropy
-
+    
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_predict
 from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, roc_curve, auc
 
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -20,9 +19,6 @@ import tensorflow as tf
 import os
 import time
 import logging
-
-from gait_modulation import FeatureExtractor2
-
 
 class LSTMClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, input_shape, hidden_dims=[50], activations=['tanh'], 
@@ -91,7 +87,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             # y = y[..., np.newaxis] 
             # y = y.reshape(-1) 
         
-        self.model = self.build_model()
+        strategy = tf.distribute.MirroredStrategy()
+        with strategy.scope():
+            self.model = self.build_model()
         # print("Model output shape:", self.model.output_shape)
         
         # Calculate class weights

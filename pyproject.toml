@@ -4,23 +4,23 @@ version = "0.1"
 description = "A project for analyzing and modeling gait modulation using machine learning techniques."
 authors = [{name = "Mohammad Orabe", email = "orabe.mhd@gmail.com"}]
 dependencies = [
-    "antropy==0.1.9",
-    "imbalanced_learn==0.12.4",
-    "keras==3.9.0",
-    "matplotlib==3.8.4",
-    "mne==1.7.1",
-    "numpy==1.26.4",
-    "pandas==2.2.1",
-    "pyyaml==6.0.2",
-    "scikit_learn==1.5.1",
-    "scipy==1.13.0",
-    "seaborn==0.13.2",
-    "setuptools==69.5.1",
-    "tqdm==4.66.4",
-    "pydot==3.0.4"
+    "antropy",
+    "imbalanced_learn",
+    "tensorflow[and-cuda]",
+    "matplotlib",
+    "mne",
+    "numpy",
+    "pandas",
+    "pyyaml",
+    "scikit_learn",
+    "scipy",
+    "seaborn",
+    "setuptools",
+    "tqdm",
+    "pydot"
 ]
 
-keywords = ["gait", "modulation", "LFP", "machine learning", "ML"]
+keywords = ["gait", "modulation", "LFP", "ML"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

@@ -44,6 +44,7 @@ import seaborn as sns
 from io import StringIO
 import pickle
 import hashlib
+import multiprocessing
 
 from gait_modulation import FeatureExtractor2
 from gait_modulation import LSTMClassifier
@@ -143,8 +144,8 @@ def build_pipeline(input_shape, n_windows, mask_vals):
             'classifier__optimizer': ['adam'],
             'classifier__lr': [0.001],
             'classifier__patience': [10],
-            'classifier__epochs': [2, 3],
-            'classifier__batch_size': [128, 256],
+            'classifier__epochs': [200],
+            'classifier__batch_size': [32],
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
             'classifier__mask_vals': [mask_vals],
@@ -166,15 +167,14 @@ def build_pipeline(input_shape, n_windows, mask_vals):
     return pipeline, param_grid, scoring
 
 # %%
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 initialize_tf()
 
 patient_epochs, subjects_event_idx_dict, patient_names = load_data()
 
 # Slice patients for testing
-patient_names = patient_names[:3]
-patient_epochs = {k: patient_epochs[k] for k in patient_names}
-subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
+# patient_names = patient_names[:3]
+# patient_epochs = {k: patient_epochs[k] for k in patient_names}
+# subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
 
 sfreq = patient_epochs[patient_names[0]].info['sfreq']
 feature_handling = "flatten_chs"
@@ -227,10 +227,20 @@ pipeline, param_grid, scoring = build_pipeline(input_shape, n_windows, mask_vals
 
 
 # %%
+num_cores = multiprocessing.cpu_count()
+print(f"Number of available CPU cores: {num_cores}")
+
+# %%
 logo = LeaveOneGroupOut()
+
 n_splits = logo.get_n_splits(X_padded, y_padded, groups)
-print(f"Total fits: {n_splits * len(param_grid)}")
-print(f"Number of splits: {n_splits}, Number of parameters: {len(param_grid)}")
+n_candidates = len(param_grid)
+
+# Calculate the total number of fits
+total_fits = n_splits * n_candidates
+
+# Print the message
+print(f"Fitting {n_splits} folds for each of {n_candidates} candidates, totalling {total_fits} fits")
 
 logging.info("Starting Grid Search...")
 
