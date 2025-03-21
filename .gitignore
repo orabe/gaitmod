@@ -34,6 +34,7 @@ events.out.tfevents.*
 *.h5
 *.pickle
 *.csv
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

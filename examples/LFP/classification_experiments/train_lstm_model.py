@@ -1,4 +1,30 @@
 # %%
+import os
+import sys
+
+# Check if the notebook is running on Google Colab
+if 'google.colab' in sys.modules:
+    # Clone the repository
+    # os.system('git clone https://github.com/orabe/gait_modulation.git')
+    # Change directory to the cloned repository
+    # os.chdir('gait_modulation')
+    
+    from google.colab import drive
+    drive.mount('/content/drive')
+    
+    # Change directory to the desired location in Google Drive
+    os.chdir('/content/drive/MyDrive/master_thesis/gait_modulation')
+
+# %%
+if 'google.colab' in sys.modules:    
+    # Install the package
+    # os.system('pip install gait_modulation')
+    
+    # Install the package in editable mode
+    os.system('pip install -e .')
+
+# %%
+# %%
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.models import save_model, load_model
 from tensorflow.keras.utils import plot_model
@@ -16,11 +42,15 @@ import time
 import logging
 import seaborn as sns
 from io import StringIO
+import pickle
+import hashlib
 
 from gait_modulation import FeatureExtractor2
 from gait_modulation import LSTMClassifier
 from gait_modulation.utils.utils import load_pkl, initialize_tf, disable_xla
 
+
+# %%
 # %%
 def load_data():
     """Load the preprocessed data from the pickles."""
@@ -29,11 +59,13 @@ def load_data():
 
     patient_epochs = load_pkl(patient_epochs_path)
     subjects_event_idx_dict = load_pkl(subjects_event_idx_dict_path)
-    
+
     patient_names = np.array(list(patient_epochs.keys()))
     print(f"Loaded data for {len(patient_names)} patients.")
     return patient_epochs, subjects_event_idx_dict, patient_names
 
+
+# %%
 # %%
 def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flatten_chs", mask_vals=(0.0, 2), features_config=None, n_windows_threshold=None):
 
@@ -45,29 +77,29 @@ def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flat
 
     for patient in patient_names:
         epochs = patient_epochs[patient]
-        
+
         # Extract trial indices
         trial_indices = epochs.events[:, 1]  # Middle column contains trial index
         unique_trials = np.unique(trial_indices)
         # print(f"- Patient {patient} has {len(unique_trials)} trials")
-        
+
         # Extract features and labels
         X_patient, y_patient = feature_extractor.extract_features_with_labels(epochs, feature_handling)
-        
+
         # Group windows by trial
         for trial in unique_trials:
             trial_mask = trial_indices == trial  # Find windows belonging to this trial
             n_windows = sum(trial_mask)
-            
+
             if n_windows_threshold is not None and n_windows > n_windows_threshold:
                 # print(f"Trial {trial} has {n_windows} windows, excluding...")
                 excluded_count += 1
                 continue
-            
+
             X_grouped.append(X_patient[trial_mask])  # Store all windows of this trial
             y_grouped.append(y_patient[trial_mask])  # Store labels for this trial
             groups.append(patient)  # Keep track of the patient
-            
+
             # print(f"Trial {trial} has {n_windows} windows")
     print("Number of excluded trials:", excluded_count)
 
@@ -81,41 +113,14 @@ def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flat
     assert not np.any(np.isnan(y_padded)), "y_grouped contains NaNs"
     assert X_padded.shape[0] == y_padded.shape[0] == len(groups), "X, y, and groups should have the same number of trials"
     assert X_padded.shape[1] == y_padded.shape[1], "X and y should have the same number of windows"
-    
+
     padded_data_path = os.path.join("results", "padded_data.npz")
-    np.savez(padded_data_path, X_padded=X_padded, y_padded=y_padded)
+    np.savez(padded_data_path, X_padded=X_padded, y_padded=y_padded, groups=groups)
     print(f"Padded data saved at {padded_data_path}.")
-    
+
     return X_padded, y_padded, groups
 
 # %%
-def setup_logging():
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    model_dir = os.path.join("logs", "lstm", "models", f"logs_run_{timestamp}")
-    log_dir = os.path.join(model_dir, "logs")
-    history_dir = os.path.join(model_dir, 'training_history')
-    
-    os.makedirs(model_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(history_dir, exist_ok=True)
-
-    log_stream = StringIO()
-    logging.basicConfig(
-        stream=log_stream,
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
-
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(console_handler)
-
-    logging.info("Logging setup complete. Starting training process.")
-    
-    return model_dir, history_dir, log_stream
-
 # %%
 def build_pipeline(input_shape, n_windows, mask_vals):
     models = {
@@ -127,7 +132,7 @@ def build_pipeline(input_shape, n_windows, mask_vals):
         ('classifier', models['lstm'])
     ])
 
-    param_grid = [      
+    param_grid = [
         {
             'classifier__hidden_dims': [[32, 32]],
             'classifier__activations': [['tanh', 'relu']],
@@ -138,14 +143,14 @@ def build_pipeline(input_shape, n_windows, mask_vals):
             'classifier__optimizer': ['adam'],
             'classifier__lr': [0.001],
             'classifier__patience': [10],
-            'classifier__epochs': [2],
-            'classifier__batch_size': [128],
+            'classifier__epochs': [2, 3],
+            'classifier__batch_size': [128, 256],
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
             'classifier__mask_vals': [mask_vals],
         }
     ]
-    
+
     scoring = {
         'accuracy': make_scorer(LSTMClassifier.masked_accuracy_score),
         'f1': make_scorer(LSTMClassifier.masked_f1_score),
@@ -154,137 +159,172 @@ def build_pipeline(input_shape, n_windows, mask_vals):
     if any(hasattr(model, "predict_proba") for model in models.values()):
         scoring['roc_auc'] = make_scorer(LSTMClassifier.masked_roc_auc_score,
                                         # needs_proba=True,
-                                        response_method='predict_proba',
-                                        multi_class='ovr')
+                                        # response_method='predict_proba',
+                                        # multi_class='ovr'
+        )
 
     return pipeline, param_grid, scoring
 
 # %%
-def main():
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-    initialize_tf()
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+initialize_tf()
 
-    patient_epochs, subjects_event_idx_dict, patient_names = load_data()
-    
-    # Slice patients for testing
-    patient_names = patient_names[:5]
-    patient_epochs = {k: patient_epochs[k] for k in patient_names}
-    subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
-    
-    sfreq = patient_epochs[patient_names[0]].info['sfreq']
-    feature_handling = "flatten_chs"
-    mask_vals = (0.0, 2)
-    
-    config_path = os.path.join("configs", "features_config.json")
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            features_config = json.load(f)
-        print(f"Loaded features configuration from {config_path}.")
-    else:
-        features_config = None
-        print(f"No features configuration file found at {config_path}. Using default configuration.")
-    
+patient_epochs, subjects_event_idx_dict, patient_names = load_data()
+
+# Slice patients for testing
+patient_names = patient_names[:3]
+patient_epochs = {k: patient_epochs[k] for k in patient_names}
+subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
+
+sfreq = patient_epochs[patient_names[0]].info['sfreq']
+feature_handling = "flatten_chs"
+mask_vals = (0.0, 2)
+
+config_path = os.path.join("configs", "features_config.json")
+if os.path.exists(config_path):
+    with open(config_path, 'r') as f:
+        features_config = json.load(f)
+    print(f"Loaded features configuration from {config_path}.")
+else:
     features_config = None
-    if features_config is None:
-        features_config = {
-            'time_features': {
-                # 'mean': True,
-                # 'std': True,
-                # 'median': True,
-                # 'skew': True,
-                # 'kurtosis': True,
-                # 'rms': True
-                    # peak_to_peak = np.ptp(lfp_data, axis=2)
-            },
-            'freq_features': {
-                'psd_raw': True,
-                    # psd_vals = np.abs(np.fft.rfft(lfp_data, axis=2))
-                # 'psd_band_mean': True, band power!
-                # 'psd_band_std': True,
-                # 'spectral_entropy': True
-            },
-            # 'wavelet_features': {
-            #     'energy': False
-            # },
-            # 'nonlinear_features': {
-            #     'sample_entropy': True,
-            #     'hurst_exponent': False
-            # }
-        }
+    print(f"No features configuration file found at {config_path}. Using default configuration./n")
+
+features_config = None
+if features_config is None:
+    features_config = {
+        'time_features': {
+            # 'mean': True,
+            # 'std': True,
+            # 'median': True,
+            # 'skew': True,
+            # 'kurtosis': True,
+            # 'rms': True
+                # peak_to_peak = np.ptp(lfp_data, axis=2)
+        },
+        'freq_features': {
+            'psd_raw': True,
+                # psd_vals = np.abs(np.fft.rfft(lfp_data, axis=2))
+            # 'psd_band_mean': True, band power!
+            # 'psd_band_std': True,
+            # 'spectral_entropy': True
+        },
+        # 'wavelet_features': {
+        #     'energy': False
+        # },
+        # 'nonlinear_features': {
+        #     'sample_entropy': True,
+        #     'hurst_exponent': False
+        # }
+    }
+
+X_padded, y_padded, groups = preprocess_data(patient_epochs, patient_names, sfreq, feature_handling, mask_vals, features_config)
+
+n_features = X_padded.shape[2]
+n_windows = X_padded.shape[1]
+input_shape = (None, n_features)
+
+pipeline, param_grid, scoring = build_pipeline(input_shape, n_windows, mask_vals)
+
+
+# %%
+logo = LeaveOneGroupOut()
+n_splits = logo.get_n_splits(X_padded, y_padded, groups)
+print(f"Total fits: {n_splits * len(param_grid)}")
+print(f"Number of splits: {n_splits}, Number of parameters: {len(param_grid)}")
+
+logging.info("Starting Grid Search...")
+
+grid_search = GridSearchCV(
+    pipeline,
+    param_grid=param_grid,
+    cv=logo,
+    scoring=scoring,
+    refit='f1' if 'f1' in scoring else 'accuracy',
+    n_jobs=-1,
+    verbose=3,
+)
+
+# %%
+# !rm -r logs/lstm
+
+# %%
+grid_search.fit(X_padded, y_padded, groups=groups)
+
+# %%
+# %%
+def setup_logging():
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    model_dir = os.path.join("logs", "lstm", "models", f"run_{ts}")
+    history_dir = os.path.join("logs", "lstm", "history", ts)
+    os.makedirs(model_dir, exist_ok=True)
+    os.makedirs(history_dir, exist_ok=True)
     
-    X_padded, y_padded, groups = preprocess_data(patient_epochs, patient_names, sfreq, feature_handling, mask_vals, features_config)
-
-    n_features = X_padded.shape[2]
-    n_windows = X_padded.shape[1]
-    input_shape = (None, n_features)
-
-    model_dir, history_dir, log_stream = setup_logging()
-    pipeline, param_grid, scoring = build_pipeline(input_shape, n_windows, mask_vals)
-
-    logo = LeaveOneGroupOut()
-    n_splits = logo.get_n_splits(X_padded, y_padded, groups)
-    print(f"Total fits: {n_splits * len(param_grid)}")
-    print(f"Number of splits: {n_splits}, Number of parameters: {len(param_grid)}")
-
-    logging.info("Starting Grid Search...")
+    # Set up logging
+    log_stream = StringIO()
+    logging.basicConfig(level=logging.INFO, stream=log_stream, format='%(asctime)s - %(levelname)s - %(message)s')
     
-    grid_search = GridSearchCV(
-        pipeline,
-        param_grid=param_grid,
-        cv=logo,
-        scoring=scoring,
-        refit='f1' if 'f1' in scoring else 'accuracy',
-        n_jobs=-1,
-        verbose=3,
-    )
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(console_handler)
     
-    grid_search.fit(X_padded, y_padded, groups=groups)
+    return model_dir, history_dir, log_stream
 
-    print(f"Best Parameters: {grid_search.best_params_}")
-    print(f"Best Cross-Validation Accuracy: {grid_search.best_score_:.4f}")
-    logging.info(f"Best Parameters: {grid_search.best_params_}")
-    logging.info(f"Best Score: {grid_search.best_score_:.4f}")
 
-    best_model = grid_search.best_estimator_.named_steps['classifier'].model
-    model_summary_path = os.path.join(model_dir, "best_model_summary.txt")
-    with open(model_summary_path, 'w') as f:
-        best_model.summary(print_fn=lambda x: f.write(x + '\n'))
-    print(best_model.summary())
-    print(f"Best model summary saved at {model_summary_path}.")
+model_dir, history_dir, log_stream = setup_logging()
 
-    best_model_path = os.path.join(model_dir, "best_lstm_model.h5")
-    keras_model_path = os.path.join(model_dir, 'best_lstm_model.keras')
-    best_model.save(best_model_path)
-    save_model(best_model, keras_model_path)
-    print(f"Best LSTM model saved at {best_model_path}.")
-    logging.info(f"Best LSTM model saved at {best_model_path}.")
+# %%
+print(f"Best Parameters: {grid_search.best_params_}")
+print(f"Best Cross-Validation Accuracy: {grid_search.best_score_:.4f}")
+logging.info(f"Best Parameters: {grid_search.best_params_}")
+logging.info(f"Best Score: {grid_search.best_score_:.4f}")
 
-    best_params_path = os.path.join(model_dir, 'best_params.json')
-    cv_results_path = os.path.join(model_dir, 'cv_results.csv')
-    evaluation_metrics_path = os.path.join(model_dir, 'evaluation_metrics.json')
+best_model = grid_search.best_estimator_.named_steps['classifier'].model
+model_summary_path = os.path.join(model_dir, "best_model_summary.txt")
+with open(model_summary_path, 'w') as f:
+    best_model.summary(print_fn=lambda x: f.write(x + '\n'))
+print(best_model.summary())
+print(f"Best model summary saved at {model_summary_path}.")
 
-    for fold, history in enumerate(grid_search.best_estimator_.named_steps['classifier'].history_):
-        history_path = os.path.join(history_dir, f'training_history_fold_{fold + 1}.json')
-        with open(history_path, 'w') as f:
-            json.dump(history, f)
-        print(f"Training history for fold {fold + 1} saved at {history_path}")
+best_model_path = os.path.join(model_dir, "best_lstm_model.h5")
+keras_model_path = os.path.join(model_dir, 'best_lstm_model.keras')
+best_model.save(best_model_path)
+save_model(best_model, keras_model_path)
+print(f"Best LSTM model saved at {best_model_path}.")
+logging.info(f"Best LSTM model saved at {best_model_path}.")
 
-    with open(best_params_path, 'w') as f:
-        json.dump(grid_search.best_params_, f)
-    print(f"Best parameters saved at {best_params_path}")
+best_params_path = os.path.join(model_dir, 'best_params.json')
+cv_results_path = os.path.join(model_dir, 'cv_results.csv')
+evaluation_metrics_path = os.path.join(model_dir, 'evaluation_metrics.json')
 
-    results_df = pd.DataFrame(grid_search.cv_results_)
-    results_df.to_csv(cv_results_path, index=False)
-    print(f"Cross-validation results saved at {cv_results_path}")
-    
-    plot_model(best_model, to_file=os.path.join(model_dir, 'model_architecture.png'), show_shapes=True)
-    print(f"Model architecture plot saved at {os.path.join(model_dir, 'model_architecture.png')}.")
+with open(best_params_path, 'w') as f:
+    json.dump(grid_search.best_params_, f)
+print(f"Best parameters saved at {best_params_path}")
 
-    log_file_path = os.path.join(model_dir, 'training.log')
-    with open(log_file_path, 'w') as f:
-        f.write(log_stream.getvalue())
-    print(f"Training logs saved at {log_file_path}.")
+for fold, history in enumerate(grid_search.best_estimator_.named_steps['classifier'].history_):
+    history_path = os.path.join(history_dir, f'best_estimator_training_history_per_fold_and_epoch.json')
+    with open(history_path, 'w') as f:
+        json.dump(history, f)
+    print(f"Best estimator training history per fold and epoch saved at {history_path}")
 
-# %% 
-if __name__ == "__main__":
-    main()
+
+results_df = pd.DataFrame(grid_search.cv_results_)
+results_df.to_csv(cv_results_path, index=False)
+print(f"Cross-validation results saved at {cv_results_path}")
+
+plot_model(best_model, to_file=os.path.join(model_dir, 'model_architecture.png'), show_shapes=True)
+print(f"Model architecture plot saved at {os.path.join(model_dir, 'model_architecture.png')}.")
+
+log_file_path = os.path.join(model_dir, 'training.log')
+with open(log_file_path, 'w') as f:
+    f.write(log_stream.getvalue())
+print(f"Training logs saved at {log_file_path}.")
+
+# %%
+grid_search.best_estimator_.named_steps['classifier']
+
+# %%
+results_df.T
+
+

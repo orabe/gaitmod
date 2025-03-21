@@ -102,7 +102,24 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.classes_ = np.unique(y[y != self.mask_vals[1]])
         
         ts = time.strftime("run_%Y%m%d-%H%M%S")
-        callbacks_dir = os.path.join("logs", "lstm","callbacks")
+        
+        # Get the best model parameters
+        params = self.get_params()
+        print("Params:", params)
+        
+        # Get the default parameters of the LSTMClassifier
+        default_params = LSTMClassifier(input_shape=self.input_shape).get_params()
+        
+        # Only consider parameters that change across the grid search
+        changed_params = {key: value for key, value in params.items() if default_params.get(key) != value}
+        
+        # Create a string representation of the changed parameters
+        param_str = "_".join([f"{key}={value}" for key, value in changed_params.items()])
+        
+        print("Changed parameters:", changed_params)
+        print("param_str:", param_str)
+        
+        callbacks_dir = os.path.join("logs", "lstm", "callbacks", param_str)
         tensorboard_dir = os.path.join(callbacks_dir, "tensorboard")
         log_dir = os.path.join(callbacks_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -111,7 +128,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         callbacks = [
             CustomTrainingLogger(),
             CSVLogger(os.path.join(log_dir, f"training_{ts}.log")),
-            EarlyStopping(monitor='loss',patience=self.patience, restore_best_weights=True), # monitor='val_accuracy'
+            EarlyStopping(monitor='loss', patience=self.patience, restore_best_weights=True), # monitor='val_accuracy'
             ReduceLROnPlateau(monitor='loss', factor=0.5, patience=self.patience), 
             TensorBoard(log_dir=os.path.join(tensorboard_dir, f"training_{ts}"), histogram_freq=1, write_graph=True, write_images=True),
             # ModelCheckpoint(filepath=f"{log_dir}/best_model.h5", monitor='val_loss', save_best_only=True),
