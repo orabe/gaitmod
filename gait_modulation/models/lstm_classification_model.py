@@ -9,7 +9,8 @@ from tensorflow.keras.losses import binary_crossentropy
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_predict
-from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, roc_curve, auc
+from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score
+from tensorflow.keras import backend as K
 
 import os
 import numpy as np
@@ -19,6 +20,7 @@ import tensorflow as tf
 import os
 import time
 import logging
+import uuid
 
 class LSTMClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, input_shape, hidden_dims=[50], activations=['tanh'], 
@@ -73,10 +75,14 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         else:
             raise ValueError(f"Unsupported optimizer: {self.optimizer}")
         
+        # metrics are evaluated on the training and validation data at the end of each epoch.
         model.compile(optimizer=optimizer,
-                      loss=self.masked_loss_binary_crossentropy,
-                    #   loss=self.loss,
-                      metrics=['accuracy', Precision(), Recall(), AUC()])
+                    loss=self.masked_loss_binary_crossentropy,
+                    metrics=[MaskedAccuracy(name='MASKED_accuracy'), 
+                            MaskedF1Score(name='MASKED_f1_score'), 
+                            MaskedPrecision(name='MASKED_precision'), 
+                            MaskedRecall(name='MASKED_recall'), 
+                            MaskedROC_AUC(name='MASKED_roc_auc')])
         
         return model
 
@@ -98,26 +104,14 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Set the classes_ attribute to store the unique class labels
         self.classes_ = np.unique(y[y != self.mask_vals[1]])
-        
-        ts = time.strftime("run_%Y%m%d-%H%M%S")
-        
-        # Get the best model parameters
-        params = self.get_params()
-        print("Params:", params)
-        
-        # Get the default parameters of the LSTMClassifier
-        default_params = LSTMClassifier(input_shape=self.input_shape).get_params()
-        
-        # Only consider parameters that change across the grid search
-        changed_params = {key: value for key, value in params.items() if default_params.get(key) != value}
-        
-        # Create a string representation of the changed parameters
-        param_str = "_".join([f"{key}={value}" for key, value in changed_params.items()])
-        
-        print("Changed parameters:", changed_params)
-        print("param_str:", param_str)
-        
-        callbacks_dir = os.path.join("logs", "lstm", "callbacks", param_str)
+            
+        unique_id = str(uuid.uuid4())[:8]
+        essential_params = ["epochs", "batch_size", "lr"]
+        essential_params_dict = {k: v for k, v in self.get_params().items() if k in essential_params}
+        essential_str = "_".join([f"{k}={v}" for k, v in essential_params_dict.items()]) + "_fold_" + unique_id
+
+
+        callbacks_dir = os.path.join("logs", "lstm", "callbacks", essential_str)
         tensorboard_dir = os.path.join(callbacks_dir, "tensorboard")
         log_dir = os.path.join(callbacks_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -125,10 +119,17 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         callbacks = [
             CustomTrainingLogger(),
-            CSVLogger(os.path.join(log_dir, f"training_{ts}.log")),
-            EarlyStopping(monitor='loss', patience=self.patience, restore_best_weights=True), # monitor='val_accuracy'
-            ReduceLROnPlateau(monitor='loss', factor=0.5, patience=self.patience), 
-            TensorBoard(log_dir=os.path.join(tensorboard_dir, f"training_{ts}"), histogram_freq=1, write_graph=True, write_images=True),
+            CSVLogger(os.path.join(log_dir, f"training_{unique_id}.log")),
+            EarlyStopping(monitor='loss',# monitor='val_accuracy'
+                          patience=self.patience,
+                          restore_best_weights=True), 
+            ReduceLROnPlateau(monitor='loss', # monitor='val_accuracy'
+                              factor=0.5,
+                              patience=self.patience), 
+            TensorBoard(log_dir=os.path.join(tensorboard_dir, f"training_{unique_id}"),
+                        histogram_freq=1,
+                        write_graph=True,
+                        write_images=True),
             # ModelCheckpoint(filepath=f"{log_dir}/best_model.h5", monitor='val_loss', save_best_only=True),
             # LearningRateScheduler(self.__class__.lr_schedule, verbose=1),
             #               patience=self.patience, restore_best_weights=True),
@@ -277,7 +278,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         if epoch > 10:
             return lr * 0.1  # Reduce LR by 10x after epoch 10
         return lr
-            
+    
 
     # TODO: Do not hardcode the y_mask_val!
     @staticmethod
@@ -297,7 +298,19 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         y_mask_val = 2
         mask = y_true != y_mask_val
         return roc_auc_score(y_true[mask], y_pred[mask])
+    
+    @staticmethod
+    def masked_precision_score(y_true, y_pred):
+        y_mask_val = 2
+        mask = y_true != y_mask_val
+        return precision_score(y_true[mask], y_pred[mask], average='weighted')
 
+    @staticmethod
+    def masked_recall_score(y_true, y_pred):
+        y_mask_val = 2
+        mask = y_true != y_mask_val
+        return recall_score(y_true[mask], y_pred[mask], average='weighted')
+    
     @staticmethod
     def masked_classification_report(y_true, y_pred, target_names=None, digits=4):
         y_mask_val = 2
@@ -309,51 +322,175 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         y_mask_val = 2
         mask = y_true != y_mask_val
         return confusion_matrix(y_true[mask], y_pred[mask])
-    
+
+
+# -----------------------------------------------------------
+class MaskedAccuracy(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_accuracy', **kwargs):
+        super(MaskedAccuracy, self).__init__(name=name, **kwargs)
+        self.total = self.add_weight(name='total', initializer='zeros')
+        self.count = self.add_weight(name='count', initializer='zeros')
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, 2), tf.float32)  # Assuming 2 is the padding value
+        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred = tf.round(y_pred)
+        values = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
+        self.total.assign_add(tf.reduce_sum(values))
+        self.count.assign_add(tf.reduce_sum(mask))
+
+    def result(self):
+        return self.total / (self.count + K.epsilon())
+
+    def reset_states(self):
+        self.total.assign(0)
+        self.count.assign(0)
+        
+class MaskedF1Score(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_f1_score', **kwargs):
+        super(MaskedF1Score, self).__init__(name=name, **kwargs)
+        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
+        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
+        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, 2), tf.float32)  # Assuming 2 is padding
+        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred = tf.round(y_pred)
+
+        tp = tf.reduce_sum(y_true * y_pred * mask)
+        fp = tf.reduce_sum((1 - y_true) * y_pred * mask)
+        fn = tf.reduce_sum(y_true * (1 - y_pred) * mask)
+
+        # Use assign_add() correctly
+        self.tp.assign_add(tf.reduce_sum(tp))
+        self.fp.assign_add(tf.reduce_sum(fp))
+        self.fn.assign_add(tf.reduce_sum(fn))
+
+    def result(self):
+        precision = self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
+        recall = self.tp / (self.tp + self.fn + tf.keras.backend.epsilon())
+        f1_score = 2 * (precision * recall) / (precision + recall + tf.keras.backend.epsilon())
+        return f1_score
+
+    def reset_state(self):
+        self.tp.assign(0)
+        self.fp.assign(0)
+        self.fn.assign(0)
+            
+class MaskedPrecision(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_precision', **kwargs):
+        super(MaskedPrecision, self).__init__(name=name, **kwargs)
+        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
+        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, 2), tf.float32)  # Assuming 2 is the padding value
+        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred = tf.round(y_pred)
+
+        tp = tf.reduce_sum(tf.cast(y_true * y_pred, tf.float32) * mask)
+        fp = tf.reduce_sum(tf.cast((1 - y_true) * y_pred, tf.float32) * mask)
+
+        # Ensure tp and fp are scalars before updating the variables
+        self.tp.assign_add(tf.reduce_sum(tp))
+        self.fp.assign_add(tf.reduce_sum(fp))
+
+    def result(self):
+        return self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
+
+    def reset_states(self):
+        self.tp.assign(0.0)
+        self.fp.assign(0.0)
+        
+class MaskedRecall(tf.keras.metrics.Metric):
+    def __init__(self, name='masked_recall', **kwargs):
+        super(MaskedRecall, self).__init__(name=name, **kwargs)
+        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
+        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, 2), tf.float32)  # Assuming 2 is the padding value
+        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred = tf.round(y_pred)
+
+        tp = tf.reduce_sum(y_true * y_pred * mask)
+        fn = tf.reduce_sum(y_true * (1 - y_pred) * mask)
+
+        self.tp.assign_add(tf.cast(tp, tf.float32))
+        self.fn.assign_add(tf.cast(fn, tf.float32))
+
+    def result(self):
+        return self.tp / (self.tp + self.fn + K.epsilon())
+
+    def reset_states(self):
+        self.tp.assign(0.0)
+        self.fn.assign(0.0)
+        
+class MaskedROC_AUC(tf.keras.metrics.AUC):
+    def __init__(self, name='masked_auc', **kwargs):
+        super(MaskedROC_AUC, self).__init__(name=name, **kwargs)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        mask = tf.cast(tf.not_equal(y_true, 2), tf.float32)  # Assuming 2 is the padding value
+        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred = tf.clip_by_value(y_pred, 0, 1)
+
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+
+        super().update_state(y_true, y_pred, sample_weight)
+
+# -----------------------------------------------------------
 class CustomTrainingLogger(Callback):
     def __init__(self, fold=0):
         super().__init__()
         self.fold = fold
         self.current_epoch = 0
 
-    def on_train_begin(self, logs=None):
-        print(f"\n---- Starting Training for Fold {self.fold} ----\n")
-        logging.info(f"---- Starting Training for Fold {self.fold} ----")
+    # def on_train_begin(self, logs=None):
+        # print(f"\n---- Starting Training for Fold {self.fold} ----\n")
+        # print(f"\n---- Starting Training for a new fold ----\n")
+        # logging.info(f"---- Starting Training for Fold {self.fold} ----")
+        # logging.info(f"---- Starting Training for a new fold ----")
         
     def on_epoch_begin(self, epoch, logs=None):
         self.current_epoch = epoch
 
     def on_batch_end(self, batch, logs=None):
-        # if batch % 10 == 0:  # Log every 10 batches
-        print(f"\n[Fold {self.fold}] [Epoch {self.current_epoch + 1}/{self.params['epochs']}] [Batch {batch+1}/{self.params['steps']}]: ")
+        # print(f"\n[Fold {self.fold}] [Epoch {self.current_epoch + 1}/{self.params['epochs']}] [Batch {batch+1}/{self.params['steps']}]: ")
         logging.info(
             f"[Fold {self.fold}] [Epoch {self.current_epoch + 1}/{self.params['epochs']}] [Batch {batch+1}/{self.params['steps']}]: "
             f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
-            f"Accuracy: {self.safe_format(logs.get('accuracy', 'N/A'))}, "
-            f"AUC: {self.safe_format(logs.get('auc', 'N/A'))}, "
-            f"Precision: {self.safe_format(logs.get('precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('recall', 'N/A'))}, "
-            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}"
+            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
+            f"Accuracy: {self.safe_format(logs.get('masked_accuracy', 'N/A'))}, "
+            f"F1Score: {self.safe_format(logs.get('masked_f1_score', 'N/A'))}, " 
+            f"Precision: {self.safe_format(logs.get('masked_precision', 'N/A'))}, "
+            f"Recall: {self.safe_format(logs.get('masked_recall', 'N/A'))}"
+            f"AUC: {self.safe_format(logs.get('masked_auc', 'N/A'))}, "
         )
         
     def on_epoch_end(self, epoch, logs=None):
-        print(f"\n[Fold {self.fold}] [Epoch {epoch + 1}/{self.params['epochs']}]: ")
+        # print(f"\n[Fold {self.fold}] [Epoch {epoch + 1}/{self.params['epochs']}]: ")
         logging.info(
             f"[Fold {self.fold}] [Epoch {epoch + 1}/{self.params['epochs']}]: "
             f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
-            f"Accuracy: {self.safe_format(logs.get('accuracy', 'N/A'))}, "
-            f"AUC: {self.safe_format(logs.get('auc', 'N/A'))}, "
-            f"Precision: {self.safe_format(logs.get('precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('recall', 'N/A'))}, "
-            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}"
+            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
+            f"Accuracy: {self.safe_format(logs.get('masked_accuracy', 'N/A'))}, "
+            f"F1Score: {self.safe_format(logs.get('masked_f1_score', 'N/A'))}, "
+            f"Precision: {self.safe_format(logs.get('masked_precision', 'N/A'))}, "
+            f"Recall: {self.safe_format(logs.get('masked_recall', 'N/A'))}"
+            f"AUC: {self.safe_format(logs.get('masked_auc', 'N/A'))}, "
         )
 
     def safe_format(self, value):
         try:
             return f"{float(value):.4f}"
         except (ValueError, TypeError):
-            return str(value)
-            
+            return str(value)      
 class CustomGridSearchCV(GridSearchCV):
     """Not used for now
     """

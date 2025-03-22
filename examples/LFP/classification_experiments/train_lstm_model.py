@@ -16,6 +16,9 @@ if 'google.colab' in sys.modules:
     os.chdir('/content/drive/MyDrive/master_thesis/gait_modulation')
 
 # %%
+# !rm -r logs/lstm
+
+# %%
 if 'google.colab' in sys.modules:    
     # Install the package
     # os.system('pip install gait_modulation')
@@ -45,6 +48,7 @@ from io import StringIO
 import pickle
 import hashlib
 import multiprocessing
+from itertools import product
 
 from gait_modulation import FeatureExtractor2
 from gait_modulation import LSTMClassifier
@@ -143,9 +147,9 @@ def build_pipeline(input_shape, n_windows, mask_vals):
             'classifier__dense_activation': ['sigmoid'],
             'classifier__optimizer': ['adam'],
             'classifier__lr': [0.001],
-            'classifier__patience': [10],
-            'classifier__epochs': [200],
-            'classifier__batch_size': [32],
+            'classifier__patience': [200],
+            'classifier__epochs': [2],
+            'classifier__batch_size': [128],
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
             'classifier__mask_vals': [mask_vals],
@@ -155,6 +159,9 @@ def build_pipeline(input_shape, n_windows, mask_vals):
     scoring = {
         'accuracy': make_scorer(LSTMClassifier.masked_accuracy_score),
         'f1': make_scorer(LSTMClassifier.masked_f1_score),
+        'roc_auc': make_scorer(LSTMClassifier.masked_roc_auc_score),
+        'precision': make_scorer(LSTMClassifier.masked_precision_score),
+        'recall': make_scorer(LSTMClassifier.masked_recall_score),
     }
 
     if any(hasattr(model, "predict_proba") for model in models.values()):
@@ -172,9 +179,9 @@ initialize_tf()
 patient_epochs, subjects_event_idx_dict, patient_names = load_data()
 
 # Slice patients for testing
-# patient_names = patient_names[:3]
-# patient_epochs = {k: patient_epochs[k] for k in patient_names}
-# subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
+patient_names = patient_names[:4]
+patient_epochs = {k: patient_epochs[k] for k in patient_names}
+subjects_event_idx_dict = {k: subjects_event_idx_dict[k] for k in patient_names}
 
 sfreq = patient_epochs[patient_names[0]].info['sfreq']
 feature_handling = "flatten_chs"
@@ -231,15 +238,23 @@ num_cores = multiprocessing.cpu_count()
 print(f"Number of available CPU cores: {num_cores}")
 
 # %%
+# !rm -r logs/lstm
+
+# %%
+# %load_ext tensorboard
+
+# %%
+# %tensorboard --logdir logs/lstm
+
+# %%
 logo = LeaveOneGroupOut()
 
 n_splits = logo.get_n_splits(X_padded, y_padded, groups)
-n_candidates = len(param_grid)
 
-# Calculate the total number of fits
+param_values = param_grid[0].values()
+candidates = list(product(*param_values))
+n_candidates = len(candidates)
 total_fits = n_splits * n_candidates
-
-# Print the message
 print(f"Fitting {n_splits} folds for each of {n_candidates} candidates, totalling {total_fits} fits")
 
 logging.info("Starting Grid Search...")
@@ -250,12 +265,9 @@ grid_search = GridSearchCV(
     cv=logo,
     scoring=scoring,
     refit='f1' if 'f1' in scoring else 'accuracy',
-    n_jobs=-1,
+    n_jobs=num_cores,
     verbose=3,
 )
-
-# %%
-# !rm -r logs/lstm
 
 # %%
 grid_search.fit(X_padded, y_padded, groups=groups)
