@@ -328,6 +328,33 @@ plt.title('Best Model Training History')
 plt.savefig(os.path.join(model_dir, 'training_history.png'))
 plt.show()
 
+# %%
+# Select a specific fold to plot (e.g., Fold 0)
+fold_idx = 0
+history = best_history[fold_idx]  # Extract history for this fold
+
+metrics = history.keys()
+
+# Create subplots for each metric
+fig, axes = plt.subplots(len(metrics), 1, figsize=(10, 5 * len(metrics)), sharex=True)
+
+# If only one metric, `axes` is not an iterable, so handle that case
+if len(metrics) == 1:
+    axes = [axes]
+
+# Plot each metric
+for i, metric in enumerate(metrics):
+    axes[i].plot(history[metric], label=f'{metric} (Fold {fold_idx + 1})')
+    axes[i].set_ylabel(metric)
+    axes[i].set_xlabel('Epochs')
+    axes[i].legend()
+    axes[i].set_title(f'Training History - {metric}')
+
+# Adjust layout
+plt.tight_layout()
+plt.suptitle(f'Training History for Fold {fold_idx + 1}', y=1.02)
+plt.savefig(os.path.join(history_dir, f'training_history_fold{fold_idx + 1}.png'))
+plt.show()
 
 # %%
 # Convert GridSearchCV results into a DataFrame
