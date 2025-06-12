@@ -95,7 +95,7 @@ class Visualise:
         """
         num_subjects = len(subjects_lfp_data_dict)
 
-        fig, axes = plt.subplots(2, num_subjects, figsize=(6 * num_subjects, 10), 
+        fig, axes = plt.subplots(2, num_subjects, figsize=(5 * num_subjects, 10), 
                                 sharex=True, sharey='row', constrained_layout=True)
 
         axes = np.atleast_2d(axes)
@@ -107,8 +107,8 @@ class Visualise:
             # --- Histogram (Top Row) ---
             ax_hist = axes[0, idx] if num_subjects > 1 else axes[0]
             ax_hist.hist(trial_lengths_sec, bins=30, color='skyblue', edgecolor='black', alpha=0.75)
-            ax_hist.set_ylabel('Frequency', fontsize=12)
-            ax_hist.set_title(f'{subject}', fontsize=14, fontweight='bold')
+            ax_hist.set_ylabel('Frequency', fontsize=16)
+            ax_hist.set_title(f'{subject}', fontsize=18, fontweight='bold')
             ax_hist.grid(True, which='major', linestyle='--', linewidth=0.7, alpha=0.6)
             ax_hist.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.4)
             ax_hist.minorticks_on()
@@ -120,14 +120,13 @@ class Visualise:
                         medianprops=dict(color='red', linewidth=2), 
                         whiskerprops=dict(color='black', linewidth=1.5, linestyle='--'),
                         capprops=dict(color='black', linewidth=1.5))
-            ax_box.set_xlabel('Trial Length (seconds)', fontsize=12)
+            ax_box.set_xlabel('Trial Length (seconds)', fontsize=16)
             ax_box.grid(True, which='major', linestyle='--', linewidth=0.7, alpha=0.6)
             ax_box.grid(True, which='minor', linestyle=':', linewidth=0.5, alpha=0.4)
             ax_box.minorticks_on()
 
-        axes[1, 0].set_xlabel('Trial Length (seconds)', fontsize=14, fontweight='bold')
-
-        plt.tight_layout()
+        fig.suptitle('Distribution and Boxplot of Trial Lengths per Subject', fontsize=20, fontweight='bold')
+        plt.tight_layout(rect=[0, 0, 1, 0.96]) 
         if save_path:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
@@ -299,7 +298,7 @@ class Visualise:
         plt.close()
 
     @staticmethod
-    def plot_total_label_counts(patients_epochs: Dict, save_path: str, fig_name:str):
+    def plot_total_label_counts(patients_epochs: Dict, save_path: str, fig_name: str):
         """
         Plots the total label counts across all trials for all patients.
 
@@ -333,17 +332,17 @@ class Visualise:
             # Plot total counts
             bars = ax.bar(['Normal walking', 'Modulation'], [normal_counts, modulation_counts], color=['#1f77b4', '#ff7f0e'])
 
-            ax.set_xlabel('Label', fontsize=16)
-            ax.set_ylabel('Total Count', fontsize=16)
-            ax.set_title(f'{patient}', fontsize=17)
+            ax.set_xlabel('Label', fontsize=18)
+            ax.set_ylabel('Total Count', fontsize=18)
+            ax.set_title(f'{patient}', fontsize=20)
             ax.grid(axis='y', linestyle='--')
             ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
             ax.set_ylim(0, max(normal_counts, modulation_counts) * 1.1)
             
             # Add legend
-            ax.legend(bars, ['Normal walking', 'Modulation'], fontsize=12)
+            ax.legend(bars, ['Normal walking', 'Modulation'], fontsize=14)
         
-        fig.suptitle('Total Label Counts Across All Trials', fontsize=18)
+        fig.suptitle('Total Label Counts Across All Trials', fontsize=22)
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         
         if save_path:
@@ -507,7 +506,7 @@ class Visualise:
                                    event_dict: Dict[int, str], 
                                    n_sessions: int,
                                    show_fig: bool = True, 
-                                   save_fig: bool = False, 
+                                   save_fig: bool = True, 
                                    file_name: str = 'event_class_histogram.png') -> None:
         """
         Creates a histogram to plot the number of onsets for each class of the event array,
@@ -595,11 +594,11 @@ class Visualise:
                                 event_names: list[str],
                                 subjects_event_idx_dict: Dict[str, Dict[int, List[int]]],
                                 show_fig: bool = True,
-                                save_fig: bool = False,
-                                file_name: str = 'epochs_with_events{subject_id}.png') -> None:
+                                save_path: Optional[str] = None,
+                                fig_name: str = 'epochs_with_events{subject_id}.png') -> None:
         """
         Plot the epochs for a given subject with event markers for mod_start and mod_end.
-
+    
         Parameters
         ----------
         patients_epochs : Dict[str, mne.EpochsArray]
@@ -616,51 +615,53 @@ class Visualise:
             A dictionary mapping subject IDs to dictionaries of trial IDs mapped to event indices.
         show_fig : bool, optional
             Flag to display the plot, by default True.
-        save_fig : bool, optional
-            Flag to save the plot, by default False.
-        file_name : str, optional
-            The name of the file to save the plot, by default 'epochs_with_events{subject_id}.png'.
-
+        save_path : Optional[str], optional
+            Path to save the plot, by default None.
+        fig_name : str, optional
+            Name of the file to save the plot, by default 'epochs_with_events{subject_id}.png'.
+    
         Returns
         -------
         None
         """
         mod_start_index = event_names.index('mod_start')
         mod_end_index = event_names.index('mod_end')
-
+    
         # Convert window size from seconds to samples
         window_size_time = int(window_size * sfreq)
-
+    
         # Get unique trial IDs for the subject
         unique_trial_ids = np.unique(patients_epochs[subject_id].events[:, 1])
         
         # Find the maximum end time across all trials
         max_end_time = max(event[0] + window_size_time for event in patients_epochs[subject_id].events)
-
+    
         # Find the maximum number of epochs across all trials
         max_num_epochs = max(len(patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]) for trial_id in unique_trial_ids)
-
-        # Calculate figure size based on the number of trials and epochs
-        fig_width = max_num_epochs // 2
-        fig_height = len(unique_trial_ids) * 4
-
+    
+        # Limit the figure size to avoid excessively large images
+        max_fig_width = 8  # Maximum width in inches
+        max_fig_height = 60  # Maximum height in inches
+        fig_width = min(max_num_epochs // 2, max_fig_width)
+        fig_height = min(len(unique_trial_ids) * 3, max_fig_height)
+    
         # Create subplots
         fig, axes = plt.subplots(len(unique_trial_ids), 1, figsize=(fig_width, fig_height), sharex=True, sharey=True)
-
+    
         for i, trial_id in enumerate(unique_trial_ids):
             # Get events for the current trial
             event_subset = patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]
             num_epochs = len(event_subset)  # Total number of epochs in this trial
-
+    
             labels_added = set()
             for j, event in enumerate(event_subset):
                 onset = event[0]
                 label = event[2]
                 
-                # IMPORTANT: Adjust the start time based on the trial index. This is necessary to align the epochs correctly. Note that the middle column of events array indicate the session index. And the first column is the onset time - the session index, which need to be subtracted to get the correct relative onset time.
+                # Adjust the start time based on the trial index
                 start = onset - i 
                 end = onset + window_size_time - i
-
+    
                 # Draw vertical lines for mod_start and mod_end
                 mod_start = subjects_event_idx_dict[subject_id][trial_id][mod_start_index]
                 mod_end = subjects_event_idx_dict[subject_id][trial_id][mod_end_index]
@@ -674,7 +675,7 @@ class Visualise:
                 # Calculate vertical position for each "box"
                 ymin = j / max_num_epochs
                 ymax = (j + 1) / max_num_epochs
-
+    
                 if label not in labels_added:
                     # Plot the epoch span with label
                     axes[i].axvspan(
@@ -691,10 +692,10 @@ class Visualise:
                         ymin=ymin, ymax=ymax,
                         color=f'C{label}', alpha=0.7
                     )
-
+    
                 # Add window index text in the middle of each span
                 axes[i].text((start + end) / 2, (ymin + ymax) / 2, f'{j}', ha='center', va='center', fontsize=6, color='black')
-
+    
             # Set title and labels for the subplot
             axes[i].set_title(f'Trial {trial_id} ({num_epochs} epochs)')
             axes[i].set_xlim(0, max_num_epochs)
@@ -706,18 +707,18 @@ class Visualise:
             axes[i].set_xlabel('Time (s)')
             axes[i].set_ylabel('Epochs')
             axes[i].grid(which='both', linestyle='--', linewidth=0.5)
-
+    
         # Set the overall plot labels and layout
         fig.suptitle(f'Epochs with Events for Subject {subject_id} ({len(unique_trial_ids)} trials)', fontsize=16)
-        plt.tight_layout(rect=[0, 0, 1, 0.98])
+        plt.tight_layout()
         
-        if save_fig:
-            plt.savefig(file_name)
-            print(f"Plot saved as {file_name}")
-
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
+    
         if show_fig:
             plt.show()
-
+    
         plt.close(fig)
         
     # TODO: enhance this function `plot_event_occurrence`
@@ -728,7 +729,7 @@ class Visualise:
                             event_dict: Dict[str, int],  
                             n_sessions: int,
                             show_fig: bool = True, 
-                            save_fig: bool = False, 
+                            save_fig: bool = True, 
                             file_name: str = 'event_occurrence.png') -> None:
         """
         Creates a horizontal bar plot of event occurrences for each session with different colors for each event type.
