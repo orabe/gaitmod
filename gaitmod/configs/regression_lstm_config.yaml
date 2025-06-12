@@ -1,0 +1,61 @@
+model:
+  model_type: "LSTM"
+  model_type_suffix: "Regression Model"
+  layers:
+    - type: "LSTM"
+      units: 64  # Adjust the number of units based on complexity
+      activation: "tanh"  # Activation function
+      recurrent_activation: "sigmoid"  # For the gates
+      return_sequences: true  # Keep true if stacking LSTMs
+
+    - type: "Dropout"
+      rate: 0.2  # Reduce overfitting
+
+    - type: "LSTM"
+      units: 32
+      activation: "tanh"
+      recurrent_activation: "sigmoid"
+      return_sequences: true  # False for the last LSTM in the stack
+
+    - type: "Dense"
+      units: 16  # Hidden dense layer
+      activation: "relu"
+
+    - type: "Dropout"
+      rate: 0.5
+
+    # Output layer
+    - type: "Dense"
+      units: 6  # Single output for regression
+      activation: "linear"  # Linear activation for continuous output
+
+  training:
+    epochs: 50  # number of complete passes through the entire training dataset during training. Determines how many times the model will see all the training data.
+    batch_size: 64  # number of samples processed before the model is updated. Smaller batch sizes provide a regularizing effect and reduce generalization error.
+    loss: "mean_squared_error"  # MSE is common for regression
+    metrics: ["mean_squared_error", "mean_absolute_error"]  # Additional metrics
+
+  optimizer:
+    type: "Adam"
+    learning_rate: 0.001
+
+features:
+  type: "Raw"  # Specify the feature type (e.g., PSD, Raw, etc.)
+  # normalization: true  # Enable normalization if applicable
+  feature_scaler: true  # Scale features using StandardScaler
+  target_scaler: true  # Scale targets using StandardScaler
+
+# data:
+  # input_shape: [100, 6]  # Adjust for time steps and features. #TODO: NOT USED SO FAR.
+  # scaling: true  # Scale input data
+
+data_preprocessing:
+  scaling: standard  # Standard scaling for regression
+  window_size: 50  # Adjust based on time series segmentation
+  stride: 25
+
+evaluation:
+  metrics:
+    mse: true  # Mean Squared Error
+    mae: true  # Mean Absolute Error
+    r2: true  # R-squared for regression performance

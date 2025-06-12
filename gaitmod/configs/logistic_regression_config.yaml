@@ -1,0 +1,8 @@
+model:
+  name: Logistic Regression
+  penalty: l2
+  solver: lbfgs
+  max_iter: 1000
+
+data_preprocessing:
+  scaling: minmax

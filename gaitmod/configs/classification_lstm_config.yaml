@@ -1,0 +1,60 @@
+model:
+  name: "LSTMModel"
+  layers:
+    - type: "LSTM"
+      units: 64  # Reduce units to 64
+      activation: "tanh"  # tanh CuDNN-compatible
+      recurrent_activation: "sigmoid"  # CuDNN-compatible
+      return_sequences: true
+
+    - type: "Dropout"
+      rate: 0.2
+
+    - type: "LSTM"
+      units: 64
+      activation: "tanh"  # CuDNN-compatible
+      recurrent_activation: "sigmoid"  # CuDNN-compatible
+      return_sequences: true
+
+    - type: "Dense"
+      units: 32
+      activation: "relu"
+
+    - type: "Dropout"
+      rate: 0.5
+
+    # Output layer dynamically determined by input shape
+    - type: "Dense"
+      units: 1 #"input_shape[-1]"  # Special placeholder for dynamic calculation
+      activation: "sigmoid"
+
+  training:
+    epochs: 10
+    batch_size: 32
+    loss: "binary_crossentropy"
+
+  optimizer:
+    type: "Adam"
+    learning_rate: 0.001
+
+features:
+  type: "PSD"
+  bands: ["theta", "alpha", "beta"]
+
+data:
+  input_shape: [501, 6]
+  scaling: true
+
+data_preprocessing:
+  scaling: standard
+  window_size: 256
+  stride: 128
+
+evaluation:
+  metrics:
+    accuracy: true
+    precision: true
+    recall: true
+    f1: true
+    confusion_matrix: true
+    auc: true

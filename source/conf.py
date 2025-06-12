@@ -6,7 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'gait_modulation'
+project = 'gaitmod'
 copyright = '2024, Mohammad Orabe'
 author = 'Mohammad Orabe'
 release = '0.1'

@@ -1,0 +1,37 @@
+# Root directory and events configuration
+data:
+  root_directory: '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/Rita/Gait_Modulation_Prediction_DATA'
+  subject_id:
+    - 'PW_EM59'
+    - 'PW_FH57'
+    - 'PW_HK59'
+    - 'PW_HZ58'
+    - 'PW_SN61'
+    - 'PW_SN66'
+    - 'PW_US68'
+      
+events:
+  event_of_interest: "mod_start"
+  other_events: "normal_walking"
+  mod_start_event_id: 1
+  normal_walking_event_id: -1
+
+segmentation:
+  epoch_tmin: -3.0
+  epoch_tmax: 0.0
+  gap_duration: 5  # Ensure modulation events are spaced by at least 10 seconds
+
+data_preprocessing:
+  padding:
+    enabled: true  # Set to true if padding is required
+    padding_value: 0
+    target_length: "max"  # If set to "max", pad all trials to the longest length among them; otherwise, specify a custom integer value for padding length.
+    padding_position: "end"  # Can be "start" or "end"
+  
+  truncation:
+    enabled: false  # Set to true if truncation is required
+    target_length: "min"  # If set to "min", truncate all trials to the shortest length among them; otherwise, specify a custom integer value for truncation length.
+    truncation_position: "end"  # Can be "start" or "end"
+
+reject_criteria:
+  dbs_threshold: 150 # Dictionary of rejection thresholds for each channel

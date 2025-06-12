@@ -9,17 +9,17 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.metrics import mean_squared_error, accuracy_score
 
 
-from gait_modulation import MatFileReader, DataProcessor, Visualise, FeatureExtractor
-from gait_modulation import LSTMModel #, BaseModel, RegressionModels
-from gait_modulation.utils.utils import split_data_stratified, load_config, initialize_tf, generate_continuous_labels, create_lagged_data
+from gaitmod import MatFileReader, DataProcessor, Visualise, FeatureExtractor
+from gaitmod import LSTMModel #, BaseModel, RegressionModels
+from gaitmod.utils.utils import split_data_stratified, load_config, initialize_tf, generate_continuous_labels, create_lagged_data
 from multiprocessing import Pool  # Add multiprocessing
 from tensorflow.keras.callbacks import Callback,  ModelCheckpoint, TensorBoard, EarlyStopping, ReduceLROnPlateau
 
 
 
 # ------------------ Load Configuration ------------------ #
-lfp_metadata_config = load_config('gait_modulation/configs/written/lfp_metadata_config.yaml')
-data_preprocessing_config = load_config('gait_modulation/configs/data_preprocessing.yaml')
+lfp_metadata_config = load_config('gaitmod/configs/written/lfp_metadata_config.yaml')
+data_preprocessing_config = load_config('gaitmod/configs/data_preprocessing.yaml')
 
 with open('processed/lfp_raw_list.pkl', 'rb') as f:
     lfp_raw_list = pickle.load(f)
@@ -90,7 +90,7 @@ y = labels_uniform.transpose(0, 2, 1)[:, :200, :]
 # y = labels_uniform[:, 0, :][:, :100]  # Choose one channel as target
 
 
-path_to_classification_lstm_config = 'gait_modulation/configs/classification_lstm_config.yaml'
+path_to_classification_lstm_config = 'gaitmod/configs/classification_lstm_config.yaml'
 
 results = {}
 

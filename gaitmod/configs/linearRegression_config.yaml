@@ -1,0 +1,28 @@
+model:
+  model_type: "lasso"  # Options: "linear", "ridge", "lasso", "lstm"
+  model_type_suffix: "regression"
+  parameters:
+    alpha: 0.1  # Regularization strength for Ridge and Lasso
+    max_iter: 1000  # Max iterations for convergence
+    fit_intercept: true  # Whether to include an intercept
+
+  training:
+    epochs: 10  # Only used for LSTM
+    batch_size: 32  # Only used for LSTM
+    cross_validation: true  # Enable cross-validation
+    cv_folds: 5  # Number of folds for CV (if enabled)
+
+features:
+  type: "raw"
+  feature_scaler: true  # Scale features using StandardScaler
+  target_scaler: true  # Scale targets using StandardScaler
+  # normalize: false  # Normalize features (optional)
+
+data:
+  input_shape: [None, None]  # Used for LSTM (time_steps, features)
+
+evaluation:
+  metrics:
+    mse: true  # Mean Squared Error
+    mae: true  # Mean Absolute Error
+    r2: true  # R-squared

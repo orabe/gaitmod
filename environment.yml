@@ -1,4 +1,4 @@
-name: gait_modulation
+name: gaitmod
 channels:
   - conda-forge
   - defaults
@@ -49,15 +49,15 @@ dependencies:
 
       # Local package
       - "-e ."
-# prefix: /Users/orabe/miniconda3/envs/gait_modulation
+# prefix: /Users/orabe/miniconda3/envs/gaitmod
 
 # If added or removed packages, update the current environment without recreating it:
 # NOTE: --prune removes packages that are no longer in environment.yml.
 # >>>conda env update --file environment.yml --prune
 
 # For significant changes:
-# conda remove --name gait_modulation --all -y
+# conda remove --name gaitmod --all -y
 # conda env create -f environment.yml
 
 # Add the environment to the PATH:
-# export PATH=/Users/orabe/miniconda3/envs/gait_modulation/bin:$PATH
+# export PATH=/Users/orabe/miniconda3/envs/gaitmod/bin:$PATH

@@ -6,7 +6,7 @@ def read_file(filename):
         return f.read()
 
 setup(
-    name = 'gait_modulation',
+    name = 'gaitmod',
     version = '0.1.0',
     description = '<DESCRIPTION FOR GAIT MODULATION>',
     long_description=read_file('README.rst'),

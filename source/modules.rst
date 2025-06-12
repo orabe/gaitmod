@@ -1,7 +1,7 @@
 Modules
 =======
 
-.. automodule:: gait_modulation
+.. automodule:: gaitmod
    :members:
    :undoc-members:
    :show-inheritance:

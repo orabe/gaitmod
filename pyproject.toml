@@ -1,5 +1,5 @@
 [project]
-name = "gait_modulation"
+name = "gaitmod"
 version = "0.1.0"
 description = "A project for analyzing and modeling gait modulation using machine learning techniques."
 authors = [{name = "Mohammad Orabe", email = "orabe.mhd@gmail.com"}]

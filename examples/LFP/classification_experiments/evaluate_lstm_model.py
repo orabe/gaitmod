@@ -5,20 +5,20 @@ import sys
 # Check if the notebook is running on Google Colab
 if 'google.colab' in sys.modules:
     # Clone the repository
-    # os.system('git clone https://github.com/orabe/gait_modulation.git')
+    # os.system('git clone https://github.com/orabe/gaitmod.git')
     # Change directory to the cloned repository
-    # os.chdir('gait_modulation')
+    # os.chdir('gaitmod')
     
     from google.colab import drive
     drive.mount('/content/drive')
     
     # Change directory to the desired location in Google Drive
-    os.chdir('/content/drive/MyDrive/master_thesis/gait_modulation')
+    os.chdir('/content/drive/MyDrive/master_thesis/gaitmod')
 
 # %%
 if 'google.colab' in sys.modules:    
     # Install the package
-    # os.system('pip install gait_modulation')
+    # os.system('pip install gaitmod')
     
     # Install the package in editable mode
     os.system('pip install -e .')
@@ -42,9 +42,9 @@ import time
 import logging
 import seaborn as sns
 
-from gait_modulation import FeatureExtractor2
-from gait_modulation import LSTMClassifier
-from gait_modulation.utils.utils import load_pkl, initialize_tf, disable_xla
+from gaitmod import FeatureExtractor2
+from gaitmod import LSTMClassifier
+from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
 
 # %%
 # Suppress TensorFlow logs (0 = all, 1 = info, 2 = warnings, 3 = errors)
