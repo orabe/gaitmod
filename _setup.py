@@ -7,7 +7,7 @@ def read_file(filename):
 
 setup(
     name = 'gait_modulation',
-    version = '1.0',
+    version = '0.1.0',
     description = '<DESCRIPTION FOR GAIT MODULATION>',
     long_description=read_file('README.rst'),
     author='Mohammad Orabe',
