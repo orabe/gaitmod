@@ -14,6 +14,7 @@ class FeatureExtractor2:
         self.sfreq = sfreq
         self.features_config = features_config
         self.feature_idx_map = {}
+        self.feature_names = None
 
     def extract_features(self, epochs, feature_handling="flatten_chs"):
         data = epochs.get_data(copy=True)
@@ -168,7 +169,7 @@ class FeatureExtractor2:
         # Extract labels from the MNE Epochs object
         y = epochs.events[:, -1]
 
-        return X, y
+        return X, y, feature_idx_map
     
     
     def select_feature(self, feature_matrix, feature_name, feature_handling="flatten_chs"):

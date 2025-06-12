@@ -12,3 +12,5 @@ from .models.feature_extraction import FeatureExtractor2
 from .models.lstm_classification_model import LSTMClassifier, CustomGridSearchCV, CustomTrainingLogger
 
 __all__ = ['MatFileReader', 'DataProcessor', 'FeatureExtractor', 'Visualise', 'BaseModel', 'RegressionModels', 'LinearRegressionModel', 'RegressionLSTMModel', 'ClassificationModels', 'ClassificationLSTMModel', 'FeatureExtractor2', 'LSTMClassifier', 'CustomGridSearchCV', 'CustomTrainingLogger']
+
+__version__ = "0.1.0"

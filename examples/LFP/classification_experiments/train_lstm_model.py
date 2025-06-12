@@ -72,9 +72,8 @@ def load_data():
 
 # %%
 # %%
-def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flatten_chs", mask_vals=(0.0, 2), features_config=None, n_windows_threshold=None):
+def preprocess_data(feature_extractor, patient_epochs, patient_names, sfreq, feature_handling="flatten_chs", mask_vals=(0.0, 2), features_config=None, n_windows_threshold=None):
 
-    feature_extractor = FeatureExtractor2(sfreq, features_config)
 
     # X_grouped is a list where each element is (n_windows_per_trial, n_features)
     X_grouped, y_grouped, groups = [], [], []
@@ -89,7 +88,7 @@ def preprocess_data(patient_epochs, patient_names, sfreq, feature_handling="flat
         # print(f"- Patient {patient} has {len(unique_trials)} trials")
 
         # Extract features and labels
-        X_patient, y_patient = feature_extractor.extract_features_with_labels(epochs, feature_handling)
+        X_patient, y_patient, feature_idx_map = feature_extractor.extract_features_with_labels(epochs, feature_handling)
 
         # Group windows by trial
         for trial in unique_trials:
@@ -224,7 +223,8 @@ if features_config is None:
         # }
     }
 
-X_padded, y_padded, groups = preprocess_data(patient_epochs, patient_names, sfreq, feature_handling, mask_vals, features_config)
+feature_extractor = FeatureExtractor2(sfreq, features_config)
+X_padded, y_padded, groups = preprocess_data(feature_extractor, patient_epochs, patient_names, sfreq, feature_handling, mask_vals, features_config)
 
 n_features = X_padded.shape[2]
 n_windows = X_padded.shape[1]
@@ -247,106 +247,110 @@ print(f"Number of available CPU cores: {num_cores}")
 # %tensorboard --logdir logs/lstm
 
 # %%
-logo = LeaveOneGroupOut()
 
-n_splits = logo.get_n_splits(X_padded, y_padded, groups)
+def main():
+    logo = LeaveOneGroupOut()
 
-param_values = param_grid[0].values()
-candidates = list(product(*param_values))
-n_candidates = len(candidates)
-total_fits = n_splits * n_candidates
-print(f"Fitting {n_splits} folds for each of {n_candidates} candidates, totalling {total_fits} fits")
+    n_splits = logo.get_n_splits(X_padded, y_padded, groups)
 
-logging.info("Starting Grid Search...")
+    param_values = param_grid[0].values()
+    candidates = list(product(*param_values))
+    n_candidates = len(candidates)
+    total_fits = n_splits * n_candidates
+    print(f"Fitting {n_splits} folds for each of {n_candidates} candidates, totalling {total_fits} fits")
 
-grid_search = GridSearchCV(
-    pipeline,
-    param_grid=param_grid,
-    cv=logo,
-    scoring=scoring,
-    refit='f1' if 'f1' in scoring else 'accuracy',
-    n_jobs=num_cores,
-    verbose=3,
-)
+    logging.info("Starting Grid Search...")
 
-# %%
-grid_search.fit(X_padded, y_padded, groups=groups)
+    grid_search = GridSearchCV(
+        pipeline,
+        param_grid=param_grid,
+        cv=logo,
+        scoring=scoring,
+        refit='f1' if 'f1' in scoring else 'accuracy',
+        n_jobs=num_cores,
+        verbose=3,
+    )
 
-# %%
-# %%
-def setup_logging():
-    ts = time.strftime("%Y%m%d-%H%M%S")
-    model_dir = os.path.join("logs", "lstm", "models", f"run_{ts}")
-    history_dir = os.path.join("logs", "lstm", "history", ts)
-    os.makedirs(model_dir, exist_ok=True)
-    os.makedirs(history_dir, exist_ok=True)
-    
-    # Set up logging
-    log_stream = StringIO()
-    logging.basicConfig(level=logging.INFO, stream=log_stream, format='%(asctime)s - %(levelname)s - %(message)s')
-    
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    logging.getLogger().addHandler(console_handler)
-    
-    return model_dir, history_dir, log_stream
+    # %%
+    grid_search.fit(X_padded, y_padded, groups=groups)
 
-
-model_dir, history_dir, log_stream = setup_logging()
-
-# %%
-print(f"Best Parameters: {grid_search.best_params_}")
-print(f"Best Cross-Validation Accuracy: {grid_search.best_score_:.4f}")
-logging.info(f"Best Parameters: {grid_search.best_params_}")
-logging.info(f"Best Score: {grid_search.best_score_:.4f}")
-
-best_model = grid_search.best_estimator_.named_steps['classifier'].model
-model_summary_path = os.path.join(model_dir, "best_model_summary.txt")
-with open(model_summary_path, 'w') as f:
-    best_model.summary(print_fn=lambda x: f.write(x + '\n'))
-print(best_model.summary())
-print(f"Best model summary saved at {model_summary_path}.")
-
-best_model_path = os.path.join(model_dir, "best_lstm_model.h5")
-keras_model_path = os.path.join(model_dir, 'best_lstm_model.keras')
-best_model.save(best_model_path)
-save_model(best_model, keras_model_path)
-print(f"Best LSTM model saved at {best_model_path}.")
-logging.info(f"Best LSTM model saved at {best_model_path}.")
-
-best_params_path = os.path.join(model_dir, 'best_params.json')
-cv_results_path = os.path.join(model_dir, 'cv_results.csv')
-evaluation_metrics_path = os.path.join(model_dir, 'evaluation_metrics.json')
-
-with open(best_params_path, 'w') as f:
-    json.dump(grid_search.best_params_, f)
-print(f"Best parameters saved at {best_params_path}")
-
-for fold, history in enumerate(grid_search.best_estimator_.named_steps['classifier'].history_):
-    history_path = os.path.join(history_dir, f'best_estimator_training_history_per_fold_and_epoch.json')
-    with open(history_path, 'w') as f:
-        json.dump(history, f)
-    print(f"Best estimator training history per fold and epoch saved at {history_path}")
+    # %%
+    # %%
+    def setup_logging():
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        model_dir = os.path.join("logs", "lstm", "models", f"run_{ts}")
+        history_dir = os.path.join("logs", "lstm", "history", ts)
+        os.makedirs(model_dir, exist_ok=True)
+        os.makedirs(history_dir, exist_ok=True)
+        
+        # Set up logging
+        log_stream = StringIO()
+        logging.basicConfig(level=logging.INFO, stream=log_stream, format='%(asctime)s - %(levelname)s - %(message)s')
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        console_handler.setFormatter(formatter)
+        logging.getLogger().addHandler(console_handler)
+        
+        return model_dir, history_dir, log_stream
 
 
-results_df = pd.DataFrame(grid_search.cv_results_)
-results_df.to_csv(cv_results_path, index=False)
-print(f"Cross-validation results saved at {cv_results_path}")
+    model_dir, history_dir, log_stream = setup_logging()
 
-plot_model(best_model, to_file=os.path.join(model_dir, 'model_architecture.png'), show_shapes=True)
-print(f"Model architecture plot saved at {os.path.join(model_dir, 'model_architecture.png')}.")
+    # %%
+    print(f"Best Parameters: {grid_search.best_params_}")
+    print(f"Best Cross-Validation Accuracy: {grid_search.best_score_:.4f}")
+    logging.info(f"Best Parameters: {grid_search.best_params_}")
+    logging.info(f"Best Score: {grid_search.best_score_:.4f}")
 
-log_file_path = os.path.join(model_dir, 'training.log')
-with open(log_file_path, 'w') as f:
-    f.write(log_stream.getvalue())
-print(f"Training logs saved at {log_file_path}.")
+    best_model = grid_search.best_estimator_.named_steps['classifier'].model
+    model_summary_path = os.path.join(model_dir, "best_model_summary.txt")
+    with open(model_summary_path, 'w') as f:
+        best_model.summary(print_fn=lambda x: f.write(x + '\n'))
+    print(best_model.summary())
+    print(f"Best model summary saved at {model_summary_path}.")
 
-# %%
-grid_search.best_estimator_.named_steps['classifier']
+    best_model_path = os.path.join(model_dir, "best_lstm_model.h5")
+    keras_model_path = os.path.join(model_dir, 'best_lstm_model.keras')
+    best_model.save(best_model_path)
+    save_model(best_model, keras_model_path)
+    print(f"Best LSTM model saved at {best_model_path}.")
+    logging.info(f"Best LSTM model saved at {best_model_path}.")
 
-# %%
-results_df.T
+    best_params_path = os.path.join(model_dir, 'best_params.json')
+    cv_results_path = os.path.join(model_dir, 'cv_results.csv')
+    evaluation_metrics_path = os.path.join(model_dir, 'evaluation_metrics.json')
+
+    with open(best_params_path, 'w') as f:
+        json.dump(grid_search.best_params_, f)
+    print(f"Best parameters saved at {best_params_path}")
+
+    for fold, history in enumerate(grid_search.best_estimator_.named_steps['classifier'].history_):
+        history_path = os.path.join(history_dir, f'best_estimator_training_history_per_fold_and_epoch.json')
+        with open(history_path, 'w') as f:
+            json.dump(history, f)
+        print(f"Best estimator training history per fold and epoch saved at {history_path}")
 
 
+    results_df = pd.DataFrame(grid_search.cv_results_)
+    results_df.to_csv(cv_results_path, index=False)
+    print(f"Cross-validation results saved at {cv_results_path}")
+
+    plot_model(best_model, to_file=os.path.join(model_dir, 'model_architecture.png'), show_shapes=True)
+    print(f"Model architecture plot saved at {os.path.join(model_dir, 'model_architecture.png')}.")
+
+    log_file_path = os.path.join(model_dir, 'training.log')
+    with open(log_file_path, 'w') as f:
+        f.write(log_stream.getvalue())
+    print(f"Training logs saved at {log_file_path}.")
+
+    # %%
+    grid_search.best_estimator_.named_steps['classifier']
+
+    # %%
+    results_df.T
+
+
+if __name__ == "__main__":
+    main()
