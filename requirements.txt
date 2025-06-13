@@ -1,5 +1,5 @@
 # Regular dependencies
-antropy==0.1.6
+antropy==0.1.9
 imbalanced-learn==0.12.4
 keras==3.9.0
 matplotlib==3.8.4
