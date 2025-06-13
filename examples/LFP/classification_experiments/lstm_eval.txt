@@ -1,0 +1,158 @@
+(f"Evaluation metrics saved at {evaluation_metrics_path}")
+
+ Number of splits: 7
+============================================================
+
+---- Fold 1/7 | Patient PW_EM59] ----
+
+1/1 ━━━━━━━━━━━━━━━━━━━━ 0s 79ms/step
+Accuracy = 0.8061, F1-score = 0.8247, Precision = 0.8952, Recall = 0.8061, ROC AUC = 0.8678
+Confusion Matrix:
+[[102  31]
+ [  1  31]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.9903    0.7669    0.8644       133
+    Modulation     0.5000    0.9688    0.6596        32
+
+      accuracy                         0.8061       165
+     macro avg     0.7451    0.8678    0.7620       165
+  weighted avg     0.8952    0.8061    0.8247       165
+
+============================================================
+
+---- Fold 2/7 | Patient PW_FH57] ----
+
+2/2 ━━━━━━━━━━━━━━━━━━━━ 0s 73ms/step
+Accuracy = 0.9044, F1-score = 0.9046, Precision = 0.9051, Recall = 0.9044, ROC AUC = 0.8999
+Confusion Matrix:
+[[758  69]
+ [ 56 424]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.9312    0.9166    0.9238       827
+    Modulation     0.8600    0.8833    0.8715       480
+
+      accuracy                         0.9044      1307
+     macro avg     0.8956    0.8999    0.8977      1307
+  weighted avg     0.9051    0.9044    0.9046      1307
+
+============================================================
+
+---- Fold 3/7 | Patient PW_HK59] ----
+
+1/1 ━━━━━━━━━━━━━━━━━━━━ 0s 88ms/step
+Accuracy = 0.6481, F1-score = 0.6166, Precision = 0.5997, Recall = 0.6481, ROC AUC = 0.5052
+Confusion Matrix:
+[[624 124]
+ [243  52]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.7197    0.8342    0.7728       748
+    Modulation     0.2955    0.1763    0.2208       295
+
+      accuracy                         0.6481      1043
+     macro avg     0.5076    0.5052    0.4968      1043
+  weighted avg     0.5997    0.6481    0.6166      1043
+
+============================================================
+
+---- Fold 4/7 | Patient PW_HZ58] ----
+
+2/2 ━━━━━━━━━━━━━━━━━━━━ 0s 77ms/step
+Accuracy = 0.9196, F1-score = 0.9187, Precision = 0.9206, Recall = 0.9196, ROC AUC = 0.9065
+Confusion Matrix:
+[[625  23]
+ [ 62 347]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.9098    0.9645    0.9363       648
+    Modulation     0.9378    0.8484    0.8909       409
+
+      accuracy                         0.9196      1057
+     macro avg     0.9238    0.9065    0.9136      1057
+  weighted avg     0.9206    0.9196    0.9187      1057
+
+============================================================
+
+---- Fold 5/7 | Patient PW_SN61] ----
+
+1/1 ━━━━━━━━━━━━━━━━━━━━ 0s 102ms/step
+Accuracy = 0.8010, F1-score = 0.7990, Precision = 0.7983, Recall = 0.8010, ROC AUC = 0.7728
+Confusion Matrix:
+[[752 114]
+ [152 319]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.8319    0.8684    0.8497       866
+    Modulation     0.7367    0.6773    0.7058       471
+
+      accuracy                         0.8010      1337
+     macro avg     0.7843    0.7728    0.7777      1337
+  weighted avg     0.7983    0.8010    0.7990      1337
+
+============================================================
+
+---- Fold 6/7 | Patient PW_SN66] ----
+
+1/1 ━━━━━━━━━━━━━━━━━━━━ 0s 94ms/step
+Accuracy = 0.8411, F1-score = 0.8475, Precision = 0.8636, Recall = 0.8411, ROC AUC = 0.8353
+Confusion Matrix:
+[[331  60]
+ [ 22 103]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.9377    0.8465    0.8898       391
+    Modulation     0.6319    0.8240    0.7153       125
+
+      accuracy                         0.8411       516
+     macro avg     0.7848    0.8353    0.8025       516
+  weighted avg     0.8636    0.8411    0.8475       516
+
+============================================================
+
+---- Fold 7/7 | Patient PW_US68] ----
+
+1/1 ━━━━━━━━━━━━━━━━━━━━ 0s 106ms/step
+Accuracy = 0.8663, F1-score = 0.8649, Precision = 0.8674, Recall = 0.8663, ROC AUC = 0.8549
+Confusion Matrix:
+[[354  29]
+ [ 59 216]]
+Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.8571    0.9243    0.8894       383
+    Modulation     0.8816    0.7855    0.8308       275
+
+      accuracy                         0.8663       658
+     macro avg     0.8694    0.8549    0.8601       658
+  weighted avg     0.8674    0.8663    0.8649       658
+
+************************************************************
+
+Overall Accuracy: 0.8282, Overall F1 Score: 0.8266, , Overall Precision: 0.8261, Overall Recall: 0.8282 Overall ROC AUC: 0.8011
+Overall Confusion Matrix:
+[[3546  450]
+ [ 595 1492]]
+Overall Classification Report:
+                precision    recall  f1-score   support
+
+Normal Walking     0.8563    0.8874    0.8716      3996
+    Modulation     0.7683    0.7149    0.7406      2087
+
+      accuracy                         0.8282      6083
+     macro avg     0.8123    0.8011    0.8061      6083
+  weighted avg     0.8261    0.8282    0.8266      6083
+
+
+Mean Accuracy: 0.8266 ± 0.0840
+Mean F1 Score: 0.8252 ± 0.0936
+Mean Precision: 0.8357 ± 0.1031
+Mean Recall: 0.8266 ± 0.0840
+Mean ROC AUC: 0.8061 ± 0.1296

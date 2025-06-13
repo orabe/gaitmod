@@ -1,0 +1,4 @@
+sphinx>=4.0 # Or a specific recent version
+sphinx-rtd-theme
+sphinx-autodoc-typehints
+myst-parser

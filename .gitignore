@@ -1,12 +1,13 @@
 # macOS system files
 .DS_Store
+.vscode
 
 # training log files
 # logs/
 *.log
 *.out
 *.err
-*.txt
+# *.txt
 *.keras
 
 # TensorBoard log files
