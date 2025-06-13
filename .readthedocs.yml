@@ -9,7 +9,7 @@ python:
     - requirements: requirements.txt
 
 build:
-  os: macOS
+  os: ubuntu-22.04 # macOS
   tools:
     python: "3.8"
     pip: "20.0.2"
