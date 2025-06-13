@@ -14,5 +14,4 @@ python:
   install:
     - requirements: docs/requirements.txt # Install documentation requirements first
     - method: pip
-      path: .        # Correctly specify the path to the package root
-                     # This will run 'pip install .' which installs your package
+      # path: .      
