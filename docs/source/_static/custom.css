@@ -1,0 +1,14 @@
+/* Make everything a little flatter and more modern */
+.wy-nav-top {
+    background: #3498db; /* nicer blue */
+}
+.wy-side-nav-search {
+    background: #3498db; /* same blue */
+}
+.wy-menu-vertical a {
+    font-weight: 600; /* bolder sidebar links */
+}
+.rst-content {
+    font-size: 16px; /* slightly bigger text */
+    line-height: 1.6; /* better readability */
+}

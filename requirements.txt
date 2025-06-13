@@ -1,18 +1,17 @@
 # Regular dependencies
 antropy==0.1.9
-imbalanced_learn==0.12.4
-keras==2.13.1
-matplotlib==3.10.3
-mne==1.9.0
-numpy==1.24.3
-pandas==2.3.0
-pyyaml==6.0.2
-scikit_learn==1.7.0
-scipy==1.15.3
+imbalanced-learn==0.12.4
+keras==3.9.0
+matplotlib==3.8.4
+mne==1.7.1
+numpy==1.26.4
+pandas==2.2.1
+scikit-learn==1.2.2 # 1.6.1
+scipy==1.13.0
+setuptools==69.5.1
+tqdm==4.66.4
 seaborn==0.13.2
-setuptools==80.9.0
-tqdm==4.67.1
-pydot==3.0.4
+pyyaml==6.0.2
 
 
 # TensorFlow dependencies (platform-dependent)
