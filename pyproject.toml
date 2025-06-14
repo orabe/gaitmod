@@ -1,7 +1,7 @@
 [project]
 name = "gaitmod"
 version = "0.1.0"
-description = "real-time gait modulation prediction using multimodal neural and movement data (LFP, EEG, IMU, EMG) — designed for closed-loop DBS systems in Parkinson's diseas."
+description = "Real-time gait modulation prediction using multimodal neural and movement data (LFP, EEG, IMU, EMG) — designed for closed-loop DBS systems in Parkinson's diseas."
 authors = [{name = "Mohammad Orabe", email = "orabe.mhd@gmail.com"}]
 readme = "README.md"
 requires-python = ">=3.8" 
@@ -24,7 +24,24 @@ dependencies = [
     "pydot"
 ]
 
-keywords = ["gait", "modulation", "LFP", "ML"]
+keywords = [
+    "machine-learning", 
+    "deep-learning", 
+    "gait", 
+    "modulation", 
+    "brain-computer-interface", 
+    "signal-processing", 
+    "deep-brain-stimulation", 
+    "closed-loop-dbs"
+    "parkinsons", 
+    "BCI", 
+    "ML", 
+    "LFP", 
+    "EEG", 
+    "IMU", 
+    "EMG", 
+    "dbs"
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
