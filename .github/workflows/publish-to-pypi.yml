@@ -1,0 +1,36 @@
+name: Publish Python distributions to PyPI
+
+on:
+  release:
+    types: [published] # Triggers when a new GitHub Release is published
+
+jobs:
+  build-and-publish:
+    name: Build and publish Python distributions to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Necessary for OIDC trusted publishing
+      contents: read # To checkout the repository
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10' # Or the desired Python version
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build
+
+    - name: Build package
+      run: python -m build
+
+    - name: Publish package to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      # No with: password needed here due to trusted publishing
+      # The action will automatically use OIDC to authenticate with PyPI
+      # Ensure configuring trusted publishing on PyPI for this repository and workflow.

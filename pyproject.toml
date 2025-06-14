@@ -1,21 +1,25 @@
 [project]
 name = "gaitmod"
 version = "0.1.0"
-description = "A project for analyzing and modeling gait modulation using machine learning techniques."
+description = "real-time gait modulation prediction using multimodal neural and movement data (LFP, EEG, IMU, EMG) — designed for closed-loop DBS systems in Parkinson's diseas."
 authors = [{name = "Mohammad Orabe", email = "orabe.mhd@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.8" 
+license = {file = "LICENSE"}
+
 dependencies = [
     "antropy",
-    "imbalanced_learn",
+    "imbalanced-learn",
     "tensorflow[and-cuda]",
     "matplotlib",
     "mne",
     "numpy",
     "pandas",
     "pyyaml",
-    "scikit_learn",
+    "scikit-learn",
     "scipy",
     "seaborn",
-    "setuptools",
+    # "setuptools", # Removed as it's typically a build-dependency, not runtime for flit
     "tqdm",
     "pydot"
 ]
@@ -34,6 +38,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Medical Science Apps."
 ]
 
+[project.urls]
+Homepage = "https://github.com/orabe/gaitmod" # 
+Documentation = "https://gaitmod.readthedocs.io/"
+Repository = "https://github.com/orabe/gaitmod"
+"Bug Tracker" = "https://github.com/orabe/gaitmod/issues"
+
 [build-system]
 requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
+
+[project.optional-dependencies]
+viz = ["pydot"]
+# dev = ["pytest", "black", "flake8"]
