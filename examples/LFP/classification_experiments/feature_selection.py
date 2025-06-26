@@ -1130,9 +1130,10 @@ def main():
         X_reshaped = X_padded_original_flat.reshape(
             n_total_trials, n_windows, n_channels_actual, n_base_features 
         )
-        X_for_selection = np.mean(X_reshaped, axis=2) 
-        feature_names_for_selector = [f"AvgCh_BaseFeat_{i}" for i in range(n_base_features)]
-        print(f"Using CHANNEL-AVERAGED data. Input X_for_selection shape: {X_for_selection.shape}, Number of features for selector: {len(feature_names_for_selector)}")
+        selected_channel = 0  #  select a different channel (0-based)
+        X_for_selection = X_reshaped[:, :, selected_channel, :]
+        feature_names_for_selector = [f"Ch{selected_channel}_BaseFeat_{i}" for i in range(n_base_features)]
+        print(f"Using data from channel {selected_channel}. Input X_for_selection shape: {X_for_selection.shape}, Number of features for selector: {len(feature_names_for_selector)}")
     except ValueError as e:
         print(f"FATAL: Error reshaping data for channel averaging: {e}")
         return

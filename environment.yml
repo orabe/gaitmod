@@ -4,52 +4,52 @@ channels:
   - defaults
   - apple
 dependencies:
-  # - python==3.10
-  # - antropy==0.1.9
-  # - imbalanced-learn==0.12.4
-  # - keras==3.9.0
-  # - matplotlib==3.8.4
-  # - mne==1.7.1
-  # - numpy==1.26.4
-  # - pandas==2.2.1
-  # - scikit-learn==1.2.2 #1.5.1
-  # - scipy==1.13.0
-  # - setuptools==69.5.1
-  # - tqdm==4.66.4
-  # - seaborn==0.13.2
-  # - pyyaml==6.0.2
   - python==3.10
-  - pip
+  - tensorflow-deps
+
+  # Pin NumPy via conda to ensure compatibility with tensorflow-macos
+  # tensorflow-macos 2.13.1 requires numpy <=1.24.3 and >=1.22
+  # - numpy=1.24.3
+
+  # # Other core dependencies you might want from conda
+  # - pandas
+  # - scipy
+  # - scikit-learn
+  - pip # To ensure pip is available for the pip section
+
+
   - pip:
-      # - python==3.10
-      - antropy==0.1.9
-      - imbalanced-learn==0.12.4
-      - keras==3.9.0
-      - matplotlib==3.8.4
-      - mne==1.7.1
-      - numpy==1.26.4
-      - pandas==2.2.1
-      - scikit-learn==1.2.2 # 1.6.1
-      - scipy==1.13.0
-      - setuptools==69.5.1
-      - tqdm==4.66.4
-      - seaborn==0.13.2
-      - pyyaml==6.0.2
+    # TensorFlow for Apple Silicon (installed via pip after tensorflow-deps)
+    # These versions are known to work together with numpy 1.24.3
+    # - tensorflow-macos==2.13.1
+    # - tensorflow-metal==1.0.1 # Compatible with tensorflow-macos 2.13.1
 
-      # macOS (Apple Silicon) TensorFlow + Metal Acceleration
-      - "tensorflow-macos==2.16.2; sys_platform == 'darwin'"
-      - "tensorflow-metal==1.2.0; sys_platform == 'darwin'"
+    # Other dependencies from your pyproject.toml (pip will resolve these)
+    # No need to list versions here if they are in pyproject.toml,
+    # unless you need to pin a specific version for pip.
+    - numpy
+    - antropy
+    - imbalanced-learn
+    - matplotlib
+    - mne
+    - pyyaml
+    - seaborn
+    - tqdm
+    - pydot
+    # keras is not explicitly listed as it will come via tensorflow.keras
 
-      # Apple Silicon (M1/M2) dependency
-      # - "tensorflow-deps==2.16.2; sys_platform == 'darwin'"
+    # macOS (Apple Silicon) TensorFlow + Metal Acceleration
+    - "tensorflow-macos==2.16.2; sys_platform == 'darwin'"
+    - "tensorflow-metal==1.2.0; sys_platform == 'darwin'"
 
-      # Linux (CPU/GPU) TensorFlow
-      - "tensorflow==2.16.2; sys_platform != 'darwin'"
-      - "tensorflow-cuda==12.2; sys_platform != 'darwin'"  # GPU support
+    # Linux (CPU/GPU) TensorFlow
+    - "tensorflow==2.16.2; sys_platform != 'darwin'"
+    - "tensorflow-cuda==12.2; sys_platform != 'darwin'"  # GPU support
 
-      # Local package
-      - "-e ."
-# prefix: /Users/orabe/miniconda3/envs/gaitmod
+    # Local package
+    # - "-e ."
+
+# prefix: /Users/orabe/miniconda3/envs/gaitmodconda env create -f environment.yml
 
 # If added or removed packages, update the current environment without recreating it:
 # NOTE: --prune removes packages that are no longer in environment.yml.

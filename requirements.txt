@@ -1,7 +1,7 @@
 # Regular dependencies
 antropy==0.1.9
 imbalanced-learn==0.12.4
-keras==3.9.0
+# keras==3.9.0
 matplotlib==3.8.4
 mne==1.7.1
 numpy==1.26.4
@@ -14,11 +14,11 @@ seaborn==0.13.2
 pyyaml==6.0.2
 
 
-# TensorFlow dependencies (platform-dependent)
+# # TensorFlow dependencies (platform-dependent)
 # tensorflow==2.16.2 ; sys_platform != 'darwin'
 # tensorflow-cuda==12.2 ; sys_platform != 'darwin'  # GPU support on non-macOS platforms
 
-# macOS-specific TensorFlow dependencies
+# # macOS-specific TensorFlow dependencies
 # tensorflow-macos ; sys_platform == 'darwin'
 # tensorflow-metal ; sys_platform == 'darwin'
 # tensorflow-deps ; sys_platform == 'darwin'
@@ -35,3 +35,13 @@ pyyaml==6.0.2
 # conda create --name gait_modulation python=3.10
 # conda activate gait_modulation
 # pip install -r requirements.txt
+
+
+# ----
+# Setup Instructions for Apple Silicon (M1/M2/M3 Macs):
+# 1. conda create --name gaitmod python=3.10  (or your preferred python version)
+# 2. conda activate gaitmod
+# 3. conda install -c apple tensorflow-deps
+# 4. python -m pip install tensorflow-macos
+# 5. python -m pip install tensorflow-metal
+# 6. python -m pip install -r requirements.txt
