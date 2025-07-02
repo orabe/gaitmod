@@ -36,6 +36,7 @@ dependencies:
     - seaborn
     - tqdm
     - pydot
+    - tabulate
     # keras is not explicitly listed as it will come via tensorflow.keras
 
     # macOS (Apple Silicon) TensorFlow + Metal Acceleration
