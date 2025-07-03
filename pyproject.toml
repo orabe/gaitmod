@@ -20,6 +20,7 @@ dependencies = [
     "seaborn",
     "tqdm",
     "pydot",
+    "tabulate",
     "tensorflow" # Generic TensorFlow dependency
 ]
 
