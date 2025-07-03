@@ -1,4 +1,6 @@
 # GaitMod
+[![PyPI](https://img.shields.io/pypi/v/gaitmod.svg)](https://pypi.org/project/gaitmod/)
+[![Documentation Status](https://readthedocs.org/projects/gaitmod/badge/?version=latest)](https://gaitmod.readthedocs.io/)
 
 **gaitmod** is a Python library for processing, analyzing, and modeling multi-modal neural and movement data, including LFP, EEG, EMG, and IMU signals. It focuses on real-time gait modulation prediction in Parkinson's disease and supports customizable deep learning pipelines.
 
@@ -6,8 +8,9 @@ It provides tools to:
 
 * Preprocess and clean multi-modal data
 * Extract and select features from neural and movement signals
+* Perform feature selection and statistical testing
 * Train and evaluate machine learning models
-* Visualize results and model performance
+* Visualize results
 
 ## Table of Contents
 
@@ -27,7 +30,9 @@ This repository contains code and resources for studying gait modifications usin
 
 ## Documentation
 
-Comprehensive documentation is available at [https://gaitmod.readthedocs.io/](https://gaitmod.readthedocs.io/).
+Comprehensive documentation is available at [Read the Docs](https://gaitmod.readthedocs.io/).
+
+The latest release of gaitmod can be found on [PyPI](https://pypi.org/project/gaitmod/).
 
 ## Installation
 
