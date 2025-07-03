@@ -316,7 +316,7 @@ class DataProcessor:
 
             for session_idx, session in enumerate(data[subject].keys()):
                 if verbose: 
-                    print(f'session {session_idx}: {session}')
+                    print(f'    - session {session_idx}: {session}')
                 
                 session_data = data[subject][session]
                         
@@ -386,9 +386,10 @@ class DataProcessor:
             trial_start_idx = events_kin_samples[0, trial]
             trial_stop_idx = events_kin_samples[n_events-1, trial]
             
+            #  # or trial_start_idx >= trial_stop_idx
             if trial_start_idx > data.shape[1] or trial_stop_idx > data.shape[1]:
-                print(f"\033[93mTrial {trial} is outside the data range -- Subject {subject_id}, session {session_id}.\033[0m")
-                # continue
+                print(f"\033[93mSkipping trial {trial}: [{trial_start_idx}, {trial_stop_idx}] is outside LFP data range (0, {data.shape[1]}) -- Subject {subject_id}, session {session_id}.\033[0m")
+                continue
             
             # Extract data for this trial
             trial_data = data[:, trial_start_idx:trial_stop_idx]
@@ -557,7 +558,9 @@ class DataProcessor:
         window_size: float = 0.5,
         overlap: float = 0.5, 
         expand_transition: float = 0.0, 
-        discard_ambiguous: bool = False) -> mne.epochs.EpochsArray:
+        discard_ambiguous: bool = False,
+        mod_start_idx: int = 2,
+        mod_end_idx: int = 6) -> mne.epochs.EpochsArray:
         """
         Segments LFP trials into overlapping windows, assigns labels (0: normal, 1: modulation),
         and stores the results in an MNE Epochs object.
@@ -593,8 +596,8 @@ class DataProcessor:
 
             # Get event indices for this trial
             event_indices = subjects_event_idx_dict[trial_idx]
-            mod_start = event_indices[2]  # mod_start
-            mod_end = event_indices[6]    # mod_end
+            mod_start = event_indices[mod_start_idx]  # mod_start
+            mod_end = event_indices[mod_end_idx]    # mod_end
 
             # Apply expansion if enabled
             mod_start = max(0, mod_start - int(expand_transition * sfreq))
