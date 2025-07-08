@@ -84,86 +84,7 @@ def prepare_raw_data(patient_epochs, patient_names, n_windows_threshold=None):
     return X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial
 
 
-# --------------------------------------------------------
-
-def process_and_save_for_hctsa_csv(X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial, channel_to_use=0, filename=f'INP_gait_hctsa', base_output_dir="results/hctsa"):
-    """
-    Processes grouped data, selects a channel, and saves data in CSV/TXT format for HCTSA.
-    Combines PatientID, TrialIndex, and WindowIndex into a single WindowID for the metadata.
-
-    Args:
-        X_grouped_list (list): List of 3D numpy arrays (windows, channels, time).
-        y_grouped_list (list): List of 1D numpy arrays (labels for windows).
-        groups_per_trial (list): List of group identifiers (e.g., patient IDs) for each trial segment.
-        trial_ids_per_trial (list): List of trial IDs for each trial segment.
-        channel_to_use (int): Index of the channel to extract for HCTSA.
-        base_output_dir (str): Base directory to save the output files.
-    """
-    if not X_grouped_list:
-        print("\nNo data provided (X_grouped_list is empty). Skipping HCTSA CSV/TXT file generation.")
-        return
-
-    X_all_windows_stacked = np.concatenate(X_grouped_list, axis=0)
-    y_numeric_labels_stacked = np.concatenate(y_grouped_list, axis=0)
-
-    # Map numeric labels to string labels
-    label_mapping = {0: "normalWalk", 1: "gaitMod"}
-    y_string_labels_stacked = np.array([label_mapping.get(label, f"unknownClass{label}") for label in y_numeric_labels_stacked])
-
-
-    # Create a combined WindowID (PatientID_TrialID_WindowIndex) for each window
-    window_ids_list = []
-    for i, trial_data_x in enumerate(X_grouped_list):
-        num_windows_in_trial_segment = trial_data_x.shape[0]
-        patient_id_for_segment = groups_per_trial[i]
-        trial_id_for_segment = trial_ids_per_trial[i]
-        
-        for win_idx in range(num_windows_in_trial_segment):
-            # Create a unique ID for each window including the window index
-            window_id = f"{str(patient_id_for_segment)}_trial{str(trial_id_for_segment)}_epoch{win_idx}"
-            window_ids_list.append(window_id)
-
-    window_ids_stacked = np.array(window_ids_list)
-
-
-    print(f"\nConcatenated X_all_windows_stacked shape: {X_all_windows_stacked.shape}")
-    print(f"Concatenated y_numeric_labels_stacked shape: {y_numeric_labels_stacked.shape}")
-    print(f"Mapped y_string_labels_stacked shape: {y_string_labels_stacked.shape}")
-    print(f"Generated window_ids_stacked shape: {window_ids_stacked.shape}")
-
-    assert X_all_windows_stacked.shape[0] == y_string_labels_stacked.shape[0] == window_ids_stacked.shape[0]
-
-    if X_all_windows_stacked.ndim == 3 and X_all_windows_stacked.shape[1] > channel_to_use:
-        X_hctsa = X_all_windows_stacked[:, channel_to_use, :]
-        # y_hctsa_labels is now the string version
-        
-        print(f"\nX_hctsa shape (for selected channel {channel_to_use}): {X_hctsa.shape}")
-        print(f"y_string_labels_stacked shape: {y_string_labels_stacked.shape}")
-        print(f"window_ids_stacked shape: {window_ids_stacked.shape}")
-
-
-        output_dir_hctsa = os.path.join(base_output_dir, filename, '.csv')
-        os.makedirs(output_dir_hctsa, exist_ok=True)
-
-        timeseries_filename = f"hctsa_timeseries_ch{channel_to_use}.csv"
-        timeseries_filepath = os.path.join(output_dir_hctsa, timeseries_filename)
-        np.savetxt(timeseries_filepath, X_hctsa, delimiter=",", fmt='%.8f')
-        print(f"HCTSA time series data saved to: {timeseries_filepath}")
-
-        metadata_filename = f"{filename}_{channel_to_use}.csv"
-        metadata_filepath = os.path.join(output_dir_hctsa, metadata_filename)
-        # Stack the combined window_ids and string labels column-wise
-        metadata_to_save = np.column_stack((window_ids_stacked, y_string_labels_stacked))
-        np.savetxt(metadata_filepath, metadata_to_save, delimiter=",", fmt='%s', header="WindowID,ClassLabel", comments='')
-        print(f"HCTSA metadata (WindowID, ClassLabel) saved to: {metadata_filepath}")
-
-    else:
-        print(f"Error: Could not extract channel {channel_to_use} or X_all_windows_stacked is not 3D. Shape: {X_all_windows_stacked.shape}")
-        print("Skipping CSV/TXT file generation for HCTSA for this channel.")
-
-# --------------------------------------------------------
-
-def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial, channel_to_use=0, filename=f'INP_gait_hctsa', base_output_dir="results/hctsa"):
+def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial, channel_to_use=0, filename=f'INP_gait_hctsa', base_output_dir="results/hctsa/data/"):
     """
     Processes grouped data, selects a channel, and saves data in .mat format for HCTSA.
 
@@ -183,7 +104,7 @@ def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_tr
     y_numeric_labels_stacked = np.concatenate(y_grouped_list, axis=0)
 
     # Map numeric labels to string labels
-    label_mapping = {0: "normalWalk", 1: "gaitMod"}
+    label_mapping = {0: "normal_walking", 1: "gait_modulation"}
     y_string_labels_stacked = np.array([label_mapping.get(label, f"unknownClass{label}") for label in y_numeric_labels_stacked])
 
 
@@ -257,44 +178,41 @@ def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_tr
 
 # ---------------------------------------------------
 
-patient_epochs, subjects_event_idx_dict, patient_names = load_data()
-patient_to_process = 'PW_EM59'
-channel_to_process = 0 # first channel
+def main():
+    patient_epochs, subjects_event_idx_dict, patient_names = load_data()
 
-patient_epochs_to_process = {patient_to_process: patient_epochs[patient_to_process]}
-patient_name_to_process_list = [patient_to_process]
+    channel_to_process = 0 # first channel
+    base_output_dir = '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa/data/hctsa_input_data'
 
-X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial = prepare_raw_data(
-    patient_epochs_to_process,
-    patient_name_to_process_list,
-    # patient_epochs,
-    # patient_names,
-    n_windows_threshold=None
-)
+    # patient_to_process = 'PW_EM59'
+    # patient_epochs_to_process = {patient_to_process: patient_epochs[patient_to_process]}
+    # patient_name_to_process_list = [patient_to_process]
+
+    X_grouped_list, y_grouped_list, groups_per_trial, trial_ids_per_trial = prepare_raw_data(
+        # patient_epochs_to_process,
+        # patient_name_to_process_list,
+        patient_epochs,
+        patient_names,
+        n_windows_threshold=None
+    )
 
 
-# Process and save for CSV
-process_and_save_for_hctsa_csv(
-    X_grouped_list, 
-    y_grouped_list, 
-    groups_per_trial, 
-    trial_ids_per_trial,
-    channel_to_use=channel_to_process,
-    filename=f'INP_gait_hctsa_chs{channel_to_process}_{patient_to_process}',
-)
+    # Process and save for MAT
+    process_and_save_for_hctsa_mat(
+        X_grouped_list, 
+        y_grouped_list, 
+        groups_per_trial, 
+        trial_ids_per_trial,
+        channel_to_use=channel_to_process,
+        # filename=f'INP_gait_hctsa_chs{channel_to_process}_{patient_to_process}',
+        filename=f'INP_gait_hctsa_chs{channel_to_process}_all_patients',
+        base_output_dir=base_output_dir
+    )
 
-# Process and save for MAT
-process_and_save_for_hctsa_mat(
-    X_grouped_list, 
-    y_grouped_list, 
-    groups_per_trial, 
-    trial_ids_per_trial,
-    channel_to_use=channel_to_process,
-    filename=f'INP_gait_hctsa_chs{channel_to_process}_{patient_to_process}',
-)
+    print("\nProcessing and saving for HCTSA completed.")
 
-print(1)
-
+if __name__ == "__main__":
+    main()
 
 # >> 
 # >> TS_Normalize('mixedSigmoid', [0.7, 1.0], 'HCTSA.mat', true);
@@ -326,8 +244,8 @@ print(1)
 # >> TS_CompareFeatureSets()
 # Loading data from HCTSA_N.mat... Done.
 # 2 classes assigned to the time series in this dataset:
-# Class 1: gaitMod (2087 time series)
-# Class 2: normalWalk (3993 time series)
+# Class 1: gait_modulation (2087 time series)
+# Class 2: normal_walking (3993 time series)
 # Unbalanced classes: using a balanced accuracy measure (& using re-weighting)...
 # Matched 22/22 features from catch22!
 # Matched 20/20 features from linearAutoCorrs!
@@ -361,8 +279,8 @@ print(1)
 # >> TS_ClassifyLowDim()
 # Loading data from HCTSA_N.mat... Done.
 # 2 classes assigned to the time series in this dataset:
-# Class 1: gaitMod (2087 time series)
-# Class 2: normalWalk (3993 time series)
+# Class 1: gait_modulation (2087 time series)
+# Class 2: normal_walking (3993 time series)
 # Unbalanced classes: using a balanced accuracy measure (& using re-weighting)...
 
 # Training and evaluating a 2-class linear SVM classifier (low-dimensional) using 10-fold cross validation
