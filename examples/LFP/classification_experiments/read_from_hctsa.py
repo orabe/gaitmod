@@ -9,13 +9,14 @@ from tensorflow.keras.preprocessing.sequence import pad_sequences
 import os
 import matplotlib.pyplot as plt
 import subprocess
+from pathlib import Path
 
 from gaitmod.utils.utils import sync_data
 
 
 def pad_trials(X_list: List[np.ndarray], 
              y_list: List[np.ndarray], 
-             safety_factor: float = 10) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+             safety_factor: float = 1) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
     """
     Calculate safe mask values and pad trial sequences to uniform length.
     
@@ -280,231 +281,100 @@ def group_epochs_by_trial(X_flat: np.ndarray,
 
     return X_list, y_list, np.array(groups_for_trials), trial_metadata_list
 
-
-hctsa_basepath_output_data = "/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa"
-local_mat_path = hctsa_basepath_output_data
-local_csv_path = os.path.join(hctsa_basepath_output_data, 'data', 'hctsa_output_data')
-
-with h5py.File(os.path.join(local_mat_path, 'HCTSA_N.mat'), 'r') as f:
-    TS_DataMat = f['/TS_DataMat'][()].T  # feature matrix: times x features
-
-timeseries = pd.read_csv(os.path.join(local_csv_path, 'TimeSeries.csv'))
-timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
-operations = pd.read_csv(os.path.join(local_csv_path, 'Operations.csv'))
-master_operations = pd.read_csv(os.path.join(local_csv_path, 'MasterOperations.csv'))
-
-# Create binary labels
-features_labels = np.where(timeseries['Group'].values == 'gaitMod', 1, 0)
-
-print("Data loaded successfully:")
-print(f"  MasterOperations: {master_operations.shape}")
-print(f"  Operations: {operations.shape}")
-print(f"  TimeSeries: {timeseries.shape}")
-print(f"  TS_DataMat: {TS_DataMat.shape}")
-print(f"  Labels: {features_labels.shape}")
-
-# Validate data consistency
-if TS_DataMat.shape[0] != len(timeseries) or TS_DataMat.shape[0] != len(features_labels):
-    raise ValueError("Mismatch in lengths of X_flat, timeseries_df, and y_flat_epochs.")
-
-# Reshape and pad data for trials
-print("\nProcessing trial data...")
-
-
-
-# Step 1: Parse metadata
-epoch_trial_mapping = parse_epoch_metadata(timeseries)
-
-# Step 2: Group epochs by trial
-X_list, y_list, trial_patient_groups, trial_metadata_list = group_epochs_by_trial(
-    TS_DataMat, features_labels, epoch_trial_mapping
-)
-
-# Step 3: Pad trials and calculate safe mask values
-X_padded, y_padded, mask_vals = pad_trials(X_list, y_list)
-
-print("\nTrial processing complete:")
-print(f"  X_trials shape: {X_padded.shape}")
-print(f"  y_trials shape: {y_padded.shape}")
-print(f"  trial_patient_groups shape: {trial_patient_groups.shape}")
-
-patient_ids_unique = sorted(epoch_trial_mapping['patient_id_str'].unique())
-print(f"  Unique patient IDs: {patient_ids_unique}")
-print(f"  Number of trials processed: {len(trial_metadata_list)}")
-
-if trial_metadata_list:
-    print(f"  Metadata for first trial: {trial_metadata_list[0]}")
-    print(f"  Metadata for last trial: {trial_metadata_list[-1]}")
-
-# Save processed/padded data for future use
-save_dict = {
-    'X_padded': X_padded,
-    'y_padded': y_padded,
-    'mask_vals': mask_vals,
-    'trial_patient_groups': trial_patient_groups,
-    'trial_metadata_list': trial_metadata_list,
-    'patient_ids_unique': patient_ids_unique,
-}
-
-# Create processed data directory
-processed_folder = 'processed/hctsa/processed_hctsa_data'
-os.makedirs(processed_folder, exist_ok=True)
-
-# Save processed data
-save_path = os.path.join(processed_folder, 'hctsa_processed_data.pkl')
-with open(save_path, 'wb') as f:
-    pickle.dump(save_dict, f)
-
-print(f"\nSaved processed data to: {save_path}")
-print("Data processing complete! Ready for model training and evaluation.")
-
-
-# # Copy multiple files from remote server to local directory using scp
-# csv_files_to_copy = [
-#     "Operations.csv",
-#     "TimeSeries.csv",
-#     "MasterOperations.csv"
-# ]
-
-
-# # for filename in csv_files_to_copy:
-# #     remote_path = f"orabem@141.23.1.143:/home/orabem/hctsa/data/hctsa_output_data/{filename}"
-# #     result = subprocess.run(
-# #         [
-# #             "scp",
-# #             remote_path,
-# #             os.path.join(local_csv_path, filename)
-# #         ],
-# #         capture_output=True,
-# #         text=True
-# #     )
-# #     if result.returncode != 0:
-# #         raise FileNotFoundError(
-# #             f"Failed to copy {filename} from remote. "
-# #             f"Error: {result.stderr.strip()}"
-# #         )
-
-# # Copy the .mat file from the correct location (under hctsa directly)
-# mat_files_to_copy = [
-#     "HCTSA.mat",
-#     "HCTSA_N.mat",
-# ]
-
-# # for filename in mat_files_to_copy:
-# #     remote_path = f"orabem@141.23.1.143:/home/orabem/hctsa/{filename}"
+def load_hctsa_data(base_path: str, normalized: bool = True, verbose: bool = True):
+    """
+    Simple HCTSA data loader.
     
-# #     print(f"Downloading {filename} from remote server...")
+    Args:
+        base_path: Path to HCTSA data directory
+        normalized: If True, load HCTSA_N.mat, else HCTSA.mat
+        verbose: Print loading info
+        
+    Returns:
+        Tuple of (TS_DataMat, timeseries_df, operations_df, labels)
+    """
+    base_path = Path(base_path)
+    suffix = '_N' if normalized else ''
     
-# #     result = subprocess.run(
-# #         [
-# #             "scp",
-# #             remote_path,
-# #             local_mat_path
-# #         ],
-# #         capture_output=True,  # Capture both stdout and stderr
-# #         text=True,           # Return strings instead of bytes
-# #     )
-
-# #     if result.returncode != 0:
-# #         error_msg = result.stderr.strip() if result.stderr else "Unknown error"
-# #         raise FileNotFoundError(
-# #             f"Failed to copy {filename} from remote server.\n"
-# #             f"Command: scp {remote_path} {local_mat_path}\n"
-# #             f"Return code: {result.returncode}\n"
-# #             f"Error: {error_msg}"
-# #         )
-# #     else:
-# #         print(f"Successfully downloaded {filename}")
-# #         print(f"HXTSA data files are now available at: {local_mat_path}")
-        
-# #         # Verify file was actually created
-# #         if not os.path.exists(local_mat_path):
-# #             raise FileNotFoundError(f"File {filename} was not created despite successful scp")
-        
-        
-        
-# operations = pd.read_csv(local_mat_path + 'Operations.csv') 
-# # master_operations = pd.read_csv(hctsa_output_data + 'MasterOperations.csv') 
-# timeseries = pd.read_csv(local_csv_path + 'TimeSeries.csv') 
-# timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
-
-# with h5py.File(os.path.join(local_mat_path, 'HCTSA_N.mat') ,'r') as f:
-#     TS_DataMat = f['/TS_DataMat'][()].T # feature matrix: times x features
-#     # timeseries = f['/TimeSeries'][()].T # times x features
-#     # operations = f['/Operations'][()].T # times x features
-#     # master_operations = f['/MasterOperations'][()].T # times x features
-
+    if verbose:
+        print(f"Loading HCTSA data from {base_path}")
     
-# # y_binary_epochs = np.where(timeseries['Group'].values == 'gait_modulation', 1, 0)
-# features_labels = np.where(timeseries['Group'].values == 'gaitMod', 1, 0)
-
-# print(operations.shape)
-# # print(master_operations.shape)
-# print(timeseries.shape)
-# print(TS_DataMat.shape)
-# print(features_labels.shape)
-
-# if TS_DataMat.shape[0] != len(timeseries) or TS_DataMat.shape[0] != len(features_labels):
-#     raise ValueError("Mismatch in lengths of X_flat, timeseries_df, and y_flat_epochs.")
-
-
-
-# # Reshape and pad data for trials
-
-# # Step 1: Parse metadata
-# epoch_trial_mapping = parse_epoch_metadata(timeseries)
-
-# # Step 2: Group epochs by trial (no longer needs patient_to_idx_map parameter)
-# X_list, y_list, trial_patient_groups, trial_metadata_list = group_epochs_by_trial(
-#     TS_DataMat, features_labels, epoch_trial_mapping
-# )
-
-# # Step 3: Pad trials and calculate safe mask values
-# X_padded, y_padded, mask_vals = pad_trials(X_list, y_list)
+    # Load feature matrix
+    mat_file = base_path / f'HCTSA{suffix}.mat'
+    with h5py.File(mat_file, 'r') as f:
+        TS_DataMat = f['/TS_DataMat'][()].T  # Shape: (epochs, features)
     
+    # Load CSV files
+    csv_path = base_path / 'data' / 'hctsa_output_data'
+    timeseries = pd.read_csv(csv_path / f'TimeSeries{suffix}.csv')
+    operations = pd.read_csv(csv_path / f'Operations{suffix}.csv')
+    
+    # Create binary labels
+    labels = np.where(timeseries['Group'].values == 'gaitMod', 1, 0)
+    
+    if verbose:
+        print(f"  TS_DataMat: {TS_DataMat.shape}")
+        print(f"  TimeSeries: {timeseries.shape}")
+        print(f"  Operations: {operations.shape}")
+        print(f"  Labels: {labels.shape}")
+        
+    # Simple NaN check - break if any NaN values found
+    nan_count = np.isnan(TS_DataMat).sum()
+    if nan_count > 0:
+        print(f"ERROR: Found {nan_count:,} NaN values in TS_DataMat!")
+        print(f"TS_DataMat shape: {TS_DataMat.shape}")
+        print(f"NaN percentage: {(nan_count / TS_DataMat.size) * 100:.3f}%")
+        raise ValueError(f"TS_DataMat contains {nan_count:,} NaN values. Data cleaning required before processing.")
+    
+    if verbose:
+        print(f"  ✓ No NaN values found in TS_DataMat")
+    
+    return TS_DataMat, timeseries, operations, labels
 
 
-# print("X_trials shape:", X_padded.shape)
-# # Expected: (total_number_of_trials, max_epochs_across_all_trials, n_features)
-
-# print("y_trials shape:", y_padded.shape)
-# # Expected: (total_number_of_trials,)
-
-# print("trial_patient_groups shape:", trial_patient_groups.shape)
-# # Expected: (total_number_of_trials,) containing patient indices
-
-# patient_ids_unique = sorted(epoch_trial_mapping['patient_id_str'].unique())
-# print("Unique patient IDs:", patient_ids_unique)
-
-# print("Number of trials processed:", len(trial_metadata_list))
-# if trial_metadata_list:
-#     print("Metadata for first trial:", trial_metadata_list[0])
-#     print("Metadata for last trial:", trial_metadata_list[-1])
-
-
-# # Save processed/padded data for future use
-# save_dict = {
-#     'X_padded': X_padded,
-#     'y_padded': y_padded,
-#     'mask_vals': mask_vals,
-#     'trial_patient_groups': trial_patient_groups,
-#     'trial_metadata_list': trial_metadata_list,
-#     'patient_ids_unique': patient_ids_unique,
-# }
-
-# # Create new folder for processed data if it doesn't exist
-# processed_folder = 'processed/hctsa/processed_hctsa_data/'
-# os.makedirs(processed_folder, exist_ok=True)
-
-# # Update save path to new folder
-# save_path = os.path.join(processed_folder, 'hcts_processed_data.pkl')
-# with open(save_path, 'wb') as f:
-#     pickle.dump(save_dict, f)
-
-# print(f"Saved processed/padded data to: {save_path}")
-# print("Data processing complete! Ready for model training and evaluation.")
-
-
+if __name__ == "__main__":
+    # Configuration
+    base_path = "/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa"
+    
+    # Load data
+    TS_DataMat, timeseries, operations, labels = load_hctsa_data(
+        base_path=base_path,
+        normalized=True,
+        verbose=True
+    )
+    timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
+    
+    # Check data consistency
+    assert TS_DataMat.shape[0] == len(timeseries) == len(labels), "Data shape mismatch"
+    
+    # Process trials
+    print("\nProcessing trial data...")
+    epoch_mapping = parse_epoch_metadata(timeseries)
+    X_list, y_list, trial_groups, trial_metadata = group_epochs_by_trial(
+        TS_DataMat, labels, epoch_mapping
+    )
+    X_padded, y_padded, mask_vals = pad_trials(X_list, y_list)
+    
+    print(f"  Trial data shape: {X_padded.shape}")
+    print(f"  Trial labels shape: {y_padded.shape}")
+    print(f"  Number of trials: {len(trial_metadata)}")
+    print(f"  Number of patients: {len(np.unique(trial_groups))}")
+    
+    # Save processed data
+    processed_data = {
+        'X_padded': X_padded,
+        'y_padded': y_padded,
+        'trial_groups': trial_groups,
+        'trial_metadata': trial_metadata,
+        'mask_vals': mask_vals,
+    }
+    
+    os.makedirs('processed/hctsa', exist_ok=True)
+    with open('processed/hctsa/processed_data.pkl', 'wb') as f:
+        pickle.dump(processed_data, f)
+    
+    print("\nData processing complete!")
+    print("Processed data saved to: processed/hctsa/processed_data.pkl")
 
 
 

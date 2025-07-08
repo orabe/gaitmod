@@ -3,7 +3,7 @@ import numpy as np
 import os
 from scipy.io import savemat
 
-from gaitmod.utils.utils import load_pkl
+from gaitmod.utils.utils import load_pkl, sync_data
 
 
 def load_data():
@@ -196,20 +196,49 @@ def main():
         n_windows_threshold=None
     )
 
-
-    # Process and save for MAT
+    # Process and save for MAT locally
+    filename = f'INP_gait_hctsa_chs{channel_to_process}_all_patients'
     process_and_save_for_hctsa_mat(
         X_grouped_list, 
         y_grouped_list, 
         groups_per_trial, 
         trial_ids_per_trial,
         channel_to_use=channel_to_process,
-        # filename=f'INP_gait_hctsa_chs{channel_to_process}_{patient_to_process}',
-        filename=f'INP_gait_hctsa_chs{channel_to_process}_all_patients',
-        base_output_dir=base_output_dir
+        filename=filename
     )
-
     print("\nProcessing and saving for HCTSA completed.")
+
+    # Sync data to remote server
+    print("\nSyncing data to remote server...")
+    
+    # Define sync configuration for uploading to server
+    sync_configs = [
+        {
+            'remote_host': '141.23.1.143',
+            'remote_user': 'orabem',
+            'remote_path': '/home/orabem/hctsa',
+            'local_path': base_output_dir,
+            'files': [f'{filename}.mat'],
+            'sync_folder': False,
+        }
+    ]
+    
+    # Upload the generated .mat file to server
+    success = sync_data(
+        source_configs=sync_configs,
+        target_base_path=None,  # Not used for uploads
+        direction='upload',
+        force_sync=True,  # Overwrite if file exists
+        verbose=True
+    )
+    
+    if success:
+        print("✓ Data successfully synced to remote server")
+    else:
+        print("✗ Failed to sync data to remote server")
+        
+    print("\nProcessing and remote sync completed!")
+
 
 if __name__ == "__main__":
     main()
