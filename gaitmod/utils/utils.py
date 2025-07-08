@@ -5,6 +5,8 @@ import numpy as np
 import mne
 import tensorflow as tf
 import pickle
+from typing import List, Tuple
+import subprocess
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -121,6 +123,218 @@ def load_pkl(file_path):
     with open(file_path, 'rb') as file:
         data = pickle.load(file)
     return data
+
+def sync_data(source_configs, target_base_path, direction='download', force_sync=False, verbose=True):
+    """
+    Bidirectional sync function to transfer files or folders between remote and local systems.
+    
+    Args:
+        source_configs: List of dictionaries with keys:
+                       - 'remote_host': Remote server (e.g., '141.23.1.143')
+                       - 'remote_user': Username (e.g., 'orabem')
+                       - 'remote_path': Path on remote server (e.g., '/home/orabem/hctsa')
+                       - 'local_path': Local path (used when direction='upload')
+                       - 'files': List of files to sync (optional if sync_folder=True)
+                       - 'sync_folder': If True, sync entire folder instead of individual files
+                       - 'target_subdir': Subdirectory under target_base_path (for downloads)
+        target_base_path: Base directory path (local for downloads, ignored for uploads)
+        direction: 'download' (remote -> local) or 'upload' (local -> remote)
+        force_sync: If True, sync even if files exist at destination
+        verbose: Print progress messages
+    
+    Returns:
+        bool: True if all files/folders synced successfully
+    """
+    
+    if direction not in ['download', 'upload']:
+        raise ValueError("Direction must be 'download' or 'upload'")
+    
+    success_count = 0
+    total_items = len(source_configs)
+    
+    for config in source_configs:
+        remote_host = config['remote_host']
+        remote_user = config['remote_user']
+        remote_path = config['remote_path']
+        sync_folder = config.get('sync_folder', False)
+        
+        if sync_folder:
+            # Sync entire folder
+            success = _sync_folder(config, target_base_path, direction, force_sync, verbose)
+            if success:
+                success_count += 1
+        else:
+            # Sync individual files (existing functionality)
+            files = config['files']
+            file_success_count = 0
+            
+            if direction == 'download':
+                target_subdir = config.get('target_subdir', '')
+                if target_subdir:
+                    target_dir = os.path.join(target_base_path, target_subdir)
+                else:
+                    target_dir = target_base_path
+                os.makedirs(target_dir, exist_ok=True)
+                
+                if verbose:
+                    print(f"\nDownloading files from {remote_user}@{remote_host}:{remote_path}")
+                    print(f"   Target: {target_dir}")
+            else:
+                local_path = config.get('local_path')
+                if not local_path:
+                    raise ValueError("local_path required in config for upload direction")
+                
+                if verbose:
+                    print(f"\nUploading files to {remote_user}@{remote_host}:{remote_path}")
+                    print(f"   Source: {local_path}")
+            
+            # Process individual files (existing code)
+            for filename in files:
+                if direction == 'download':
+                    full_remote_path = f"{remote_user}@{remote_host}:{remote_path}/{filename}"
+                    local_file_path = os.path.join(target_dir, filename)
+                    
+                    if not force_sync and os.path.exists(local_file_path):
+                        if verbose:
+                            size_mb = os.path.getsize(local_file_path) / 1024**2
+                            print(f"  {filename} already exists locally ({size_mb:.1f} MB)")
+                        file_success_count += 1
+                        continue
+                    
+                    if verbose:
+                        print(f"  Downloading {filename}...")
+                    
+                    result = subprocess.run(
+                        ["scp", full_remote_path, local_file_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    
+                    if result.returncode == 0 and os.path.exists(local_file_path):
+                        if verbose:
+                            size_mb = os.path.getsize(local_file_path) / 1024**2
+                            print(f"  Downloaded {filename} ({size_mb:.1f} MB)")
+                        file_success_count += 1
+                    else:
+                        error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                        if verbose:
+                            print(f"  Failed to download {filename}: {error_msg}")
+                            
+                else:
+                    # Upload logic (existing code)
+                    local_file_path = os.path.join(local_path, filename)
+                    full_remote_path = f"{remote_user}@{remote_host}:{remote_path}/{filename}"
+                    
+                    if not os.path.exists(local_file_path):
+                        if verbose:
+                            print(f"  Local file {filename} not found at {local_file_path}")
+                        continue
+                    
+                    if verbose:
+                        local_size_mb = os.path.getsize(local_file_path) / 1024**2
+                        print(f"  Uploading {filename} ({local_size_mb:.1f} MB)...")
+                    
+                    result = subprocess.run(
+                        ["scp", local_file_path, full_remote_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                    
+                    if result.returncode == 0:
+                        if verbose:
+                            print(f"  Uploaded {filename}")
+                        file_success_count += 1
+                    else:
+                        error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+                        if verbose:
+                            print(f"  Failed to upload {filename}: {error_msg}")
+            
+            # Consider this config successful if all files were processed
+            if file_success_count == len(files):
+                success_count += 1
+    
+    if verbose:
+        direction_str = "downloaded" if direction == 'download' else "uploaded"
+        print(f"\nSync complete: {success_count}/{total_items} items {direction_str} successfully")
+    
+    return success_count == total_items
+
+def _sync_folder(config, target_base_path, direction, force_sync, verbose):
+    """Helper function to sync entire folders using rsync."""
+    
+    remote_host = config['remote_host']
+    remote_user = config['remote_user']
+    remote_path = config['remote_path']
+    
+    if direction == 'download':
+        # Download: remote folder -> local
+        target_subdir = config.get('target_subdir', '')
+        if target_subdir:
+            target_dir = os.path.join(target_base_path, target_subdir)
+        else:
+            target_dir = target_base_path
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # Add trailing slash to copy folder contents, not the folder itself
+        source_path = f"{remote_user}@{remote_host}:{remote_path}/"
+        destination_path = target_dir
+        
+        if verbose:
+            print(f"\nDownloading folder from {source_path}")
+            print(f"   Target: {destination_path}")
+        
+        # Use rsync for folder sync (more efficient than scp for folders)
+        cmd = ["rsync", "-avz", "--progress"]
+        if not force_sync:
+            cmd.append("--update")  # Skip files that are newer on destination
+        cmd.extend([source_path, destination_path])
+        
+    else:
+        # Upload: local folder -> remote
+        local_path = config.get('local_path')
+        if not local_path:
+            raise ValueError("local_path required in config for upload direction")
+        
+        # Add trailing slash to copy folder contents
+        source_path = f"{local_path}/"
+        destination_path = f"{remote_user}@{remote_host}:{remote_path}/"
+        
+        if verbose:
+            print(f"\nUploading folder to {destination_path}")
+            print(f"   Source: {source_path}")
+        
+        cmd = ["rsync", "-avz", "--progress"]
+        if not force_sync:
+            cmd.append("--update")
+        cmd.extend([source_path, destination_path])
+    
+    # Execute rsync command
+    if verbose:
+        print(f"  Executing: {' '.join(cmd)}")
+    
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=600  # Longer timeout for folder sync
+    )
+    
+    if result.returncode == 0:
+        if verbose:
+            print(f"  Folder sync completed successfully")
+        return True
+    else:
+        error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+        if verbose:
+            print(f"  Failed to sync folder: {error_msg}")
+        return False
+    
+
+
+
+
 # # Log available devices and GPU details
 # def _log_device_details():
 #     print("Available devices:")
