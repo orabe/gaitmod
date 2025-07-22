@@ -37,6 +37,7 @@ dependencies:
     - tqdm
     - pydot
     - tabulate
+    - cliffs-delta
     # keras is not explicitly listed as it will come via tensorflow.keras
 
     # macOS (Apple Silicon) TensorFlow + Metal Acceleration

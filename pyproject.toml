@@ -21,7 +21,8 @@ dependencies = [
     "tqdm",
     "pydot",
     "tabulate",
-    "tensorflow" # Generic TensorFlow dependency
+    "tensorflow", # Generic TensorFlow dependency
+    "cliffs-delta",
 ]
 
 [project.optional-dependencies]
