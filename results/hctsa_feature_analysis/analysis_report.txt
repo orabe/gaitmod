@@ -1,0 +1,127 @@
+================================================================================
+HCTSA FEATURE ANALYSIS REPORT
+================================================================================
+
+DATASET SUMMARY
+----------------------------------------
+Total windows: 6,296
+Total features: 5,528
+Classes: {0: 4150, 1: 2146}
+
+FEATURE QUALITY SUMMARY
+----------------------------------------
+Constant features: 10 (0.2%)
+Low variance features: 2372 (42.9%)
+High NaN features: 0 (0.0%)
+Features with Inf: 0 (0.0%)
+Total problematic: 2372 (42.9%)
+Problematic features (names): DN_HistogramAsymmetry_11_modeProbPos, DN_HistogramAsymmetry_11_modeProbNeg, DN_HistogramAsymmetry_11_modeDiff, DN_Withinp_05, DN_Withinp_10, DN_Withinp_15, DN_Withinp_20, DN_Withinp_25, DN_Withinp_30, DN_Withinp_median_05 ... (+2362 more)
+
+VARIANCE ANALYSIS SUMMARY
+----------------------------------------
+Variance < 0.001: 1106 features (20.0%)
+Variance < 0.01: 2372 features (42.9%)
+Variance < 0.1: 3853 features (69.7%)
+Variance < 1.0: 4670 features (84.5%)
+Variance distribution stats:
+  Mean: 30435624760098415060912457356020181513875198949501648404217856.00000
+  Std: 2262697071687222245315225215787388479319512797508512213182185472.00000
+  Min: 0.00000
+  Max: 168247925075800452272445639010225292803629212276959412336642228224.00000
+  Median: 0.01883
+  Q25: 0.00199
+  Q75: 0.20321
+
+DISCRIMINATIVE POWER SUMMARY
+----------------------------------------
+AUC Statistics:
+  Mean: 0.498
+  Std: 0.024
+  Min: 0.000
+  Max: 0.552
+  Median: 0.499
+
+PR AUC Statistics:
+  Mean: 0.341
+  Std: 0.017
+  Min: 0.000
+  Max: 0.397
+  Median: 0.341
+
+Mutual Information Statistics:
+  Mean: 0.0027
+  Std: 0.0041
+  Min: 0.0000
+  Max: 0.0505
+  Median: 0.0006
+
+Significant features (p < 0.05): 980 (17.7%)
+Medium+ effect size: 0 (0.0%)
+
+High AUC features (≥0.7): 0 (0.0%)
+High PR AUC features (≥0.7): 0 (0.0%)
+TOP 20 FEATURES BY COMPOSITE SCORE
+----------------------------------------
+ 1. DN_Moments_raw_4                                             (Score: 0.815)
+ 2. MF_GP_LocalPrediction_covSEiso_covNoise_5_3_10_beforeafter_m (Score: 0.786)
+ 3. DN_Moments_raw_6                                             (Score: 0.786)
+ 4. DN_Moments_raw_10                                            (Score: 0.763)
+ 5. MF_ExpSmoothing_05_best_ac3                                  (Score: 0.756)
+ 6. DN_Moments_raw_8                                             (Score: 0.750)
+ 7. standard_deviation                                           (Score: 0.746)
+ 8. DN_FitKernelSmooth_area_005                                  (Score: 0.745)
+ 9. AC_18                                                        (Score: 0.739)
+10. FC_LocalSimple_lfit2_taures                                  (Score: 0.738)
+11. MF_ExpSmoothing_05_best_p2_5                                 (Score: 0.738)
+12. EN_DistributionEntropy_raw_ks__002                           (Score: 0.731)
+13. MD_rawHRVmeas_SD1                                            (Score: 0.730)
+14. SY_VarRatioTest_24682468_00001111_maxpValue                  (Score: 0.728)
+15. MF_GP_LocalPrediction_covSEiso_covNoise_5_3_10_beforeafter_m (Score: 0.724)
+16. MF_GARCHfit_ar_P1_Q2_stde_p2_5                               (Score: 0.720)
+17. MD_rawHRVmeas_SD2                                            (Score: 0.719)
+18. median_absolute_deviation                                    (Score: 0.718)
+19. rms                                                          (Score: 0.717)
+20. FC_LocalSimple_lfit3_ac1                                     (Score: 0.716)
+
+CORRELATION ANALYSIS
+----------------------------------------
+Mean absolute correlation: 0.137
+Maximum correlation: 1.000
+Highly correlated pairs (>0.9): 18702
+
+GROUP ANALYSIS
+----------------------------------------
+group_55             | Features:  50 | Median AUC: 0.506
+group_39             | Features:  50 | Median AUC: 0.505
+group_16             | Features:  50 | Median AUC: 0.505
+group_72             | Features:  50 | Median AUC: 0.504
+group_94             | Features:  50 | Median AUC: 0.504
+group_56             | Features:  50 | Median AUC: 0.504
+group_52             | Features:  50 | Median AUC: 0.504
+group_8              | Features:  50 | Median AUC: 0.504
+group_51             | Features:  50 | Median AUC: 0.503
+group_90             | Features:  50 | Median AUC: 0.503
+
+SELECTION CRITERIA AGREEMENT
+----------------------------------------
+p < 0.05: 980 features
+p < 0.01: 444 features
+ROC AUC ≥ 0.70: 0 features
+ROC AUC ≥ 0.75: 0 features
+ROC AUC ≥ 0.80: 0 features
+PR AUC ≥ 0.70: 0 features
+PR AUC ≥ 0.75: 0 features
+PR AUC ≥ 0.80: 0 features
+Medium+ effect: 0 features
+Top 50 composite: 50 features
+
+NOTES
+----------------------------------------
+• Remove constant features before modeling
+• Consider variance thresholding (many low-variance features)
+• Consider correlation-based feature removal
+• Limited highly discriminative features - consider ensemble methods
+
+================================================================================
+Analysis complete. Check the 'figures' directory for visualizations.
+================================================================================
