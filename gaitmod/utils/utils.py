@@ -7,6 +7,9 @@ import tensorflow as tf
 import pickle
 from typing import List, Tuple
 import subprocess
+import h5py
+import pandas as pd
+from pathlib import Path
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -123,6 +126,82 @@ def load_pkl(file_path):
     with open(file_path, 'rb') as file:
         data = pickle.load(file)
     return data
+
+
+def load_hctsa_data(base_path: str, data_variant: str = 'N', verbose: bool = True):
+    """Load HCTSA data with validation.
+    Args:
+        base_path (str): Path to HCTSA data directory.
+        data_variant (str): Which data variant to load. Use 'N' for filtered+normalized (default), 'F' for filtered only, or '' for raw (no suffix).
+        verbose (bool): Print progress and validation info.
+    """
+    base_path = Path(base_path)
+    if data_variant == 'N':
+        suffix = '_N'
+    elif data_variant == 'F':
+        suffix = '_F'
+    else:
+        suffix = ''
+
+    if verbose:
+        if data_variant == 'N':
+            print(f"Loading HCTSA data (filtered+normalized, _N) from {base_path}")
+        elif data_variant == 'F':
+            print(f"Loading HCTSA data (filtered only, _F) from {base_path}")
+        else:
+            print(f"Loading HCTSA data (raw, no suffix) from {base_path}")
+
+    # Load feature matrix
+    mat_file = base_path / f'HCTSA{suffix}.mat'
+    with h5py.File(mat_file, 'r') as f:
+        TS_DataMat = f['/TS_DataMat'][()].T
+
+    # Load CSV files
+    csv_path = base_path / 'data' / 'hctsa_output_data'
+    timeseries = pd.read_csv(csv_path / f'TimeSeries{suffix}.csv')
+    operations = pd.read_csv(csv_path / f'Operations{suffix}.csv')
+
+    # Create binary labels - flexible group matching
+    group_values = timeseries['Group'].unique()
+    if verbose:
+        print(f"  Found groups: {group_values}")
+
+    # Try different possible names for gait modulation
+    gait_mod_names = {'gait_modulation', 'gaitMod', 'gait_mod', 'GM'}
+    found_gait_mod = [name for name in gait_mod_names if name in group_values]
+
+    if found_gait_mod:
+        labels = np.where(timeseries['Group'].isin(found_gait_mod), 1, 0)
+        if verbose:
+            print(f"  Using {found_gait_mod} as positive class")
+    else:
+        # Fallback to first group as positive
+        labels = np.where(timeseries['Group'] == group_values[0], 1, 0)
+        if verbose:
+            print(f"  Using {group_values[0]} as positive class")
+
+    # Data validation
+    if verbose:
+        print(f"  TS_DataMat: {TS_DataMat.shape}")
+        print(f"  TimeSeries: {timeseries.shape}")
+        print(f"  Operations: {operations.shape}")
+        print(f"  Labels: {labels.shape}")
+        print(f"  Label distribution: {np.bincount(labels)}")
+
+    # NaN check
+    nan_count = np.isnan(TS_DataMat).sum()
+    if nan_count > 0:
+        raise ValueError(f"Found {nan_count:,} NaN values in TS_DataMat")
+
+    # Inf check
+    inf_count = np.isinf(TS_DataMat).sum()
+    if inf_count > 0:
+        raise ValueError(f"Found {inf_count:,} infinite values in TS_DataMat")
+
+    if verbose:
+        print(f"Data validation passed")
+
+    return TS_DataMat, timeseries, operations, labels
 
 def sync_data(source_configs, target_base_path, direction='download', force_sync=False, verbose=True):
     """

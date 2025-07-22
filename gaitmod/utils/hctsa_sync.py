@@ -18,7 +18,7 @@ source_configs = [
         'remote_user': 'orabem',
         'remote_path': '/home/orabem/hctsa',
         'local_path': local_mat_path,  # For potential uploads
-        'files': ['HCTSA.mat', 'HCTSA_N.mat'],
+        'files': ['HCTSA.mat', 'HCTSA_N.mat', 'HCTSA_F.mat'],  # List of files to sync
         'target_subdir': ''  # Files go directly to base path
     }
 ]
