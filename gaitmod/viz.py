@@ -639,19 +639,39 @@ class Visualise:
         # Find the maximum number of epochs across all trials
         max_num_epochs = max(len(patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]) for trial_id in unique_trial_ids)
     
-        # Limit the figure size to avoid excessively large images
-        max_fig_width = 8  # Maximum width in inches
-        max_fig_height = 60  # Maximum height in inches
-        fig_width = min(max_num_epochs // 2, max_fig_width)
-        fig_height = min(len(unique_trial_ids) * 3, max_fig_height)
+        # Calculate grid layout for subplots
+        n_trials = len(unique_trial_ids)
+        n_cols = min(3, n_trials)  # Maximum 3 columns
+        n_rows = int(np.ceil(n_trials / n_cols))
+        
+        # Calculate figure size based on grid layout
+        fig_width = n_cols * 6  # 6 inches per column
+        fig_height = n_rows * 4  # 4 inches per row
     
-        # Create subplots
-        fig, axes = plt.subplots(len(unique_trial_ids), 1, figsize=(fig_width, fig_height), sharex=True, sharey=True)
+        # Create subplots in grid layout
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), sharex=False, sharey=True)
+        
+        # Ensure axes is always 2D array for consistent indexing
+        if n_rows == 1 and n_cols == 1:
+            axes = np.array([[axes]])
+        elif n_rows == 1:
+            axes = axes.reshape(1, -1)
+        elif n_cols == 1:
+            axes = axes.reshape(-1, 1)
     
-        for i, trial_id in enumerate(unique_trial_ids):
+        for idx, trial_id in enumerate(unique_trial_ids):
+            # Calculate row and column position
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col]
+            
             # Get events for the current trial
             event_subset = patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]
             num_epochs = len(event_subset)  # Total number of epochs in this trial
+    
+            # Count normal walking and modulation epochs for this trial
+            normal_count = np.sum(event_subset[:, 2] == 0)
+            modulation_count = np.sum(event_subset[:, 2] == 1)
     
             labels_added = set()
             for j, event in enumerate(event_subset):
@@ -659,58 +679,68 @@ class Visualise:
                 label = event[2]
                 
                 # Adjust the start time based on the trial index
-                start = onset - i 
-                end = onset + window_size_time - i
+                start = onset - idx 
+                end = onset + window_size_time - idx
     
                 # Draw vertical lines for mod_start and mod_end
                 mod_start = subjects_event_idx_dict[subject_id][trial_id][mod_start_index]
                 mod_end = subjects_event_idx_dict[subject_id][trial_id][mod_end_index]
                 
-                axes[i].axvline(x=mod_start, color='r', linestyle='--', label='Mod Start' if j == 0 else "")
-                axes[i].axvline(x=mod_end, color='b', linestyle='--', label='Mod End' if j == 0 else "")
+                ax.axvline(x=mod_start, color='r', linestyle='--', label='Mod Start' if j == 0 else "")
+                ax.axvline(x=mod_end, color='b', linestyle='--', label='Mod End' if j == 0 else "")
                 
                 # Fill the area between mod_start and mod_end with gray color and alpha value
-                axes[i].axvspan(mod_start, mod_end, color='gray', alpha=0.008, zorder=0)
+                ax.axvspan(mod_start, mod_end, color='gray', alpha=0.008, zorder=0)
                 
                 # Calculate vertical position for each "box"
                 ymin = j / max_num_epochs
                 ymax = (j + 1) / max_num_epochs
     
                 if label not in labels_added:
-                    # Plot the epoch span with label
-                    axes[i].axvspan(
+                    # Plot the epoch span with label including counts
+                    ax.axvspan(
                         start, end,
                         ymin=ymin, ymax=ymax,
                         color=f'C{label}', alpha=0.7,
-                        label=f'Normal ({np.sum(event_subset[:, 2] == 0)})' if label == 0 else f'Modulation ({np.sum(event_subset[:, 2] == 1)})'
+                        label=f'Normal walking ({normal_count})' if label == 0 else f'Modulation ({modulation_count})'
                     )
                     labels_added.add(label)
                 else:
                     # Plot the epoch span without label
-                    axes[i].axvspan(
+                    ax.axvspan(
                         start, end,
                         ymin=ymin, ymax=ymax,
                         color=f'C{label}', alpha=0.7
                     )
     
                 # Add window index text in the middle of each span
-                axes[i].text((start + end) / 2, (ymin + ymax) / 2, f'{j}', ha='center', va='center', fontsize=6, color='black')
+                ax.text((start + end) / 2, (ymin + ymax) / 2, f'{j}', ha='center', va='center', fontsize=6, color='black')
+    
+            # Add individual legend for each subplot in the top left corner
+            ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
     
             # Set title and labels for the subplot
-            axes[i].set_title(f'Trial {trial_id} ({num_epochs} epochs)')
-            axes[i].set_xlim(0, max_num_epochs)
-            axes[i].set_xticks(np.arange(0, max_end_time, step=sfreq))
-            axes[i].set_xticklabels(np.arange(0, max_end_time / sfreq, step=1))
-            axes[i].set_yticks(np.linspace(0.5 / max_num_epochs, 1 - 0.5 / max_num_epochs, max_num_epochs))
-            axes[i].set_yticklabels([f'{idx}' for idx in range(max_num_epochs)])
-            axes[i].legend(loc='upper right')
-            axes[i].set_xlabel('Time (s)')
-            axes[i].set_ylabel('Epochs')
-            axes[i].grid(which='both', linestyle='--', linewidth=0.5)
+            ax.set_title(f'Trial {trial_id} ({num_epochs} epochs)')
+            ax.set_xlim(0, max_num_epochs)
+            ax.set_xticks(np.arange(0, max_end_time, step=sfreq))
+            ax.set_xticklabels(np.arange(0, max_end_time / sfreq, step=1))
+            ax.set_yticks(np.linspace(0.5 / max_num_epochs, 1 - 0.5 / max_num_epochs, max_num_epochs))
+            ax.set_yticklabels([f'{idx}' for idx in range(max_num_epochs)])
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Epochs')
+            ax.tick_params(axis='x', labelbottom=True)  # Ensure x-axis labels are shown
+            ax.grid(which='both', linestyle='--', linewidth=0.5)
+        
+        # Hide empty subplots if number of trials doesn't fill the grid
+        for idx in range(len(unique_trial_ids), n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            axes[row, col].axis('off')
     
-        # Set the overall plot labels and layout
-        fig.suptitle(f'Epochs with Events for Subject {subject_id} ({len(unique_trial_ids)} trials)', fontsize=16)
-        plt.tight_layout()
+        # Set the overall plot labels and layout with improved spacing
+        fig.suptitle(f'Epochs with Events for Subject {subject_id} ({len(unique_trial_ids)} trials)', fontsize=16, y=0.97)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjusted layout for individual legends
         
         if save_path:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)

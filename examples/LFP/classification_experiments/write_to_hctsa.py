@@ -233,9 +233,9 @@ def main():
     )
     
     if success:
-        print("✓ Data successfully synced to remote server")
+        print(" Data successfully synced to remote server")
     else:
-        print("✗ Failed to sync data to remote server")
+        print(" Failed to sync data to remote server")
         
     print("\nProcessing and remote sync completed!")
 

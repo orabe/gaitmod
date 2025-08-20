@@ -100,9 +100,9 @@ class HCTSAFeatureAnalyzer:
         print("\nStep 3: Computing discriminative power...")
         self.discriminative_analysis = self._compute_discriminative_analysis(X, y, feature_names)
         
-        # 4. Composite Scoring
-        print("\nStep 4: Computing composite scores...")
-        self.composite_scores = self._compute_composite_scores()
+        # 4. Composite Scoring: REMOVED AS WE ARE NOT ALLOWED TO COPOSITE FEATURE SCORES BY JUST AVERAGING THEM!!!!
+        # print("\nStep 4: Computing composite scores...")
+        # self.composite_scores = self._compute_composite_scores()
         
         # 5. Permutation Test (for top features)
         print("\nStep 5: Running permutation tests...")
@@ -327,41 +327,41 @@ class HCTSAFeatureAnalyzer:
         
         return discriminative_df
     
-    def _compute_composite_scores(self) -> pd.DataFrame:
-        """Compute composite discriminative scores."""
+    # def _compute_composite_scores(self) -> pd.DataFrame:
+    #     """Compute composite discriminative scores."""
         
-        # Get metrics to combine
-        metrics = ['mannwhitney_p_value', 'roc_auc', 'cliffs_delta', 'mutual_info']
+    #     # Get metrics to combine
+    #     metrics = ['mannwhitney_p_value', 'roc_auc', 'cliffs_delta', 'mutual_info']
         
-        # Prepare data for normalization
-        score_data = self.discriminative_analysis[metrics].copy()
+    #     # Prepare data for normalization
+    #     score_data = self.discriminative_analysis[metrics].copy()
         
-        # Transform p-values to 1-p for higher=better
-        score_data['mannwhitney_p_value'] = 1 - score_data['mannwhitney_p_value']
+    #     # Transform p-values to 1-p for higher=better
+    #     score_data['mannwhitney_p_value'] = 1 - score_data['mannwhitney_p_value']
         
-        # Take absolute value of Cliff's delta
-        score_data['cliffs_delta'] = np.abs(score_data['cliffs_delta'])
+    #     # Take absolute value of Cliff's delta
+    #     score_data['cliffs_delta'] = np.abs(score_data['cliffs_delta'])
         
-        # Normalize all metrics to [0, 1]
-        scaler = MinMaxScaler()
-        normalized_scores = scaler.fit_transform(score_data.fillna(0))
+    #     # Normalize all metrics to [0, 1]
+    #     scaler = MinMaxScaler()
+    #     normalized_scores = scaler.fit_transform(score_data.fillna(0))
         
-        # Compute composite score (mean of normalized metrics)
-        composite_score = np.mean(normalized_scores, axis=1)
+    #     # Compute composite score (mean of normalized metrics)
+    #     composite_score = np.mean(normalized_scores, axis=1)
         
-        # Create results dataframe
-        composite_df = self.discriminative_analysis[['feature_name']].copy()
-        composite_df['composite_score'] = composite_score
+    #     # Create results dataframe
+    #     composite_df = self.discriminative_analysis[['feature_name']].copy()
+    #     composite_df['composite_score'] = composite_score
         
-        # Add normalized individual scores
-        for i, metric in enumerate(metrics):
-            composite_df[f'{metric}_normalized'] = normalized_scores[:, i]
+    #     # Add normalized individual scores
+    #     for i, metric in enumerate(metrics):
+    #         composite_df[f'{metric}_normalized'] = normalized_scores[:, i]
         
-        # Rank features
-        composite_df['rank'] = composite_df['composite_score'].rank(ascending=False)
-        composite_df = composite_df.sort_values('composite_score', ascending=False)
+    #     # Rank features
+    #     composite_df['rank'] = composite_df['composite_score'].rank(ascending=False)
+    #     composite_df = composite_df.sort_values('composite_score', ascending=False)
         
-        return composite_df
+    #     return composite_df
     
     def _run_permutation_tests(self, X: np.ndarray, y: np.ndarray, 
                              feature_names: List[str], n_top: int = 20, 
@@ -580,8 +580,8 @@ class HCTSAFeatureAnalyzer:
             'pr_auc_055': self.discriminative_analysis['pr_auc'] >= 0.55,
             'pr_auc_060': self.discriminative_analysis['pr_auc'] >= 0.60,
             'pr_auc_070': self.discriminative_analysis['pr_auc'] >= 0.70,
-            'top_100_composite': self.composite_scores['rank'] <= 100,
-            'top_50_composite': self.composite_scores['rank'] <= 50,
+            # 'top_100_composite': self.composite_scores['rank'] <= 100,
+            # 'top_50_composite': self.composite_scores['rank'] <= 50,
             'mutual_info_005': self.discriminative_analysis['mutual_info'] >= 0.01,
             'mutual_info_050': self.discriminative_analysis['mutual_info'] >= 0.05,
             'mutual_info_010': self.discriminative_analysis['mutual_info'] >= 0.10,
@@ -745,11 +745,11 @@ class HCTSAFeatureAnalyzer:
         axes[1, 0].axvline(0.33, color='green', linestyle='--', label='Medium effect')
         axes[1, 0].legend()
         
-        # Composite score distribution
-        axes[1, 1].hist(self.composite_scores['composite_score'], bins=50, alpha=0.7, edgecolor='black')
-        axes[1, 1].set_xlabel('Composite Score')
-        axes[1, 1].set_ylabel('Frequency')
-        axes[1, 1].set_title('Distribution of Composite Scores')
+        # # Composite score distribution
+        # axes[1, 1].hist(self.composite_scores['composite_score'], bins=50, alpha=0.7, edgecolor='black')
+        # axes[1, 1].set_xlabel('Composite Score')
+        # axes[1, 1].set_ylabel('Frequency')
+        # axes[1, 1].set_title('Distribution of Composite Scores')
         
         plt.tight_layout()
         plt.savefig(fig_dir / "feature_distributions.png", dpi=300, bbox_inches='tight')
@@ -786,13 +786,13 @@ class HCTSAFeatureAnalyzer:
         axes[1, 0].grid(True, alpha=0.3)
         
         # Composite score vs AUC
-        axes[1, 1].scatter(self.discriminative_analysis['roc_auc'], 
-                          self.composite_scores['composite_score'],
-                          alpha=0.6, s=20)
-        axes[1, 1].set_xlabel('ROC-AUC')
-        axes[1, 1].set_ylabel('Composite Score')
-        axes[1, 1].set_title('AUC vs Composite Score')
-        axes[1, 1].grid(True, alpha=0.3)
+        # axes[1, 1].scatter(self.discriminative_analysis['roc_auc'], 
+        #                   self.composite_scores['composite_score'],
+        #                   alpha=0.6, s=20)
+        # axes[1, 1].set_xlabel('ROC-AUC')
+        # axes[1, 1].set_ylabel('Composite Score')
+        # axes[1, 1].set_title('AUC vs Composite Score')
+        # axes[1, 1].grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.savefig(fig_dir / "metric_relationships.png", dpi=300, bbox_inches='tight')
@@ -800,22 +800,27 @@ class HCTSAFeatureAnalyzer:
         
         # 3. Top features visualization
         top_n = 20
-        top_features = self.composite_scores.head(top_n)
+        # top_features = self.composite_scores.head(top_n)
+        top_features = self.discriminative_analysis.nlargest(top_n, 'pr_auc')
         
         fig, ax = plt.subplots(figsize=(12, 8))
         y_pos = np.arange(len(top_features))
         
-        bars = ax.barh(y_pos, top_features['composite_score'], alpha=0.7)
+        # bars = ax.barh(y_pos, top_features['composite_score'], alpha=0.7)
+        bars = ax.barh(y_pos, top_features['pr_auc'], alpha=0.7)
         ax.set_yticks(y_pos)
         ax.set_yticklabels([name[:50] + '...' if len(name) > 50 else name 
                            for name in top_features['feature_name']], fontsize=8)
-        ax.set_xlabel('Composite Score')
-        ax.set_title(f'Top {top_n} Features by Composite Score')
+        # ax.set_xlabel('Composite Score')
+        # ax.set_title(f'Top {top_n} Features by Composite Score')
+        ax.set_xlabel('PR-AUC')
+        ax.set_title(f'Top {top_n} Features by PR-AUC')
         ax.grid(True, alpha=0.3, axis='x')
         
         # Color bars by score
         for i, bar in enumerate(bars):
-            score = top_features['composite_score'].iloc[i]
+            # score = top_features['composite_score'].iloc[i]
+            score = top_features['pr_auc'].iloc[i]
             bar.set_color(plt.cm.viridis(score))
         
         plt.tight_layout()
@@ -825,7 +830,8 @@ class HCTSAFeatureAnalyzer:
         # 4. Correlation heatmap (top features only)
         if hasattr(self, 'correlation_analysis'):
             # Map top feature names to indices in the filtered (non-constant) correlation matrix
-            top_feature_names = self.composite_scores.head(50)['feature_name'].tolist()
+            # top_feature_names = self.composite_scores.head(50)['feature_name'].tolist()
+            top_feature_names = self.discriminative_analysis.nlargest(50, 'pr_auc')['feature_name'].tolist()
             filtered_feature_names = self.correlation_analysis['feature_names']
             # Build mapping from feature name to index in filtered correlation matrix
             name_to_corr_idx = {name: i for i, name in enumerate(filtered_feature_names)}
@@ -1103,11 +1109,18 @@ class HCTSAFeatureAnalyzer:
             f.write(f"High PR AUC features (≥0.7): {high_pr_auc_features} ({high_pr_auc_features/info['n_features']*100:.1f}%)\n")
 
             # Top features
-            f.write("TOP 20 FEATURES BY COMPOSITE SCORE\n")
+            # f.write("TOP 20 FEATURES BY COMPOSITE SCORE\n")
+            # f.write("-" * 40 + "\n")
+            # top_features = self.composite_scores.head(20)
+            # for i, (_, row) in enumerate(top_features.iterrows(), 1):
+            #     f.write(f"{i:2d}. {row['feature_name'][:60]:<60} (Score: {row['composite_score']:.3f})\n")
+            # f.write("\n")
+            
+            f.write("TOP 20 FEATURES BY PR-AUC\n")
             f.write("-" * 40 + "\n")
-            top_features = self.composite_scores.head(20)
+            top_features = self.discriminative_analysis.nlargest(20, 'pr_auc')
             for i, (_, row) in enumerate(top_features.iterrows(), 1):
-                f.write(f"{i:2d}. {row['feature_name'][:60]:<60} (Score: {row['composite_score']:.3f})\n")
+                f.write(f"{i:2d}. {row['feature_name'][:60]:<60} (Score: {row['pr_auc']:.3f})\n")
             f.write("\n")
             
             # Correlation summary
@@ -1137,17 +1150,25 @@ class HCTSAFeatureAnalyzer:
                 f.write("SELECTION CRITERIA AGREEMENT\n")
                 f.write("-" * 40 + "\n")
                 counts = self.agreement_analysis['feature_counts']
-                # Use correct keys as defined in _analyze_metric_agreement
-                f.write(f"p < 0.05: {counts.get('mannwhitney_p_value_005', 0)} features\n")
-                f.write(f"p < 0.01: {counts.get('mannwhitney_p_value_001', 0)} features\n")
+                f.write(f"Mann-Whitney p < 0.05: {counts.get('mannwhitney_p_value_005', 0)} features\n")
+                f.write(f"Mann-Whitney p < 0.01: {counts.get('mannwhitney_p_value_001', 0)} features\n")
+                f.write(f"Brunner-Munzel p < 0.05: {counts.get('brunner_munzel_p_value_005', 0)} features\n")
+                f.write(f"Brunner-Munzel p < 0.01: {counts.get('brunner_munzel_p_value_001', 0)} features\n")
+                f.write(f"Cliff's delta ≥ 0.10 (very small): {counts.get('cliffs_delta_very_small', 0)} features\n")
+                f.write(f"Cliff's delta ≥ 0.147 (small): {counts.get('cliffs_delta_small', 0)} features\n")
+                f.write(f"Cliff's delta ≥ 0.33 (medium): {counts.get('cliffs_delta_medium', 0)} features\n")
+                f.write(f"Cliff's delta ≥ 0.474 (large): {counts.get('cliffs_delta_large', 0)} features\n")
+                f.write(f"ROC AUC ≥ 0.50: {counts.get('roc_auc_050', 0)} features\n")
+                f.write(f"ROC AUC ≥ 0.55: {counts.get('roc_auc_055', 0)} features\n")
+                f.write(f"ROC AUC ≥ 0.60: {counts.get('roc_auc_060', 0)} features\n")
                 f.write(f"ROC AUC ≥ 0.70: {counts.get('roc_auc_070', 0)} features\n")
-                f.write(f"ROC AUC ≥ 0.75: {counts.get('roc_auc_075', 0)} features\n")
-                f.write(f"ROC AUC ≥ 0.80: {counts.get('roc_auc_080', 0)} features\n")
+                f.write(f"PR AUC ≥ 0.50: {counts.get('pr_auc_050', 0)} features\n")
+                f.write(f"PR AUC ≥ 0.55: {counts.get('pr_auc_055', 0)} features\n")
+                f.write(f"PR AUC ≥ 0.60: {counts.get('pr_auc_060', 0)} features\n")
                 f.write(f"PR AUC ≥ 0.70: {counts.get('pr_auc_070', 0)} features\n")
-                f.write(f"PR AUC ≥ 0.75: {counts.get('pr_auc_075', 0)} features\n")
-                f.write(f"PR AUC ≥ 0.80: {counts.get('pr_auc_080', 0)} features\n")
-                f.write(f"Medium+ effect: {counts.get('cliffs_delta_medium', 0)} features\n")
-                f.write(f"Top 50 composite: {counts.get('top_50_composite', 0)} features\n\n")
+                f.write(f"Mutual information ≥ 0.01: {counts.get('mutual_info_005', 0)} features\n")
+                f.write(f"Mutual information ≥ 0.05: {counts.get('mutual_info_050', 0)} features\n")
+                f.write(f"Mutual information ≥ 0.10: {counts.get('mutual_info_010', 0)} features\n\n")
             
             # Recommendations
             f.write("NOTES\n")
@@ -1183,7 +1204,7 @@ class HCTSAFeatureAnalyzer:
         self.discriminative_analysis.to_csv(results_dir / "discriminative_analysis.csv", index=False)
         
         # Save composite scores
-        self.composite_scores.to_csv(results_dir / "composite_scores.csv", index=False)
+        # self.composite_scores.to_csv(results_dir / "composite_scores.csv", index=False)
         
         # Save correlation analysis
         if hasattr(self, 'correlation_analysis'):
