@@ -29,9 +29,20 @@ from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_sc
 from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.dummy import DummyClassifier
 from scipy.stats import pearsonr
 from scipy import stats
+
+# Optional imports with fallbacks
+try:
+    from xgboost import XGBClassifier
+    XGBOOST_AVAILABLE = True
+except ImportError:
+    XGBOOST_AVAILABLE = False
+    XGBClassifier = None
 
 from gaitmod import LSTMClassifier
 from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
@@ -218,6 +229,89 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
         
         return X[:, self.selected_features_]
 
+class LSTMClassifierWrapper(BaseEstimator, ClassifierMixin):
+    """
+    Wrapper class to make LSTMClassifier compatible with scikit-learn pipelines.
+    """
+    
+    def __init__(self, hidden_dims=[64], activations='tanh', recurrent_activations='sigmoid',
+                 dropout=0.3, dense_units=None, dense_activation='relu', optimizer='adam',
+                 lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
+                 loss='binary_crossentropy', mask_vals=None):
+        self.hidden_dims = hidden_dims
+        self.activations = activations
+        self.recurrent_activations = recurrent_activations
+        self.dropout = dropout
+        self.dense_units = dense_units
+        self.dense_activation = dense_activation
+        self.optimizer = optimizer
+        self.lr = lr
+        self.patience = patience
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.threshold = threshold
+        self.loss = loss
+        self.mask_vals = mask_vals
+        self.model_ = None
+    
+    def fit(self, X, y):
+        """Fit the LSTM model."""
+        # Determine input shape
+        if len(X.shape) == 2:
+            # Reshape for LSTM: (samples, timesteps, features)
+            input_shape = (1, X.shape[1])
+            X = X.reshape(X.shape[0], 1, X.shape[1])
+        else:
+            input_shape = X.shape[1:]
+        
+        # Create LSTM model
+        self.model_ = LSTMClassifier(
+            input_shape=input_shape,
+            hidden_dims=self.hidden_dims,
+            activations=self.activations,
+            recurrent_activations=self.recurrent_activations,
+            dropout=self.dropout,
+            dense_units=self.dense_units,
+            dense_activation=self.dense_activation,
+            optimizer=self.optimizer,
+            lr=self.lr,
+            patience=self.patience,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            threshold=self.threshold,
+            loss=self.loss,
+            mask_vals=self.mask_vals,
+            verbose=0
+        )
+        
+        # Fit the model
+        self.model_.fit(X, y)
+        return self
+    
+    def predict(self, X):
+        """Make predictions."""
+        if self.model_ is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Reshape if needed
+        if len(X.shape) == 2:
+            X = X.reshape(X.shape[0], 1, X.shape[1])
+        
+        return self.model_.predict(X)
+    
+    def predict_proba(self, X):
+        """Predict class probabilities."""
+        if self.model_ is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Reshape if needed
+        if len(X.shape) == 2:
+            X = X.reshape(X.shape[0], 1, X.shape[1])
+        
+        return self.model_.predict_proba(X)
+
+# Preprocessing features
+# ======================
 def load_hctsa_data(base_path: str, normalized: bool = True, verbose: bool = True):
     """Load HCTSA data with validation."""
     base_path = Path(base_path)
@@ -274,7 +368,7 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: bool = Tru
         raise ValueError(f"Found {inf_count:,} infinite values in TS_DataMat")
     
     if verbose:
-        print(f"  ✓ Data validation passed")
+        print(f"Data validation passed")
     
     return TS_DataMat, timeseries, operations, labels
 
@@ -370,17 +464,18 @@ def pad_trials_robust(X_list, y_list, safety_factor=10):
     
     return X_padded, y_padded, mask_vals
 
-def nested_cross_validation(X, y, groups, mask_vals, 
-                          hidden_units=[32, 64, 128],
-                          dropout_rates=[0.2, 0.4, 0.5],
-                          learning_rates=[1e-3, 5e-4, 1e-4],
-                          feature_counts=[50, 100, 150],
+# # ======================
+def run_nested_cv_sklearn(X, y, groups, mask_vals, 
+                          model_type='lstm',
+                          scoring_metric='f1_weighted',
                           n_jobs=1, verbose=True):
     """
-    Nested cross-validation for hyperparameter tuning and model evaluation.
+    Modern sklearn-based nested cross-validation for multi-model support.
+    
+    Uses sensible defaults for all pipeline components to keep things simple.
     """
     
-    # Outer CV setup
+    # Setup outer CV
     outer_cv = LeaveOneGroupOut()
     outer_splits = list(outer_cv.split(X, y, groups))
     
@@ -402,158 +497,58 @@ def nested_cross_validation(X, y, groups, mask_vals,
         groups_outer_train = groups[outer_train_idx]
         
         test_subject = groups[outer_test_idx][0]
-        print(f"Test subject: {test_subject}")
-        print(f"Training subjects: {sorted(np.unique(groups_outer_train))}")
+        print(f"Test subject: {test_subject} with {len(outer_test_idx)} trials")
+        print(f"Training subjects: {sorted(np.unique(groups_outer_train))} with {len(outer_train_idx)} trials")
         
-        # Inner CV for hyperparameter tuning
-        inner_cv = LeaveOneGroupOut()
-        inner_splits = list(inner_cv.split(X_outer_train, y_outer_train, groups_outer_train))
+        # Create GridSearchCV pipeline for inner CV
+        grid_search = create_gridsearch_pipeline(
+            X_outer_train, y_outer_train, groups_outer_train,
+            mask_vals=mask_vals,
+            model_type=model_type,
+            scoring_metric=scoring_metric,
+            n_jobs=n_jobs,
+            verbose=max(0, verbose-1)
+        )
         
-        print(f"Inner CV: {len(inner_splits)} splits")
+        # Fit grid search (inner CV)
+        print(f"Running inner CV with {len(grid_search.param_grid)} parameter combinations")
         
-        # Grid search over hyperparameters
-        best_score = -np.inf
-        best_params = None
-        
-        param_combinations = list(product(hidden_units, dropout_rates, learning_rates, feature_counts))
-        print(f"Testing {len(param_combinations)} parameter combinations")
-        
-        for param_idx, (h, d, lr, k) in enumerate(param_combinations):
-            print(f"\nInner fold params {param_idx + 1}/{len(param_combinations)}: h={h}, d={d}, lr={lr}, k={k}")
-            
-            # Inner CV scores for this parameter combination
-            inner_scores = []
-            
-            for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
-                # Split inner data
-                X_inner_train = X_outer_train[inner_train_idx]
-                X_inner_val = X_outer_train[inner_val_idx]
-                y_inner_train = y_outer_train[inner_train_idx]
-                y_inner_val = y_outer_train[inner_val_idx]
-                
-                try:
-                    # Feature selection
-                    feature_selector = AdvancedFeatureSelector(
-                        n_features=k,
-                        mask_value=mask_vals['X_mask']
-                    )
-                    
-                    # Fit on training data
-                    X_inner_train_2d = X_inner_train.reshape(-1, X_inner_train.shape[-1])
-                    y_inner_train_2d = y_inner_train.reshape(-1)
-                    
-                    # Remove masked values for feature selection
-                    mask_train = y_inner_train_2d != mask_vals['y_mask']
-                    X_inner_train_clean = X_inner_train_2d[mask_train]
-                    y_inner_train_clean = y_inner_train_2d[mask_train]
-                    
-                    if len(np.unique(y_inner_train_clean)) < 2:
-                        inner_scores.append(0.0)
-                        continue
-                    
-                    feature_selector.fit(X_inner_train_clean, y_inner_train_clean)
-                    
-                    # Transform data
-                    X_inner_train_selected = feature_selector.transform(X_inner_train_2d).reshape(
-                        X_inner_train.shape[0], X_inner_train.shape[1], -1)
-                    X_inner_val_selected = feature_selector.transform(
-                        X_inner_val.reshape(-1, X_inner_val.shape[-1])).reshape(
-                        X_inner_val.shape[0], X_inner_val.shape[1], -1)
-                    
-                    # Normalization
-                    scaler = MaskAwareScaler(mask_value=mask_vals['X_mask'])
-                    X_inner_train_scaled = scaler.fit_transform(X_inner_train_selected)
-                    X_inner_val_scaled = scaler.transform(X_inner_val_selected)
-                    
-                    # Model training
-                    model = LSTMClassifier(
-                        input_shape=(X_inner_train_scaled.shape[1], X_inner_train_scaled.shape[2]),
-                        hidden_dims=[h],
-                        dropout=d,
-                        lr=lr,
-                        epochs=50,
-                        batch_size=32,
-                        patience=10,
-                        mask_vals=mask_vals,
-                        verbose=0
-                    )
-                    
-                    # Fit and predict
-                    model.fit(X_inner_train_scaled, y_inner_train)
-                    y_pred = model.predict(X_inner_val_scaled)
-                    
-                    # Calculate score (F1)
-                    score = LSTMClassifier.masked_f1_score(y_inner_val, y_pred, mask_vals['y_mask'])
-                    inner_scores.append(score)
-                    
-                except Exception as e:
-                    print(f"Error in inner fold {inner_fold}: {e}")
-                    inner_scores.append(0.0)
-            
-            # Average score across inner folds
-            mean_score = np.mean(inner_scores)
-            print(f"  Mean inner CV score: {mean_score:.4f}")
-            
-            # Update best parameters
-            if mean_score > best_score:
-                best_score = mean_score
-                best_params = {'h': h, 'd': d, 'lr': lr, 'k': k}
-        
-        print(f"\nBest parameters for outer fold {outer_fold + 1}: {best_params}")
-        print(f"Best inner CV score: {best_score:.4f}")
-        
-        # Train final model on full outer training set with best parameters
         try:
-            # Feature selection on full outer training set
-            feature_selector = AdvancedFeatureSelector(
-                n_features=best_params['k'],
-                mask_value=mask_vals['X_mask']
-            )
+            # Handle sequence data for LSTM
+            if model_type == 'lstm' and len(X_outer_train.shape) == 3:
+                # For LSTM, keep 3D shape
+                grid_search.fit(X_outer_train, y_outer_train, groups=groups_outer_train)
+            else:
+                # For other models, flatten to 2D
+                X_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
+                grid_search.fit(X_train_2d, y_outer_train, groups=groups_outer_train)
             
-            X_outer_train_2d = X_outer_train.reshape(-1, X_outer_train.shape[-1])
-            y_outer_train_2d = y_outer_train.reshape(-1)
+            # Get best parameters
+            best_params = grid_search.best_params_
+            best_score = grid_search.best_score_
             
-            mask_train = y_outer_train_2d != mask_vals['y_mask']
-            X_outer_train_clean = X_outer_train_2d[mask_train]
-            y_outer_train_clean = y_outer_train_2d[mask_train]
-            
-            feature_selector.fit(X_outer_train_clean, y_outer_train_clean)
-            
-            # Transform data
-            X_outer_train_selected = feature_selector.transform(X_outer_train_2d).reshape(
-                X_outer_train.shape[0], X_outer_train.shape[1], -1)
-            X_outer_test_selected = feature_selector.transform(
-                X_outer_test.reshape(-1, X_outer_test.shape[-1])).reshape(
-                X_outer_test.shape[0], X_outer_test.shape[1], -1)
-            
-            # Normalization
-            scaler = MaskAwareScaler(mask_value=mask_vals['X_mask'])
-            X_outer_train_scaled = scaler.fit_transform(X_outer_train_selected)
-            X_outer_test_scaled = scaler.transform(X_outer_test_selected)
-            
-            # Final model training
-            final_model = LSTMClassifier(
-                input_shape=(X_outer_train_scaled.shape[1], X_outer_train_scaled.shape[2]),
-                hidden_dims=[best_params['h']],
-                dropout=best_params['d'],
-                lr=best_params['lr'],
-                epochs=100,
-                batch_size=32,
-                patience=15,
-                mask_vals=mask_vals,
-                verbose=0
-            )
-            
-            final_model.fit(X_outer_train_scaled, y_outer_train)
+            print(f"Best parameters: {best_params}")
+            print(f"Best inner CV score: {best_score:.4f}")
             
             # Test on held-out subject
-            y_test_pred = final_model.predict(X_outer_test_scaled)
-            y_test_pred_proba = final_model.predict_proba(X_outer_test_scaled)
+            if model_type == 'lstm' and len(X_outer_test.shape) == 3:
+                y_test_pred = grid_search.predict(X_outer_test)
+                y_test_pred_proba = grid_search.predict_proba(X_outer_test)
+            else:
+                X_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
+                y_test_pred = grid_search.predict(X_test_2d)
+                y_test_pred_proba = grid_search.predict_proba(X_test_2d)
             
             # Calculate metrics
-            test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, mask_vals['y_mask'])
-            test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba[:, 1], mask_vals['y_mask'])
-            test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, mask_vals['y_mask'])
+            if model_type == 'lstm' and mask_vals is not None:
+                test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, mask_vals['y_mask'])
+                test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba[:, 1], mask_vals['y_mask'])
+                test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, mask_vals['y_mask'])
+            else:
+                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
+                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
+                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
             
             outer_results.append({
                 'fold': outer_fold + 1,
@@ -574,14 +569,206 @@ def nested_cross_validation(X, y, groups, mask_vals,
             outer_results.append({
                 'fold': outer_fold + 1,
                 'test_subject': test_subject,
-                'best_params': best_params,
-                'best_inner_score': best_score,
+                'best_params': {},
+                'best_inner_score': 0.0,
                 'test_f1': 0.0,
                 'test_auc': 0.5,
                 'test_accuracy': 0.0
             })
     
     return outer_results, all_best_params
+
+def create_gridsearch_pipeline(X_train, y_train, groups_train, 
+                              mask_vals=None,
+                              model_type='lstm',
+                              scoring_metric='f1_weighted',
+                              n_jobs=1,
+                              verbose=1):
+    """
+    Create a GridSearchCV-compatible pipeline for ML classification.
+    
+    Uses sensible defaults for all pipeline components to keep things simple.
+    Always uses LeaveOneGroupOut for inner cross-validation.
+    
+    Args:
+        X_train: Training data
+        y_train: Training labels
+        groups_train: Groups for cross-validation
+        mask_vals: Mask values dictionary
+        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
+        scoring_metric: Primary scoring metric
+        n_jobs: Number of parallel jobs
+        verbose: Verbosity level
+        
+    Returns:
+        GridSearchCV: Configured grid search object
+    """
+    
+    # Determine mask value for pipeline
+    mask_value = None
+    if mask_vals and 'X_mask' in mask_vals:
+        mask_value = mask_vals['X_mask']
+    
+    # Build pipeline using sensible defaults
+    pipeline, scoring_functions = build_pipeline(
+        model_type=model_type,
+        mask_value=mask_value
+    )
+    
+    # Generate parameter grid with sensible defaults
+    param_grid = get_default_param_grid(model_type=model_type, mask_values=mask_value)
+    
+    # Set up cross-validation (always LeaveOneGroupOut for subject-level CV)
+    cv = LeaveOneGroupOut()
+    
+    # Create GridSearchCV
+    grid_search = GridSearchCV(
+        estimator=pipeline,
+        param_grid=param_grid,
+        scoring=scoring_functions,
+        refit=scoring_metric,
+        cv=cv,
+        n_jobs=n_jobs,
+        verbose=verbose,
+        return_train_score=True
+    )
+    
+    return grid_search
+
+def get_default_param_grid(model_type, mask_values=None):
+    """
+    Get sensible default parameter grids for different model types.
+    
+    Args:
+        model_type: Type of classifier
+        
+    Returns:
+        dict: Parameter grid for GridSearchCV
+    """
+    param_grid = {}
+    
+    # Feature selection parameters (always use advanced feature selection)
+    param_grid.update({
+        'feature_selector__n_features': [50, 100, 150],
+        'feature_selector__variance_threshold': [0.001, 0.01, 0.1],
+        'feature_selector__correlation_threshold': [0.9, 0.95, 0.99]
+    })
+    
+    # Scaling parameters (for mask-aware models)
+    if model_type == 'lstm':
+        param_grid.update({
+            'scaler__scaler_type': ['standard', 'robust']
+        })
+    
+    # Model-specific parameters
+    if model_type == 'lstm':
+        param_grid.update({
+            'classifier__hidden_dims': [[32, 32]],
+            'classifier__activations': [['tanh', 'relu']],
+            'classifier__recurrent_activations': [['sigmoid', 'hard_sigmoid']],
+            'classifier__dropout': [0.2],
+            'classifier__dense_units': [1], # n_windows
+            'classifier__dense_activation': ['sigmoid'],
+            'classifier__optimizer': ['adam'],
+            'classifier__lr': [0.001],
+            'classifier__patience': [200],
+            'classifier__epochs': [2],
+            'classifier__batch_size': [128],
+            'classifier__threshold': [0.5],
+            'classifier__loss': ['binary_crossentropy'],
+            'classifier__mask_vals': [mask_values]
+        })
+    elif model_type == 'rf':
+        param_grid.update({
+            'classifier__n_estimators': [100, 200],
+            'classifier__max_depth': [10, 20, None],
+            'classifier__min_samples_split': [2, 5]
+        })
+    elif model_type == 'svm':
+        param_grid.update({
+            'classifier__C': [0.1, 1, 10],
+            'classifier__gamma': ['scale', 'auto'],
+            'classifier__kernel': ['rbf', 'linear']
+        })
+    elif model_type == 'xgb':
+        param_grid.update({
+            'classifier__n_estimators': [100, 200],
+            'classifier__max_depth': [3, 6],
+            'classifier__learning_rate': [0.01, 0.1]
+        })
+    elif model_type == 'dummy':
+        param_grid.update({
+            'classifier__strategy': ['most_frequent', 'constant']
+        })
+    
+    return param_grid
+
+def build_pipeline(model_type='lstm', mask_value=None):
+    """
+    Build a scikit-learn pipeline with sensible defaults.
+    
+    Always includes:
+    - Advanced feature selection
+    - Standard scaling (mask-aware for LSTM)
+    - The specified classifier
+    
+    Args:
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'lstm')
+        mask_value: Mask value for padding (for mask-aware processing)
+        
+    Returns:
+        tuple: (pipeline, scoring_functions)
+    """
+    from sklearn.pipeline import Pipeline
+    from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score
+    
+    # Pipeline steps
+    steps = []
+    
+    # Feature selection step (always use advanced)
+    selector = AdvancedFeatureSelector(mask_value=mask_value)
+    steps.append(('feature_selector', selector))
+    
+    # Scaling step (mask-aware for LSTM)
+    if model_type == 'lstm':
+        scaler = MaskAwareScaler(mask_value=mask_value, scaler_type='standard')
+    else:
+        scaler = StandardScaler()
+    steps.append(('scaler', scaler))
+    
+    # Model step
+    if model_type == 'dummy':
+        classifier = DummyClassifier()
+    elif model_type == 'rf':
+        classifier = RandomForestClassifier(random_state=42)
+    elif model_type == 'svm':
+        classifier = SVC(probability=True, random_state=42)
+    elif model_type == 'xgb':
+        if XGBOOST_AVAILABLE:
+            classifier = XGBClassifier(random_state=42)
+        else:
+            print("XGBoost not available, falling back to RandomForest")
+            classifier = RandomForestClassifier(random_state=42)
+    elif model_type == 'lstm':
+        classifier = LSTMClassifierWrapper(mask_vals={'X_mask': mask_value, 'y_mask': -1})
+    else:
+        # Default to dummy classifier
+        classifier = DummyClassifier()
+    
+    steps.append(('classifier', classifier))
+    
+    # Create pipeline
+    pipeline = Pipeline(steps)
+    
+    # Scoring functions
+    scoring_functions = {
+        'f1': make_scorer(f1_score, average='weighted'),
+        'auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
+        'accuracy': make_scorer(accuracy_score)
+    }
+    
+    return pipeline, scoring_functions
+
 
 def main():
     """Main nested cross-validation pipeline."""
@@ -616,7 +803,7 @@ def main():
     # Load HCTSA data
     TS_DataMat, timeseries, operations, labels = load_hctsa_data(
         base_path=base_path,
-        normalized=True,
+        normalized=False,
         verbose=True
     )
     
@@ -641,13 +828,10 @@ def main():
     print("\n3. NESTED CROSS-VALIDATION")
     print("-" * 40)
     
-    # Run nested CV
-    outer_results, all_best_params = nested_cross_validation(
+    # Run nested CV with sklearn-based approach
+    outer_results, all_best_params = run_nested_cv_sklearn(
         X_padded, y_padded, groups, mask_vals,
-        hidden_units=[32, 64],  # Reduced for faster execution
-        dropout_rates=[0.2, 0.4],
-        learning_rates=[1e-3, 5e-4],
-        feature_counts=[50, 100],
+        model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
         verbose=True
     )
     
@@ -729,5 +913,6 @@ def main():
     
     return results_df, all_best_params
 
+
 if __name__ == "__main__":
-    results_df, best_params = main()
+    main()
