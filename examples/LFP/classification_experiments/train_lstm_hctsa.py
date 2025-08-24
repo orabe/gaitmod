@@ -57,7 +57,7 @@ import tensorflow as tf
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score
 from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
 from sklearn.ensemble import RandomForestClassifier
@@ -118,6 +118,200 @@ def setup_logging(log_dir="logs", log_level=logging.INFO):
     
     logging.info(f"Logging initialized. Log file: {log_file}")
     return log_file
+
+
+# ===================================================================
+# Nested Cross-Validation Directory Structure and Callbacks
+# ===================================================================
+def setup_nested_cv_logging(outer_fold=None, inner_fold=None, subject_name=None, 
+                           experiment_name=None, hyperparams=None, experiment_dir=None,
+                           outer_test_subject=None, inner_validation_subject=None):
+    """
+    Setup hierarchical logging structure for nested cross-validation with improved organization.
+    
+    Structure:
+    logs/
+    └── nested_cv/
+        └── experiment_YYYYMMDD_HHMMSS/
+            ├── outer_fold_00_test_SubjectA/
+            │   ├── inner_fold_00_val_SubjectB/
+            │   │   ├── callbacks/
+            │   │   ├── tensorboard/
+            │   │   ├── models/
+            │   │   └── history/
+            │   ├── inner_fold_01_val_SubjectC/
+            │   └── ...
+            ├── outer_fold_01_test_SubjectB/
+            └── summary/
+    """
+    
+    # Create timestamp for unique identification
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]
+    
+    # Build directory structure
+    if outer_fold is not None:
+        outer_fold_dir = os.path.join(experiment_dir, f"outer_fold_{outer_fold:02d}_test_{outer_test_subject}")
+    else:
+        outer_fold_dir = os.path.join(experiment_dir, f"training_{timestamp}")
+    
+    if inner_fold is not None:
+        inner_fold_dir = os.path.join(outer_fold_dir, f"inner_fold_{inner_fold:02d}_val_{inner_validation_subject}")
+    else:
+        inner_fold_dir = outer_fold_dir
+        
+    # Create subdirectories
+    callbacks_dir = os.path.join(inner_fold_dir, "callbacks")
+    tensorboard_dir = os.path.join(inner_fold_dir, "tensorboard")
+    models_dir = os.path.join(inner_fold_dir, "models")
+    history_dir = os.path.join(inner_fold_dir, "history")
+
+    # Create all directories
+    for directory in [callbacks_dir, tensorboard_dir, models_dir, history_dir]:
+        os.makedirs(directory, exist_ok=True)
+
+    # Create run identifier with hyperparameters
+    if hyperparams:
+        param_str = "_".join([f"{k}={v}" for k, v in hyperparams.items()])
+        run_id = f"{param_str}_{unique_id}"
+    else:
+        run_id = unique_id
+
+    # Return all paths
+    paths = {
+        'experiment_dir': experiment_dir,
+        'outer_fold_dir': outer_fold_dir,
+        'inner_fold_dir': inner_fold_dir,
+        'callbacks_dir': callbacks_dir,
+        'tensorboard_dir': tensorboard_dir,
+        'models_dir': models_dir,
+        'history_dir': history_dir,
+        'run_id': run_id,
+        'unique_id': unique_id
+    }
+    
+    return paths
+
+
+def create_nested_cv_callbacks(paths, outer_fold=None, inner_fold=None, subject_name=None, patience=10, monitor='loss', save_models=False):
+    """
+    Create callbacks for nested cross-validation training.
+    
+    Args:
+        paths: Dictionary with logging paths from setup_nested_cv_logging()
+        outer_fold: Outer fold number
+        inner_fold: Inner fold number
+        subject_name: Subject identifier
+        patience: Early stopping patience
+        monitor: Metric to monitor for early stopping
+        save_models: Whether to save model checkpoints (for speed, set to False)
+    
+    Returns:
+        List of Keras callbacks
+    """
+    unique_id = paths['unique_id']
+    
+    callbacks = [
+        # Custom training logger
+        CustomTrainingLogger(),
+        
+        # Nested CV TensorBoard logger
+        NestedCVTensorBoardLogger(
+            outer_fold=outer_fold,
+            inner_folds=inner_fold,
+        ),
+        
+        # CSV logging
+        CSVLogger(
+            os.path.join(paths['callbacks_dir'], f"training_{unique_id}.log"),
+            separator=',',
+            append=False
+        ),
+        
+        # Early stopping
+        EarlyStopping(
+            monitor=monitor,
+            patience=patience,
+            restore_best_weights=True,
+            verbose=1,
+            mode='min' if 'loss' in monitor else 'max'
+        ), 
+        
+        # Learning rate reduction
+        ReduceLROnPlateau(
+            monitor=monitor,
+            factor=0.5,
+            patience=patience//2,
+            verbose=1,
+            mode='min' if 'loss' in monitor else 'max',
+            min_lr=1e-7
+        ), 
+        
+        # TensorBoard logging
+        TensorBoard(
+            log_dir=paths['tensorboard_dir'],
+            histogram_freq=1,
+            write_graph=True,
+            write_images=True,
+            update_freq='epoch',
+            profile_batch='500,520',  # Profile batches for performance analysis
+            embeddings_freq=1
+        ),
+    ]
+    
+    # Optionally add model checkpointing (can be disabled for speed)
+    if save_models:
+        callbacks.insert(-1, ModelCheckpoint(  # Insert before TensorBoard
+            filepath=os.path.join(paths['models_dir'], f"best_model_{unique_id}.h5"),
+            monitor=monitor,
+            save_best_only=True,
+            save_weights_only=False,
+            mode='min' if 'loss' in monitor else 'max',
+            verbose=1
+        ))
+    
+    return callbacks
+
+
+def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_name=None):
+    """
+    Save training history for a specific fold.
+    
+    Args:
+        history: Keras training history dictionary
+        paths: Dictionary with logging paths
+        outer_fold: Outer fold number
+        inner_fold: Inner fold number
+        subject_name: Subject identifier
+    """
+    import pickle
+    import json
+    
+    # Create filename
+    filename_parts = []
+    if outer_fold is not None:
+        filename_parts.append(f"outer{outer_fold:02d}")
+    if inner_fold is not None:
+        filename_parts.append(f"inner{inner_fold:02d}")
+    if subject_name:
+        filename_parts.append(f"subj_{subject_name}")
+    filename_parts.append(paths['unique_id'])
+    
+    filename_base = "_".join(filename_parts)
+    
+    # Save as pickle (complete history)
+    pickle_path = os.path.join(paths['history_dir'], f"{filename_base}_history.pkl")
+    with open(pickle_path, 'wb') as f:
+        pickle.dump(history, f)
+    
+    # Save as JSON (for easy reading)
+    json_path = os.path.join(paths['history_dir'], f"{filename_base}_history.json")
+    with open(json_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    
+    logging.info(f"[HISTORY] Saved fold history to {pickle_path}")
+    
+    return pickle_path, json_path
 
 
 # ===================================================================
@@ -363,15 +557,14 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
     def update_state(self, y_true, y_pred, sample_weight=None):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
             
         mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
-        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred = tf.round(y_pred)
-        values = tf.cast(tf.equal(y_true, y_pred), tf.float32) * mask
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_rounded = tf.round(y_pred)
+        
+        # Only compute on valid (non-masked) elements
+        values = tf.cast(tf.equal(y_true_masked, y_pred_rounded), tf.float32) * mask
         self.total.assign_add(tf.reduce_sum(values))
         self.count.assign_add(tf.reduce_sum(mask))
 
@@ -393,23 +586,20 @@ class MaskedF1Score(tf.keras.metrics.Metric):
     def update_state(self, y_true, y_pred, sample_weight=None):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
             
         mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
-        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred = tf.round(y_pred)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(y_true * y_pred * mask)
-        fp = tf.reduce_sum((1 - y_true) * y_pred * mask)
-        fn = tf.reduce_sum(y_true * (1 - y_pred) * mask)
+        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * mask)
+        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * mask)
+        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * mask)
 
         # Use assign_add() correctly
-        self.tp.assign_add(tf.reduce_sum(tp))
-        self.fp.assign_add(tf.reduce_sum(fp))
-        self.fn.assign_add(tf.reduce_sum(fn))
+        self.tp.assign_add(tp)
+        self.fp.assign_add(fp)
+        self.fn.assign_add(fn)
 
     def result(self):
         precision = self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
@@ -434,15 +624,15 @@ class MaskedPrecision(tf.keras.metrics.Metric):
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
         mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
-        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred = tf.round(y_pred)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(tf.cast(y_true * y_pred, tf.float32) * mask)
-        fp = tf.reduce_sum(tf.cast((1 - y_true) * y_pred, tf.float32) * mask)
+        tp = tf.reduce_sum(tf.cast(y_true_masked * y_pred_rounded, tf.float32) * mask)
+        fp = tf.reduce_sum(tf.cast((1 - y_true_masked) * y_pred_rounded, tf.float32) * mask)
 
-        # Ensure tp and fp are scalars before updating the variables
-        self.tp.assign_add(tf.reduce_sum(tp))
-        self.fp.assign_add(tf.reduce_sum(fp))
+        # Assign scalar values directly
+        self.tp.assign_add(tp)
+        self.fp.assign_add(fp)
 
     def result(self):
         return self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
@@ -463,11 +653,11 @@ class MaskedRecall(tf.keras.metrics.Metric):
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
         mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
-        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred = tf.round(y_pred)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(y_true * y_pred * mask)
-        fn = tf.reduce_sum(y_true * (1 - y_pred) * mask)
+        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * mask)
+        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * mask)
 
         self.tp.assign_add(tf.cast(tp, tf.float32))
         self.fn.assign_add(tf.cast(fn, tf.float32))
@@ -489,8 +679,8 @@ class MaskedROC_AUC(tf.keras.metrics.AUC):
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
         mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
-        y_true = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred = tf.clip_by_value(y_pred, 0, 1)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_clipped = tf.clip_by_value(y_pred, 0, 1)
 
         # Apply mask to sample weight if provided
         if sample_weight is not None:
@@ -498,7 +688,7 @@ class MaskedROC_AUC(tf.keras.metrics.AUC):
         else:
             sample_weight = mask  # Use mask as the sample weight if none is provided
 
-        super().update_state(y_true, y_pred, sample_weight)
+        super().update_state(y_true_masked, y_pred_clipped, sample_weight)
 
 class CustomTrainingLogger(Callback):
     def __init__(self, fold=0):
@@ -514,11 +704,11 @@ class CustomTrainingLogger(Callback):
             f"[Fold {self.fold}] [Epoch {self.current_epoch + 1}/{self.params['epochs']}] [Batch {batch+1}/{self.params['steps']}]: "
             f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
             f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
-            f"Accuracy: {self.safe_format(logs.get('masked_accuracy', 'N/A'))}, "
-            f"F1Score: {self.safe_format(logs.get('masked_f1_score', 'N/A'))}, " 
-            f"Precision: {self.safe_format(logs.get('masked_precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('masked_recall', 'N/A'))}"
-            f"AUC: {self.safe_format(logs.get('masked_auc', 'N/A'))}, "
+            f"Accuracy: {self.safe_format(logs.get('MASKED_accuracy', 'N/A'))}, "
+            f"F1Score: {self.safe_format(logs.get('MASKED_f1_score', 'N/A'))}, " 
+            f"Precision: {self.safe_format(logs.get('MASKED_precision', 'N/A'))}, "
+            f"Recall: {self.safe_format(logs.get('MASKED_recall', 'N/A'))}, "
+            f"AUC: {self.safe_format(logs.get('MASKED_roc_auc', 'N/A'))}"
         )
         
     def on_epoch_end(self, epoch, logs=None):
@@ -526,11 +716,11 @@ class CustomTrainingLogger(Callback):
             f"[Fold {self.fold}] [Epoch {epoch + 1}/{self.params['epochs']}]: "
             f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
             f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
-            f"Accuracy: {self.safe_format(logs.get('masked_accuracy', 'N/A'))}, "
-            f"F1Score: {self.safe_format(logs.get('masked_f1_score', 'N/A'))}, "
-            f"Precision: {self.safe_format(logs.get('masked_precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('masked_recall', 'N/A'))}"
-            f"AUC: {self.safe_format(logs.get('masked_auc', 'N/A'))}, "
+            f"Accuracy: {self.safe_format(logs.get('MASKED_accuracy', 'N/A'))}, "
+            f"F1Score: {self.safe_format(logs.get('MASKED_f1_score', 'N/A'))}, "
+            f"Precision: {self.safe_format(logs.get('MASKED_precision', 'N/A'))}, "
+            f"Recall: {self.safe_format(logs.get('MASKED_recall', 'N/A'))}, "
+            f"AUC: {self.safe_format(logs.get('MASKED_roc_auc', 'N/A'))}"
         )
 
     def safe_format(self, value):
@@ -540,51 +730,110 @@ class CustomTrainingLogger(Callback):
             return str(value)
 
 
+class NestedCVTensorBoardLogger(Callback):
+    """Enhanced TensorBoard logging for nested cross-validation experiments."""
+
+    def __init__(self, outer_fold=None, inner_folds=None):
+        super().__init__()
+        self.outer_fold = outer_fold
+        self.inner_fold = inner_folds  # Note: parameter is inner_folds but we store as inner_fold for consistency
+        
+    def on_train_begin(self, logs=None):
+        # Log experiment metadata
+        if hasattr(self.model, 'optimizer') and self.model.optimizer:
+            try:
+                # Handle both regular variables and MirroredVariables from distributed strategy
+                lr_var = self.model.optimizer.learning_rate
+                if hasattr(lr_var, 'numpy'):
+                    lr = float(lr_var.numpy())
+                else:
+                    lr = float(lr_var)
+            except (TypeError, AttributeError):
+                lr = "N/A"
+        else:
+            lr = "N/A"
+            
+        metadata = {
+            'outer_fold': self.outer_fold,
+            'inner_fold': self.inner_fold,
+            'learning_rate': lr,
+            'model_params': self.model.count_params() if hasattr(self.model, 'count_params') else 0
+        }
+        
+        # Write metadata to TensorBoard as text
+        if hasattr(self.model, 'history'):
+            tf.summary.text('experiment_metadata', str(metadata), step=0)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Add custom scalars for nested CV tracking
+        if logs:
+            # Prefix metrics with fold information for better organization
+            prefix = f"fold_{self.outer_fold}_{self.inner_fold}" if self.outer_fold is not None else "training"
+            
+            for metric_name, value in logs.items():
+                if isinstance(value, (int, float)) and not np.isnan(value):
+                    tf.summary.scalar(f"{prefix}/{metric_name}", value, step=epoch)
+
+
 # ===================================================================
 # MASK-AWARE SCALER SECTION
 # ===================================================================
 class MaskAwareScaler(BaseEstimator, TransformerMixin):
     """
     Scaler that handles masked values in sequences.
+    Uses RobustScaler by default to prevent overflow issues with large feature values.
     """
     
-    def __init__(self, mask_value=None, scaler_type='standard'):
+    def __init__(self, mask_value=None, scaler_type='robust'):
         self.mask_value = mask_value
         self.scaler_type = scaler_type
         self.scaler = None
         
     def fit(self, X, y=None):
         """Fit scaler on non-masked values."""
+        # Use RobustScaler by default for HCTSA features to prevent overflow
         if self.scaler_type == 'standard':
             self.scaler = StandardScaler()
         elif self.scaler_type == 'robust':
             self.scaler = RobustScaler()
+        elif self.scaler_type == 'minmax':
+            self.scaler = MinMaxScaler()
         
         if self.mask_value is not None:
             # Get non-masked values for fitting
             mask = X != self.mask_value
             valid_data = X[mask]
             if len(valid_data) > 0:
+                # Clip extreme values to prevent overflow
+                valid_data = np.clip(valid_data, -1e10, 1e10)
                 self.scaler.fit(valid_data.reshape(-1, 1))
         else:
-            # Flatten and fit
-            self.scaler.fit(X.reshape(-1, 1))
+            # Flatten and fit with clipping
+            X_clipped = np.clip(X, -1e10, 1e10)
+            self.scaler.fit(X_clipped.reshape(-1, 1))
         
         return self
     
     def transform(self, X):
         """Transform data while preserving masked values."""
-        X_transformed = X.copy()
+        X_transformed = X.copy().astype(np.float64)  # Ensure float64 for stability
         
         if self.mask_value is not None:
             # Only transform non-masked values
             mask = X != self.mask_value
             if np.any(mask):
-                X_transformed[mask] = self.scaler.transform(X[mask].reshape(-1, 1)).flatten()
+                # Clip extreme values and transform
+                valid_data = np.clip(X[mask], -1e10, 1e10)
+                transformed_data = self.scaler.transform(valid_data.reshape(-1, 1)).flatten()
+                # Clip transformed values to prevent extreme scaling
+                transformed_data = np.clip(transformed_data, -10, 10)
+                X_transformed[mask] = transformed_data
         else:
-            # Transform all values
+            # Transform all values with clipping
             original_shape = X.shape
-            X_transformed = self.scaler.transform(X.reshape(-1, 1)).reshape(original_shape)
+            X_clipped = np.clip(X, -1e10, 1e10)
+            X_scaled = self.scaler.transform(X_clipped.reshape(-1, 1)).reshape(original_shape)
+            X_transformed = np.clip(X_scaled, -10, 10)
         
         return X_transformed
 
@@ -857,6 +1106,12 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_vals={'X_mask': 0.0, 'y_mask': 2}, 
                  use_index_masking=True, callbacks=None):
+        """
+        LSTM Classifier for sequence-to-sequence binary classification.
+        
+        Now follows a cleaner design where callbacks are created externally and passed 
+        to the fit method, rather than being created inside the classifier.
+        """
         # LSTM architecture parameters
         self.hidden_dims = hidden_dims
         self.activations = activations
@@ -970,8 +1225,22 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         return model
 
-    def fit(self, X, y, X_mask=None, y_mask=None):
-        """Fit the LSTM model - sklearn compatible interface."""
+    def fit(self, X, y, X_mask=None, y_mask=None, outer_fold=None, inner_fold=None, subject_name=None,
+            outer_test_subject=None, inner_validation_subject=None, callbacks=None):
+        """Fit the LSTM model - sklearn compatible interface.
+        
+        Args:
+            X: Input features
+            y: Target labels
+            X_mask: Input mask array (for index-based masking)
+            y_mask: Target mask array (for index-based masking)
+            outer_fold: Outer fold number (can be passed from outside)
+            inner_fold: Inner fold number (can be passed from outside)
+            subject_name: Subject name (can be passed from outside)
+            outer_test_subject: Outer test subject (can be passed from outside)
+            inner_validation_subject: Inner validation subject (can be passed from outside)
+            callbacks: Pre-created callbacks list (if None, simple defaults will be used)
+        """
         logging.info(f"\n[FIT] {'='*50}")
         logging.info(f"\n[FIT] {'='*50}")
         logging.info(f"[FIT] LSTM TRAINING START")
@@ -983,6 +1252,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[FIT] Masks provided:")
         logging.info(f"[FIT]   - X_mask: {X_mask is not None}")
         logging.info(f"[FIT]   - y_mask: {y_mask is not None}")
+        if outer_fold is not None:
+            logging.info(f"[FIT] Fold info: Outer={outer_fold}, Inner={inner_fold}, Subject={subject_name}")
         logging.info(f"[FIT] Training config:")
         logging.info(f"[FIT]   - Epochs: {self.epochs}")
         logging.info(f"[FIT]   - Batch size: {self.batch_size}")
@@ -1031,39 +1302,58 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             # Traditional value-based filtering
             class_weights = self.calculate_class_weights(y)
             self.classes_ = np.unique(y[y != self.mask_vals['y_mask']])
-            
-        unique_id = str(uuid.uuid4())[:8]
-        essential_params = ["epochs", "batch_size", "lr"]
-        essential_params_dict = {k: v for k, v in self.get_params().items() if k in essential_params}
-        essential_str = "_".join([f"{k}={v}" for k, v in essential_params_dict.items()]) + "_fold_" + unique_id
-
-        callbacks_dir = os.path.join("logs", "lstm", "callbacks", essential_str)
-        tensorboard_dir = os.path.join(callbacks_dir, "tensorboard")
-        log_dir = os.path.join(callbacks_dir, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        os.makedirs(tensorboard_dir, exist_ok=True)
         
-        callbacks = [
-            CustomTrainingLogger(),
-            CSVLogger(os.path.join(log_dir, f"training_{unique_id}.log")),
-            EarlyStopping(monitor='loss',# monitor='val_accuracy'
-                          patience=self.patience,
-                          restore_best_weights=True), 
-            ReduceLROnPlateau(monitor='loss', # monitor='val_accuracy'
-                              factor=0.5,
-                              patience=self.patience), 
-            TensorBoard(log_dir=os.path.join(tensorboard_dir, f"training_{unique_id}"),
-                        histogram_freq=1,
-                        write_graph=True,
-                        write_images=True),
-        ] + self.callbacks
+        # Determine fold information - use provided values for logging context
+        use_outer_fold = outer_fold
+        use_outer_test_subject = outer_test_subject
+        use_inner_fold = inner_fold
+        use_inner_validation_subject = inner_validation_subject
+        use_subject_name = subject_name if subject_name is not None else use_outer_test_subject
+        
+        # Debug: Log fold information
+        logging.info(f"[DEBUG_LSTM_FIT] outer_fold={outer_fold}, inner_fold={inner_fold}")
+        logging.info(f"[DEBUG_LSTM_FIT] outer_test_subject={outer_test_subject}")
+        logging.info(f"[DEBUG_LSTM_FIT] subject_name={subject_name}")
+        
+        # Setup callbacks - use provided callbacks or create simple defaults
+        if callbacks is not None:
+            # Use externally created callbacks (preferred approach)
+            logging.info(f"[LSTM_FIT] Using {len(callbacks)} externally provided callbacks")
+            final_callbacks = callbacks.copy()
+            
+            # Add any additional callbacks from the classifier instance
+            final_callbacks.extend(self.callbacks)
+        else:
+            # Fallback: create simple default callbacks (minimal logging)
+            logging.info(f"[LSTM_FIT] No external callbacks provided, creating simple defaults")
+            final_callbacks = [
+                CustomTrainingLogger(),
+                EarlyStopping(
+                    monitor='loss',
+                    patience=self.patience,
+                    restore_best_weights=True,
+                    verbose=1,
+                    mode='min'
+                ),
+                ReduceLROnPlateau(
+                    monitor='loss',
+                    factor=0.5,
+                    patience=self.patience//2,
+                    verbose=1,
+                    mode='min',
+                    min_lr=1e-7
+                )
+            ]
+            
+            # Add any additional callbacks from the classifier instance
+            final_callbacks.extend(self.callbacks)
         
         # Prepare training arguments
         fit_kwargs = {
             'epochs': self.epochs,
             'batch_size': self.batch_size,
-            'verbose': 2,
-            'callbacks': callbacks,
+            'verbose': 1,
+            'callbacks': final_callbacks,
         }
         
         # For sequence-to-sequence tasks (TimeDistributed output), class_weight causes shape conflicts
@@ -1086,7 +1376,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             logging.info("Training on CPU")
             history = self.model.fit(X, y, **fit_kwargs).history
         
-        self.history_.append(history) # Store the training history for each fold
+        # Store the training history for each fold (for backward compatibility)
+        self.history_.append(history)
+        
         return self
     
     def calculate_class_weights(self, y):
@@ -1149,8 +1441,21 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
         y_pred = self.model.predict(X)
-        y_pred = (y_pred > self.threshold).astype("int32")
-        return y_pred.ravel()  # Ensure 1D output for sklearn compatibility
+        
+        # Handle different output shapes
+        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
+            # Shape: (samples, timesteps, 1) -> (samples, timesteps)
+            y_pred = y_pred.squeeze(axis=-1)
+        
+        # For sequence-to-sequence tasks, return 2D predictions
+        y_pred_binary = (y_pred > self.threshold).astype("int32")
+        
+        # Only flatten if we have single timestep data
+        if len(y_pred_binary.shape) == 2 and y_pred_binary.shape[1] == 1:
+            return y_pred_binary.ravel()
+        else:
+            # Keep 2D shape for sequence-to-sequence tasks
+            return y_pred_binary
 
     def predict_proba(self, X):
         """Predict class probabilities - sklearn compatible interface."""
@@ -1163,13 +1468,25 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
         proba = self.model.predict(X)
-        # Ensure we return probabilities for both classes
-        if proba.shape[1] == 1:
-            # Binary classification with single output
+        
+        # Handle different output shapes
+        if len(proba.shape) == 3 and proba.shape[-1] == 1:
+            # Shape: (samples, timesteps, 1) -> (samples, timesteps)
+            proba = proba.squeeze(axis=-1)
+        
+        # For sequence-to-sequence with single output, we only get positive class probabilities
+        # We need to return both class probabilities for sklearn compatibility
+        if len(proba.shape) == 2:  # Sequence-to-sequence case
+            # For binary classification, return probability for positive class only
+            # sklearn scoring functions will handle this appropriately for sequence data
+            return proba
+        elif len(proba.shape) == 1:  # Single timestep case
+            # Traditional binary classification - return both classes
             proba_0 = 1 - proba
             proba_1 = proba
-            return np.hstack([proba_0, proba_1])
-        return proba
+            return np.column_stack([proba_0, proba_1])
+        else:
+            return proba
     
     def summary(self):
         if self.model:
@@ -1185,28 +1502,65 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
     
     @staticmethod
     def masked_accuracy_score(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return accuracy_score(y_true[mask], y_pred[mask])
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
 
     @staticmethod
     def masked_f1_score(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return f1_score(y_true[mask], y_pred[mask], average='weighted')
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes for F1
+            return 0.0
+        return f1_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
-    def masked_roc_auc_score(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return roc_auc_score(y_true[mask], y_pred[mask])
+    def masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=2):
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_proba_flat = y_pred_proba.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.5
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes for AUC
+            return 0.5
+        return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
     
     @staticmethod
     def masked_precision_score(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return precision_score(y_true[mask], y_pred[mask], average='weighted')
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes
+            return 0.0
+        return precision_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
     def masked_recall_score(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return recall_score(y_true[mask], y_pred[mask], average='weighted')
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes
+            return 0.0
+        return recall_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
     
     @staticmethod
     def masked_classification_report(y_true, y_pred, target_names=None, digits=4, y_mask_val=2):
@@ -1282,12 +1636,22 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None):
     elif model_type == 'lstm':
         use_index_masking = mask_vals.get('use_index_masking', False) if isinstance(mask_vals, dict) else False
         logging.info(f"[BUILD_PIPELINE] Creating LSTMClassifier with use_index_masking: {use_index_masking}")
+        
+        # Create the LSTM classifier with simplified configuration
         if mask_vals:
-            classifier = LSTMClassifier(mask_vals=mask_vals, use_index_masking=use_index_masking)
+            classifier = LSTMClassifier(
+                mask_vals=mask_vals, 
+                use_index_masking=use_index_masking
+            )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_vals: {mask_vals}")
         else:
-            classifier = LSTMClassifier(mask_vals={'X_mask': mask_value, 'y_mask': 2}, use_index_masking=False)
+            classifier = LSTMClassifier(
+                mask_vals={'X_mask': mask_value, 'y_mask': 2}, 
+                use_index_masking=False
+            )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_vals")
+        
+        logging.info(f"[BUILD_PIPELINE] LSTMClassifier created - callbacks will be handled externally")
     else:
         # Default to dummy classifier
         logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")
@@ -1381,8 +1745,8 @@ def get_default_param_grid(model_type, mask_values=None):
             'classifier__optimizer': ['adam'],
             'classifier__lr': [0.001],
             'classifier__patience': [10],
-            'classifier__epochs': [2],
-            'classifier__batch_size': [32], #. Number of Batches = ceil(Number of Samples / Batch Size)
+            'classifier__epochs': [2, 3],
+            'classifier__batch_size': [64], #. Number of Batches = ceil(Number of Samples / Batch Size)
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
             'classifier__mask_vals': [mask_values],
@@ -1424,6 +1788,9 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
                               model_type='lstm',
                               refit_scoring_metric='f1',
                               n_jobs=1,
+                              outer_fold=None,
+                              outer_fold_dir=None,
+                              outer_test_subject=None,
                               verbose=2):
     """
     Create a GridSearchCV-compatible pipeline for ML classification.
@@ -1446,6 +1813,9 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     """
     
     logging.info(f"[CREATE_GRIDSEARCH] Starting grid search pipeline creation")
+    # Debug: Log fold parameters
+    logging.info(f"[DEBUG_CREATE_GRIDSEARCH] outer_fold={outer_fold}, type={type(outer_fold)}")
+    logging.info(f"[DEBUG_CREATE_GRIDSEARCH] outer_test_subject={outer_test_subject}")
     logging.info(f"[CREATE_GRIDSEARCH] X_train shape: {X_train.shape}")
     logging.info(f"[CREATE_GRIDSEARCH] y_train shape: {y_train.shape}")
     logging.info(f"[CREATE_GRIDSEARCH] groups_train shape: {groups_train.shape}")
@@ -1504,7 +1874,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                           subject_names=None,
                           model_type='lstm',
                           refit_scoring_metric='f1',
-                          n_jobs=1, verbose: int = 1):
+                          experiment_dir=None,
+                          n_jobs=1, 
+                          verbose: int = 1):
     """
     Modern sklearn-based nested cross-validation for multi-model support.
     """
@@ -1512,6 +1884,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
     
     if verbose >= 1:
         logging.info(f"\n[CV] Starting nested cross-validation with {model_type} model")
+        logging.info(f"[CV] Experiment directory: {experiment_dir}")
         logging.info(f"[CV] Configuration:")
         logging.info(f"[CV]   - Model type: {model_type}")
         logging.info(f"[CV]   - Refit metric: {refit_scoring_metric}")
@@ -1549,6 +1922,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
     
     # Outer loop
     for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
+        # Debug: Log outer fold information
+        logging.info(f"[DEBUG_OUTER_LOOP] Starting outer_fold={outer_fold}, type={type(outer_fold)}")
+        
         if verbose >= 1:
             logging.info(f"\n[CV] {'='*70}")
             logging.info(f"[CV] OUTER FOLD {outer_fold + 1:2d}/{len(outer_splits)} - SUBJECT-LEVEL VALIDATION")
@@ -1559,21 +1935,24 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
         y_outer_train, y_outer_test = y[outer_train_idx], y[outer_test_idx]
         groups_outer_train = groups[outer_train_idx]
         
-        test_subject = groups[outer_test_idx][0]
+        # Get test subject information
+        test_subject_number = groups[outer_test_idx][0]
+        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
+                
         if verbose >= 1:
-            subject_name = subject_names[test_subject] if subject_names else f"Subject_{test_subject}"
-            logging.info(f"[CV] Test subject: {test_subject} - subject name: {subject_name}")
+            logging.info(f"[CV] Test subject: {test_subject_number} - subject name: {test_subject_name}")
             logging.info(f"[CV]   - Test trials: {len(outer_test_idx)}")
             logging.info(f"[CV]   - Training trials: {len(outer_train_idx)}")
             
-            # Get training subject names
-            training_subjects = sorted(np.unique(groups_outer_train))
-            if subject_names:
-                training_subject_names = [f"{idx}:{subject_names[idx]}" for idx in training_subjects]
-            else:
-                training_subject_names = [f"Subject_{idx}" for idx in training_subjects]
-            logging.info(f"[CV]   - Training subjects: {training_subject_names}")
-            
+        # Get training subject names
+        train_subject_numbers = sorted(np.unique(groups_outer_train))
+        if subject_names:
+            train_subject_names = [f"{idx}:{subject_names[idx]}" for idx in train_subject_numbers]
+        else:
+            train_subject_names = [f"Subject_{idx}" for idx in train_subject_numbers]
+        logging.info(f"[CV]   - Training subjects: {train_subject_names}")
+        
+        if verbose >= 1:            
             # Handle class distribution safely (filter out negative mask values)
             y_train_valid = y_outer_train.ravel()
             y_test_valid = y_outer_test.ravel()
@@ -1590,13 +1969,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             model_type=model_type,
             refit_scoring_metric=refit_scoring_metric,
             n_jobs=n_jobs,
+            outer_fold=outer_fold,
+            outer_test_subject=test_subject_name,
             verbose=max(0, verbose-1)
         )
         
         # Calculate fit count information
         n_candidates = len(list(ParameterGrid(param_grid)))
-        inner_cv_folds = len(list(grid_search.cv.split(X_outer_train, y_outer_train, groups_outer_train)))
-        total_fits = n_candidates * inner_cv_folds
+        n_inner_folds = len(list(grid_search.cv.split(X_outer_train, y_outer_train, groups_outer_train)))
+        total_fits = n_candidates * n_inner_folds
         
         # Calculate total estimated fits for entire experiment (log once on first fold)
         if outer_fold == 0:
@@ -1617,10 +1998,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             logging.info(f"[CV] INNER CV - GRID SEARCH")
             logging.info(f"[CV] {'-'*60}")
             logging.info(f"[CV] Parameter combinations: {n_candidates}")
-            logging.info(f"[CV] Inner CV folds: {inner_cv_folds}")
+            logging.info(f"[CV] Inner CV folds: {n_inner_folds}")
             logging.info(f"[CV] Total fits for this outer fold: {total_fits}")
             logging.info(f"[CV] Expected GridSearchCV output format:")
-            logging.info(f"[CV]   - 'Fitting {inner_cv_folds} folds for each of {n_candidates} candidates'")
+            logging.info(f"[CV]   - 'Fitting {n_inner_folds} folds for each of {n_candidates} candidates'")
             logging.info(f"[CV] {'-'*60}")
         
         # Track current position in overall nested CV
@@ -1645,10 +2026,48 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             
             # Handle sequence data for LSTM
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
-                # For LSTM, keep 3D shape
+                # For LSTM, create callbacks outside the classifier and pass them as fit parameters
+                # This separates concerns and makes the classifier more reusable
+                
+                # Setup logging paths for this outer fold
+                essential_params = {
+                    "epochs": 50,  # Default epochs for grid search
+                    "batch_size": 32,  # Default batch size
+                    "lr": 1e-3  # Default learning rate
+                }
+                
+                callbacks_paths = setup_nested_cv_logging(
+                    outer_fold=outer_fold,
+                    inner_fold=None,  # Will be set per inner fold
+                    subject_name=test_subject_name,
+                    experiment_dir=experiment_dir,
+                )
+                
+                # Create base callbacks (without inner fold info, will be customized per inner fold)
+                base_callbacks = create_nested_cv_callbacks(
+                    paths=callbacks_paths,
+                    outer_fold=outer_fold,
+                    inner_fold=None,  # Will be set per inner fold
+                    subject_name=test_subject_name,
+                    patience=10,
+                    monitor='loss',
+                    save_models=False
+                )
+                
                 if verbose >= 1:
+                    logging.info(f"[GRID_SEARCH] Created callbacks for outer fold {outer_fold}")
+                    logging.info(f"[GRID_SEARCH] TensorBoard logs: {callbacks_paths['experiment_dir']}")
                     logging.info(f"[GRID_SEARCH] Fitting LSTM with 3D data: {X_outer_train.shape}")
-                grid_search.fit(X_outer_train, y_outer_train, groups=groups_outer_train)
+                
+                # Pass callbacks as fit parameters to GridSearchCV
+                # These will be passed to each inner fold fit
+                fit_params = {
+                    'classifier__callbacks': base_callbacks,
+                    'classifier__outer_fold': outer_fold,
+                    'classifier__outer_test_subject': test_subject_name
+                }
+                
+                grid_search.fit(X_outer_train, y_outer_train, groups=groups_outer_train, **fit_params)
             else:
                 # For other models, flatten to 2D
                 X_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
@@ -1670,7 +2089,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             
             # Test on held-out subject
             if model_type == 'lstm' and len(X_outer_test.shape) == 3:
-                y_test_pred = grid_search.predict(X_outer_test)
+                y_test_pred = grid_search.predict(X_outer_test) #TODO: print shape of  X_outer_test and y_test_pred
                 y_test_pred_proba = grid_search.predict_proba(X_outer_test)
             else:
                 X_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
@@ -1681,11 +2100,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             if model_type == 'lstm' and mask_vals is not None:
                 y_mask_val = mask_vals.get('y_mask', 2) if isinstance(mask_vals, dict) else 2
                 test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
+                
                 # Handle probability array properly for AUC calculation
-                if y_test_pred_proba.shape[1] == 2:
-                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba[:, 1], y_mask_val)
-                else:
-                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba.ravel(), y_mask_val)
+                # For sequence-to-sequence, predict_proba returns 2D array with positive class probabilities
+                test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
                 test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
             else:
                 from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
@@ -1695,7 +2113,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             
             outer_results.append({
                 'fold': outer_fold + 1,
-                'test_subject': test_subject,
+                'test_subject': test_subject_number,
                 'best_params': best_params,
                 'best_inner_score': best_score,
                 'test_f1': test_f1,
@@ -1728,15 +2146,72 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                 logging.info(f"[CV] {'='*80}")
             outer_results.append({
                 'fold': outer_fold + 1,
-                'test_subject': test_subject,
+                'test_subject': test_subject_number,
                 'best_params': {},
                 'best_inner_score': 0.0,
                 'test_f1': 0.0,
-                'test_auc': 0.5,
+                'test_auc': 0.0,
                 'test_accuracy': 0.0
             })
     
-    return outer_results, all_best_params
+    return outer_results, all_best_params, experiment_dir
+
+
+def get_optimal_n_jobs(model_type='lstm', conservative=True):
+    """
+    Determine optimal number of parallel jobs based on system resources and model type.
+    
+    Args:
+        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb')
+        conservative: If True, use conservative estimates
+        
+    Returns:
+        int: Optimal number of jobs
+    """
+    try:
+        import psutil
+        cpu_count = psutil.cpu_count(logical=True)
+        memory_gb = psutil.virtual_memory().total / (1024**3)
+        available_memory_gb = psutil.virtual_memory().available / (1024**3)
+        
+        logging.info(f"[SYSTEM] CPU cores: {cpu_count}, Total memory: {memory_gb:.1f}GB, Available: {available_memory_gb:.1f}GB")
+        
+        # For LSTM models, be very conservative due to memory requirements
+        if model_type.lower() == 'lstm':
+            if conservative:
+                n_jobs = min(2, max(1, cpu_count // 4))  # Use at most 25% of cores
+            else:
+                n_jobs = min(4, max(1, cpu_count // 2))  # Use at most 50% of cores
+        
+        # For tree-based models, can be more aggressive
+        elif model_type.lower() in ['rf', 'xgb']:
+            if conservative:
+                n_jobs = min(4, max(1, cpu_count // 2))
+            else:
+                n_jobs = min(cpu_count - 1, max(1, int(cpu_count * 0.75)))
+        
+        # For SVM and others, moderate approach
+        else:
+            if conservative:
+                n_jobs = min(2, max(1, cpu_count // 3))
+            else:
+                n_jobs = min(4, max(1, cpu_count // 2))
+        
+        # Memory-based adjustments (rough estimates)
+        if available_memory_gb < 4:
+            n_jobs = 1
+        elif available_memory_gb < 8:
+            n_jobs = min(n_jobs, 2)
+        
+        logging.info(f"[SYSTEM] Recommended n_jobs for {model_type}: {n_jobs}")
+        return n_jobs
+        
+    except ImportError:
+        logging.warning("[SYSTEM] psutil not available, using conservative default")
+        return 1 if model_type.lower() == 'lstm' else 2
+    except Exception as e:
+        logging.warning(f"[SYSTEM] Error detecting system resources: {e}")
+        return 1
 
 
 def main(verbose: int = 1):
@@ -1745,18 +2220,25 @@ def main(verbose: int = 1):
     # Initialize TensorFlow
     initialize_tf()
     
-    # Setup comprehensive logging
+    # Setup hierarchical experiment logging structure
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_dir = f"logs/nested_cv_{timestamp}"
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = setup_logging(log_dir=log_dir, log_level=logging.INFO)
+    experiment_dir = f"logs/nested_cv/experiment_{timestamp}"
+    os.makedirs(experiment_dir, exist_ok=True)
+    
+    # Create main experiment log
+    log_file = setup_logging(log_dir=experiment_dir, log_level=logging.INFO)
     
     logging.info("="*80)
-    logging.info("LSTM HCTSA TRAINING PIPELINE STARTED")
+    logging.info("LSTM HCTSA NESTED CV EXPERIMENT STARTED")
     logging.info("="*80)
     logging.info(f"Verbose level: {verbose}")
+    logging.info(f"Experiment directory: {experiment_dir}")
+    
+    # Auto-detect optimal number of parallel jobs
+    n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
+    logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
-    logging.info(f"Results directory: {log_dir}")
+    logging.info(f"Results directory: {experiment_dir}")
     
     # Remove the duplicate logging configuration since setup_logging already handles it
     
@@ -1827,11 +2309,13 @@ def main(verbose: int = 1):
     
     # Run nested CV with sklearn-based approach
     logging.info(f"[MAIN] Starting nested CV with data shapes - X: {X_padded.shape}, y: {y_padded.shape}")
-    outer_results, all_best_params = run_nested_cv_sklearn(
+    outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
         X_padded, y_padded, groups, mask_vals,
         subject_names=subject_names,
         model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
         refit_scoring_metric='f1',
+        experiment_dir=experiment_dir,
+        n_jobs=n_jobs,
         verbose=verbose
     )
     
@@ -1839,6 +2323,10 @@ def main(verbose: int = 1):
     if verbose >= 1:
         logging.info("\n[MAIN] 4. FINAL EVALUATION")
         logging.info("[MAIN] " + "-" * 40)
+    
+    # Create summary directory for final results
+    summary_dir = os.path.join(experiment_dir, "summary")
+    os.makedirs(summary_dir, exist_ok=True)
     
     # Convert results to DataFrame
     results_df = pd.DataFrame(outer_results)
@@ -1863,17 +2351,23 @@ def main(verbose: int = 1):
         param_key = tuple(sorted(params.items()))
         param_counts[param_key] = param_counts.get(param_key, 0) + 1
     
-    most_common_params = max(param_counts, key=param_counts.get)
-    if verbose >= 1:
-        logging.info(f"[MAIN] Most common best parameters: {dict(most_common_params)}")
+    if param_counts:
+        most_common_params = max(param_counts, key=param_counts.get)
+        if verbose >= 1:
+            logging.info(f"[MAIN] Most common best parameters: {dict(most_common_params)}")
+    else:
+        most_common_params = {}
+        if verbose >= 1:
+            logging.info(f"[MAIN] No best parameters collected (likely due to failed CV folds)")
+            logging.info(f"[MAIN] all_best_params length: {len(all_best_params)}")
     
     # Save results
-    results_df.to_csv(f"{log_dir}/nested_cv_results.csv", index=False)
+    results_df.to_csv(f"{summary_dir}/nested_cv_results.csv", index=False)
     
     if verbose >= 1:
-        logging.info(f"[MAIN] Results saved to {log_dir}/")
+        logging.info(f"[MAIN] Results saved to {summary_dir}/")
     
-    with open(f"{log_dir}/final_summary.json", 'w') as f:
+    with open(f"{summary_dir}/final_summary.json", 'w') as f:
         json.dump({
             'mean_f1': mean_f1,
             'std_f1': std_f1,
@@ -1881,7 +2375,7 @@ def main(verbose: int = 1):
             'std_auc': std_auc,
             'mean_accuracy': mean_accuracy,
             'std_accuracy': std_accuracy,
-            'most_common_params': dict(most_common_params),
+            'most_common_params': dict(most_common_params) if most_common_params else {},
             'n_subjects': len(np.unique(groups)),
             'n_trials': len(X_padded)
         }, f, indent=2)
@@ -1911,7 +2405,7 @@ def main(verbose: int = 1):
     plt.xticks(rotation=45)
     
     plt.tight_layout()
-    plt.savefig(f"{log_dir}/results_by_subject.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{summary_dir}/results_by_subject.png", dpi=300, bbox_inches='tight')
     if verbose >= 1:
         plt.show()
     
@@ -1922,5 +2416,33 @@ def main(verbose: int = 1):
 
 
 if __name__ == "__main__":
-    # You can change verbose level here: 0=silent, 1=minimal, 2=detailed
-    main(verbose=2)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
+    parser.add_argument("--verbose", type=int, default=1, choices=[0, 1, 2],
+                        help="Verbosity level (0=quiet, 1=normal, 2=detailed)")
+    parser.add_argument("--n_jobs", type=int, default=None,
+                        help="Number of parallel jobs (default: auto-detect)")
+    parser.add_argument("--force_n_jobs_all", action="store_true",
+                        help="Force n_jobs=-1 (use all cores - RISKY for LSTM!)")
+    parser.add_argument("--save_models", action="store_true",
+                        help="Save model checkpoints (disabled by default for speed)")
+    
+    args = parser.parse_args()
+    
+    # Override n_jobs if specified
+    if args.force_n_jobs_all:
+        print("WARNING: Forcing n_jobs=-1 - this may cause memory issues with LSTM!")
+        import sys
+        # Temporarily modify the get_optimal_n_jobs function
+        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
+            return -1
+        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
+    elif args.n_jobs is not None:
+        print(f"Using manual n_jobs={args.n_jobs}")
+        import sys
+        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
+            return args.n_jobs
+        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
+    
+    main(verbose=args.verbose)
