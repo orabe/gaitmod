@@ -1105,7 +1105,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_vals={'X_mask': 0.0, 'y_mask': 2}, 
-                 use_index_masking=True, callbacks=None):
+                 use_index_masking=True, callbacks=None,
+                 outer_fold=None, inner_fold=None,
+                 outer_test_subject=None, inner_validation_subject=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
         
@@ -1133,6 +1135,12 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         # Masking parameters
         self.mask_vals = mask_vals
         self.use_index_masking = use_index_masking
+        
+        # Subject and fold tracking parameters
+        self.outer_fold = outer_fold
+        self.inner_fold = inner_fold
+        self.outer_test_subject = outer_test_subject
+        self.inner_validation_subject = inner_validation_subject
         
         # Model state
         self.model = None
@@ -1303,17 +1311,17 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             class_weights = self.calculate_class_weights(y)
             self.classes_ = np.unique(y[y != self.mask_vals['y_mask']])
         
-        # Determine fold information - use provided values for logging context
-        use_outer_fold = outer_fold
-        use_outer_test_subject = outer_test_subject
-        use_inner_fold = inner_fold
-        use_inner_validation_subject = inner_validation_subject
-        use_subject_name = subject_name if subject_name is not None else use_outer_test_subject
+        # Determine fold information - use provided values or stored values for logging context
+        use_outer_fold = outer_fold if outer_fold is not None else self.outer_fold
+        use_outer_test_subject = outer_test_subject if outer_test_subject is not None else self.outer_test_subject
+        use_inner_fold = inner_fold if inner_fold is not None else self.inner_fold
+        use_inner_validation_subject = inner_validation_subject if inner_validation_subject is not None else self.inner_validation_subject
         
-        # Debug: Log fold information
-        logging.info(f"[DEBUG_LSTM_FIT] outer_fold={outer_fold}, inner_fold={inner_fold}")
-        logging.info(f"[DEBUG_LSTM_FIT] outer_test_subject={outer_test_subject}")
-        logging.info(f"[DEBUG_LSTM_FIT] subject_name={subject_name}")
+        # Debug: Log fold information (both provided and stored)
+        logging.info(f"[DEBUG_LSTM_FIT] Provided: outer_fold={outer_fold}, inner_fold={inner_fold}")
+        logging.info(f"[DEBUG_LSTM_FIT] Provided: outer_test_subject={outer_test_subject}, subject_name={subject_name}")
+        logging.info(f"[DEBUG_LSTM_FIT] Stored: outer_fold={self.outer_fold}, inner_fold={self.inner_fold}")
+        logging.info(f"[DEBUG_LSTM_FIT] Using: outer_fold={use_outer_fold}, inner_fold={use_inner_fold}")
         
         # Setup callbacks - use provided callbacks or create simple defaults
         if callbacks is not None:
@@ -1574,7 +1582,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
 
 
 # # ======================
-def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None):
+def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
+                   outer_fold=None, inner_fold=None,
+                   outer_test_subject=None, inner_validation_subject=None):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -1587,6 +1597,10 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None):
         model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'lstm')
         mask_value: Mask value for padding (for mask-aware processing)
         mask_vals: Full mask values dictionary (for LSTM)
+        outer_fold: Current outer fold number
+        inner_fold: Current inner fold number
+        outer_test_subject: Test subject for outer fold
+        inner_validation_subject: Validation subject for inner fold
         
     Returns:
         tuple: (pipeline, scoring_functions)
@@ -1637,21 +1651,32 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None):
         use_index_masking = mask_vals.get('use_index_masking', False) if isinstance(mask_vals, dict) else False
         logging.info(f"[BUILD_PIPELINE] Creating LSTMClassifier with use_index_masking: {use_index_masking}")
         
-        # Create the LSTM classifier with simplified configuration
+        # Create the LSTM classifier with simplified configuration and subject tracking
         if mask_vals:
             classifier = LSTMClassifier(
-                mask_vals=mask_vals, 
-                use_index_masking=use_index_masking
+                mask_vals=mask_vals,
+                use_index_masking=use_index_masking,
+                outer_fold=outer_fold,
+                inner_fold=inner_fold,
+                outer_test_subject=outer_test_subject,
+                inner_validation_subject=inner_validation_subject
             )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_vals: {mask_vals}")
         else:
             classifier = LSTMClassifier(
-                mask_vals={'X_mask': mask_value, 'y_mask': 2}, 
-                use_index_masking=False
+                mask_vals={'X_mask': mask_value, 'y_mask': 2},
+                use_index_masking=False,
+                outer_fold=outer_fold,
+                inner_fold=inner_fold,
+                outer_test_subject=outer_test_subject,
+                inner_validation_subject=inner_validation_subject
             )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_vals")
         
-        logging.info(f"[BUILD_PIPELINE] LSTMClassifier created - callbacks will be handled externally")
+        logging.info(f"[BUILD_PIPELINE] LSTMClassifier created with subject tracking - callbacks will be handled externally")
+        if outer_fold is not None:
+            logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
+            logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
     else:
         # Default to dummy classifier
         logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")
@@ -1703,13 +1728,61 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None):
     
     return pipeline, scoring_functions
 
-def get_default_param_grid(model_type, mask_values=None):
+def create_pipeline_with_subject_info(model_type='lstm', mask_vals=None,
+                                     outer_fold=1, inner_fold=None,
+                                     outer_test_subject="TestSubject", inner_validation_subject=None):
+    """
+    Convenience function to create a pipeline with subject information.
+    
+    Example usage:
+        # Create pipeline with subject tracking
+        pipeline, scoring_functions = create_pipeline_with_subject_info(
+            model_type='lstm',
+            mask_vals={'X_mask': 0.0, 'y_mask': 2, 'use_index_masking': True},
+            outer_fold=1,
+            outer_test_subject="Patient_01"
+        )
+        
+        # Pipeline steps include classifier with subject parameters:
+        # steps.append(('classifier', LSTMClassifier(outer_fold=1, ...)))
+        # pipeline = Pipeline(steps)
+    
+    Args:
+        model_type: Type of classifier
+        mask_vals: Mask values dictionary
+        outer_fold: Outer fold number
+        inner_fold: Inner fold number (optional)
+        outer_test_subject: Test subject name
+        inner_validation_subject: Validation subject name (optional)
+        
+    Returns:
+        tuple: (pipeline, scoring_functions)
+    """
+    mask_value = mask_vals.get('X_mask') if mask_vals else None
+    
+    return build_pipeline(
+        model_type=model_type,
+        mask_value=mask_value,
+        mask_vals=mask_vals,
+        outer_fold=outer_fold,
+        inner_fold=inner_fold,
+        outer_test_subject=outer_test_subject,
+        inner_validation_subject=inner_validation_subject
+    )
+
+def get_default_param_grid(model_type, mask_values=None,
+                          outer_fold=None, inner_fold=None,
+                          outer_test_subject=None, inner_validation_subject=None):
     """
     Get sensible default parameter grids for different model types.
     
     Args:
         model_type: Type of classifier
         mask_values: Full mask values dictionary
+        outer_fold: Current outer fold number
+        inner_fold: Current inner fold number
+        outer_test_subject: Test subject for outer fold
+        inner_validation_subject: Validation subject for inner fold
         
     Returns:
         dict: Parameter grid for GridSearchCV
@@ -1750,7 +1823,9 @@ def get_default_param_grid(model_type, mask_values=None):
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
             'classifier__mask_vals': [mask_values],
-            'classifier__use_index_masking': [mask_values.get('use_index_masking', False) if isinstance(mask_values, dict) else False]
+            'classifier__use_index_masking': [mask_values.get('use_index_masking', False) if isinstance(mask_values, dict) else False],
+            # NOTE: Fold tracking parameters are NOT included in hyperparameter search
+            # They are set during pipeline creation and should not be overwritten by GridSearchCV
         }
         param_grid.update(lstm_params)
         # logging.info(f"[PARAM_GRID] LSTM parameters: {list(lstm_params.keys())}")
@@ -1789,8 +1864,10 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
                               refit_scoring_metric='f1',
                               n_jobs=1,
                               outer_fold=None,
+                              inner_fold=None,
                               outer_fold_dir=None,
                               outer_test_subject=None,
+                              inner_validation_subject=None,
                               verbose=2):
     """
     Create a GridSearchCV-compatible pipeline for ML classification.
@@ -1834,13 +1911,24 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     pipeline, scoring_functions = build_pipeline(
         model_type=model_type,
         mask_value=mask_value,
-        mask_vals=mask_vals
+        mask_vals=mask_vals,
+        outer_fold=outer_fold,
+        inner_fold=inner_fold,
+        outer_test_subject=outer_test_subject,
+        inner_validation_subject=inner_validation_subject
     )
     logging.info(f"[CREATE_GRIDSEARCH] Pipeline built successfully")
     
     # Generate parameter grid with sensible defaults
     logging.info(f"[CREATE_GRIDSEARCH] Generating parameter grid...")
-    param_grid = get_default_param_grid(model_type=model_type, mask_values=mask_vals)
+    param_grid = get_default_param_grid(
+        model_type=model_type, 
+        mask_values=mask_vals,
+        outer_fold=outer_fold,
+        inner_fold=inner_fold,
+        outer_test_subject=outer_test_subject,
+        inner_validation_subject=inner_validation_subject
+    )
     logging.info(f"[CREATE_GRIDSEARCH] Parameter grid generated with {len(param_grid)} parameters")
     # logging.info(f"[CREATE_GRIDSEARCH] Parameter grid keys: {list(param_grid.keys())}")
     
@@ -1909,9 +1997,20 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
     pipeline, scoring_functions = build_pipeline(
         model_type=model_type,
         mask_value=mask_value,
-        mask_vals=mask_vals
+        mask_vals=mask_vals,
+        outer_fold=None,
+        inner_fold=None,
+        outer_test_subject=None,
+        inner_validation_subject=None
     )
-    param_grid = get_default_param_grid(model_type=model_type, mask_values=mask_vals)
+    param_grid = get_default_param_grid(
+        model_type=model_type, 
+        mask_values=mask_vals,
+        outer_fold=None,
+        inner_fold=None,
+        outer_test_subject=None,
+        inner_validation_subject=None
+    )
     param_combinations = list(ParameterGrid(param_grid))
     
     if verbose >= 1:
@@ -1977,8 +2076,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                 if verbose >= 2:
                     logging.info(f"[CV]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
-                # Create pipeline with current parameters
-                inner_pipeline = pipeline.__class__(pipeline.steps)
+                # Create pipeline with current parameters and subject information
+                inner_pipeline, _ = create_pipeline_with_subject_info(
+                    model_type=model_type,
+                    mask_vals=mask_vals,
+                    outer_fold=outer_fold + 1,
+                    inner_fold=inner_fold + 1,
+                    outer_test_subject=test_subject_name,
+                    inner_validation_subject=val_subject_name
+                )
                 inner_pipeline.set_params(**params)
                 
                 try:
@@ -2076,8 +2182,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             logging.info(f"\n[CV] Final retraining on full training set...")
         
         try:
-            # Create final pipeline with best parameters
-            final_pipeline = pipeline.__class__(pipeline.steps)
+            # Create final pipeline with best parameters and subject information
+            final_pipeline, _ = create_pipeline_with_subject_info(
+                model_type=model_type,
+                mask_vals=mask_vals,
+                outer_fold=outer_fold + 1,
+                inner_fold=None,  # No inner fold for final training
+                outer_test_subject=test_subject_name,
+                inner_validation_subject=None
+            )
             final_pipeline.set_params(**best_params)
             
             # Train on full outer training set
