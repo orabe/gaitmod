@@ -1878,26 +1878,299 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                           n_jobs=1, 
                           verbose: int = 1):
     """
-    Modern sklearn-based nested cross-validation for multi-model support.
+    Nested cross-validation with feature selection aggregation and final retraining.
+    
+    Implementation follows the specific approach:
+    1. For each outer fold: split train/test subjects
+    2. Inner CV with GridSearchCV: test hyperparameter combinations
+    3. For each hyperparameter combo: aggregate feature selection across inner folds
+    4. Select best hyperparameters based on average validation score
+    5. Final retrain on full training set with best hyperparameters
+    6. Test on held-out subject
     """
     from sklearn.model_selection import ParameterGrid
+    from collections import defaultdict, Counter
+    import numpy as np
     
     if verbose >= 1:
-        logging.info(f"\n[CV] Starting nested cross-validation with {model_type} model")
+        logging.info(f"\n[CV] Starting nested cross-validation with feature aggregation")
+        logging.info(f"[CV] Model type: {model_type}")
+        logging.info(f"[CV] Refit metric: {refit_scoring_metric}")
         logging.info(f"[CV] Experiment directory: {experiment_dir}")
-        logging.info(f"[CV] Configuration:")
-        logging.info(f"[CV]   - Model type: {model_type}")
-        logging.info(f"[CV]   - Refit metric: {refit_scoring_metric}")
-        logging.info(f"[CV]   - Parallel jobs: {n_jobs}")
-        logging.info(f"[CV]   - Verbose level: {verbose}")
-        logging.info(f"[CV] {'-'*60}")
+        logging.info(f"[CV] {'-'*80}")
     
-    # Setup outer CV
+    # Setup outer CV (Leave-One-Subject-Out)
     outer_cv = LeaveOneGroupOut()
     outer_splits = list(outer_cv.split(X, y, groups))
     n_outer_folds = len(outer_splits)
     
-    # Estimate inner CV folds (Leave-One-Subject-Out on training data)  
+    # Build pipeline and get parameter grid
+    mask_value = mask_vals.get('X_mask') if mask_vals else None
+    pipeline, scoring_functions = build_pipeline(
+        model_type=model_type,
+        mask_value=mask_value,
+        mask_vals=mask_vals
+    )
+    param_grid = get_default_param_grid(model_type=model_type, mask_values=mask_vals)
+    param_combinations = list(ParameterGrid(param_grid))
+    
+    if verbose >= 1:
+        logging.info(f"[CV] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
+        logging.info(f"[CV] Total estimated fits: {n_outer_folds * (len(param_combinations) * (n_outer_folds-1) + 1)}")
+    
+    # Results storage
+    outer_results = []
+    all_best_params = []
+    
+    # Outer loop: Leave-One-Subject-Out
+    for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
+        if verbose >= 1:
+            logging.info(f"\n[CV] {'='*70}")
+            logging.info(f"[CV] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
+            logging.info(f"[CV] {'='*70}")
+        
+        # Step 1: Split train subjects vs test subject
+        X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
+        y_outer_train, y_outer_test = y[outer_train_idx], y[outer_test_idx]
+        groups_outer_train = groups[outer_train_idx]
+        
+        test_subject_number = groups[outer_test_idx][0]
+        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
+        
+        if verbose >= 1:
+            logging.info(f"[CV] Test subject: {test_subject_name} ({test_subject_number})")
+            logging.info(f"[CV] Training subjects: {len(np.unique(groups_outer_train))}")
+            logging.info(f"[CV] Training samples: {len(outer_train_idx)}, Test samples: {len(outer_test_idx)}")
+        
+        # Step 2: Inner CV with hyperparameter testing and feature aggregation
+        inner_cv = LeaveOneGroupOut()
+        inner_splits = list(inner_cv.split(X_outer_train, y_outer_train, groups_outer_train))
+        n_inner_folds = len(inner_splits)
+        
+        if verbose >= 1:
+            logging.info(f"[CV] Inner CV: {n_inner_folds} folds")
+        
+        # Storage for hyperparameter evaluation
+        param_scores = []
+        param_features = []  # Store feature selections for each param combo
+        
+        # Test each hyperparameter combination
+        for param_idx, params in enumerate(param_combinations):
+            if verbose >= 1:
+                logging.info(f"\n[CV] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
+                logging.info(f"[CV] Parameters: {params}")
+            
+            # Storage for this parameter combination
+            inner_scores = []
+            inner_selected_features = []  # Features selected in each inner fold
+            
+            # Inner CV loop for this parameter combination
+            for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
+                X_inner_train = X_outer_train[inner_train_idx]
+                X_inner_val = X_outer_train[inner_val_idx]
+                y_inner_train = y_outer_train[inner_train_idx]
+                y_inner_val = y_outer_train[inner_val_idx]
+                
+                val_subject_number = groups_outer_train[inner_val_idx][0]
+                val_subject_name = subject_names[val_subject_number] if subject_names else f"Subject_{val_subject_number}"
+                
+                if verbose >= 2:
+                    logging.info(f"[CV]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
+                
+                # Create pipeline with current parameters
+                inner_pipeline = pipeline.__class__(pipeline.steps)
+                inner_pipeline.set_params(**params)
+                
+                try:
+                    # Fit pipeline (includes feature selection and model training)
+                    if model_type == 'lstm' and len(X_inner_train.shape) == 3:
+                        # For LSTM, use 3D data
+                        inner_pipeline.fit(X_inner_train, y_inner_train)
+                        y_val_pred = inner_pipeline.predict(X_inner_val)
+                        
+                        # Calculate masked score for LSTM
+                        if mask_vals and 'y_mask' in mask_vals:
+                            y_mask_val = mask_vals['y_mask']
+                            score = LSTMClassifier.masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
+                        else:
+                            from sklearn.metrics import f1_score
+                            score = f1_score(y_inner_val.ravel(), y_val_pred.ravel(), average='weighted')
+                    else:
+                        # For other models, flatten to 2D
+                        X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
+                        X_inner_val_2d = X_inner_val.reshape(X_inner_val.shape[0], -1)
+                        
+                        inner_pipeline.fit(X_inner_train_2d, y_inner_train)
+                        y_val_pred = inner_pipeline.predict(X_inner_val_2d)
+                        
+                        from sklearn.metrics import f1_score
+                        score = f1_score(y_inner_val, y_val_pred, average='weighted')
+                    
+                    inner_scores.append(score)
+                    
+                    # Store selected features from this inner fold
+                    if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
+                        selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
+                        inner_selected_features.append(selected_features)
+                    
+                    if verbose >= 2:
+                        logging.info(f"[CV]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                
+                except Exception as e:
+                    if verbose >= 1:
+                        logging.warning(f"[CV]     Inner fold {inner_fold + 1} failed: {e}")
+                    inner_scores.append(0.0)  # Penalty for failed folds
+                    inner_selected_features.append([])
+            
+            # Compute average validation score for this parameter combination
+            avg_score = np.mean(inner_scores) if inner_scores else 0.0
+            param_scores.append(avg_score)
+            
+            # Aggregate selected features across inner folds
+            if inner_selected_features:
+                # Find features that were selected consistently across inner folds
+                all_features = []
+                for features in inner_selected_features:
+                    if len(features) > 0:
+                        all_features.extend(features)
+                
+                if all_features:
+                    # Count frequency of each feature
+                    feature_counts = Counter(all_features)
+                    # Use features selected in at least 50% of inner folds
+                    min_count = max(1, len(inner_selected_features) // 2)
+                    aggregated_features = [feature for feature, count in feature_counts.items() 
+                                         if count >= min_count]
+                else:
+                    aggregated_features = []
+            else:
+                aggregated_features = []
+            
+            param_features.append(aggregated_features)
+            
+            if verbose >= 1:
+                logging.info(f"[CV]   Average score: {avg_score:.4f}")
+                logging.info(f"[CV]   Aggregated features: {len(aggregated_features)}")
+        
+        # Step 3: Select best hyperparameter combination
+        if param_scores:
+            best_param_idx = np.argmax(param_scores)
+            best_params = param_combinations[best_param_idx]
+            best_score = param_scores[best_param_idx]
+            best_features = param_features[best_param_idx]
+            
+            if verbose >= 1:
+                logging.info(f"\n[CV] Best parameters: {best_params}")
+                logging.info(f"[CV] Best CV score: {best_score:.4f}")
+                logging.info(f"[CV] Best feature set size: {len(best_features)}")
+        else:
+            # Fallback to default parameters
+            best_params = param_combinations[0] if param_combinations else {}
+            best_score = 0.0
+            best_features = []
+            if verbose >= 1:
+                logging.warning(f"[CV] No valid scores found, using default parameters")
+        
+        # Step 4: Final retrain on full training set with best parameters
+        if verbose >= 1:
+            logging.info(f"\n[CV] Final retraining on full training set...")
+        
+        try:
+            # Create final pipeline with best parameters
+            final_pipeline = pipeline.__class__(pipeline.steps)
+            final_pipeline.set_params(**best_params)
+            
+            # Train on full outer training set
+            if model_type == 'lstm' and len(X_outer_train.shape) == 3:
+                final_pipeline.fit(X_outer_train, y_outer_train)
+                
+                # Step 5: Test on held-out subject
+                y_test_pred = final_pipeline.predict(X_outer_test)
+                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
+                
+                # Calculate test metrics for LSTM
+                if mask_vals and 'y_mask' in mask_vals:
+                    y_mask_val = mask_vals['y_mask']
+                    test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
+                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
+                    test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
+                else:
+                    from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+                    test_f1 = f1_score(y_outer_test.ravel(), y_test_pred.ravel(), average='weighted')
+                    test_auc = roc_auc_score(y_outer_test.ravel(), y_test_pred_proba.ravel()) if len(np.unique(y_outer_test)) > 1 else 0.5
+                    test_accuracy = accuracy_score(y_outer_test.ravel(), y_test_pred.ravel())
+            else:
+                # For other models
+                X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
+                X_outer_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
+                
+                final_pipeline.fit(X_outer_train_2d, y_outer_train)
+                y_test_pred = final_pipeline.predict(X_outer_test_2d)
+                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
+                
+                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
+                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
+                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
+            
+            # Store results
+            outer_results.append({
+                'fold': outer_fold + 1,
+                'test_subject': test_subject_number,
+                'test_subject_name': test_subject_name,
+                'best_params': best_params,
+                'best_inner_score': best_score,
+                'selected_features': best_features,
+                'n_selected_features': len(best_features),
+                'test_f1': test_f1,
+                'test_auc': test_auc,
+                'test_accuracy': test_accuracy
+            })
+            
+            all_best_params.append(best_params)
+            
+            if verbose >= 1:
+                logging.info(f"[CV] Test results - F1: {test_f1:.4f}, AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
+                logging.info(f"[CV] OUTER FOLD {outer_fold + 1} COMPLETED")
+        
+        except Exception as e:
+            if verbose >= 1:
+                logging.error(f"[CV] Final training/testing failed for fold {outer_fold + 1}: {e}")
+            
+            # Store failed result
+            outer_results.append({
+                'fold': outer_fold + 1,
+                'test_subject': test_subject_number,
+                'test_subject_name': test_subject_name,
+                'best_params': best_params,
+                'best_inner_score': best_score,
+                'selected_features': best_features,
+                'n_selected_features': len(best_features),
+                'test_f1': 0.0,
+                'test_auc': 0.5,
+                'test_accuracy': 0.0
+            })
+            
+            all_best_params.append(best_params)
+    
+    # Summary
+    if verbose >= 1:
+        logging.info(f"\n[CV] {'='*80}")
+        logging.info(f"[CV] NESTED CROSS-VALIDATION COMPLETED")
+        logging.info(f"[CV] {'='*80}")
+        
+        if outer_results:
+            avg_f1 = np.mean([r['test_f1'] for r in outer_results])
+            avg_auc = np.mean([r['test_auc'] for r in outer_results])
+            avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
+            avg_features = np.mean([r['n_selected_features'] for r in outer_results])
+            
+            logging.info(f"[CV] Average F1: {avg_f1:.4f}")
+            logging.info(f"[CV] Average AUC: {avg_auc:.4f}")
+            logging.info(f"[CV] Average Accuracy: {avg_accuracy:.4f}")
+            logging.info(f"[CV] Average selected features: {avg_features:.1f}")
+    
+    return outer_results, all_best_params, experiment_dir  
     n_inner_folds = n_outer_folds - 1  # Each outer fold leaves out 1 subject, so inner CV has n-1 subjects
 
     if verbose >= 1:
