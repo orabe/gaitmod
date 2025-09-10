@@ -20,6 +20,7 @@ import uuid
 import warnings
 warnings.filterwarnings('ignore')
 
+
 # Add TensorFlow stability fixes
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -173,8 +174,7 @@ class HyperparameterTensorBoardLogger:
             self.metric_definitions = metrics
             self.initialized = True
             
-            logging.info(f"[HPARAMS] Initialized TensorBoard experiment with {len(hparams)} hyperparameters")
-            logging.info(f"[HPARAMS] Tracking {len(metrics)} metrics")
+            logging.info(f"[HPARAMS] Initialized experiment '{self.experiment_name}' with {len(hparams)} hyperparameters and {len(metrics)} metrics")
             
         except Exception as e:
             logging.error(f"Failed to setup hyperparameter experiment: {e}")
@@ -226,7 +226,7 @@ class HyperparameterTensorBoardLogger:
                 # Flush the writer
                 tf.summary.experimental.get_step()
                 
-            logging.info(f"[HPARAMS] Logged trial {session_id} with {len(clean_hparams)} hyperparameters and {len(trial_results)} metrics")
+            logging.debug(f"[HPARAMS] Logged trial {session_id} with {len(clean_hparams)} hyperparameters and {len(trial_results)} metrics")
             
         except Exception as e:
             logging.warning(f"Failed to log hyperparameter trial {session_id}: {e}")
@@ -358,9 +358,7 @@ class ProgressTrainingLogger(Callback):
         fold_info = f"[{self.fold_identifier}]"
         subject_info = f"[{self.subject_identifier}]"
         
-        logging.info(f"\n{'='*60}")
-        logging.info(f"Training Started {fold_info} {subject_info}")
-        logging.info(f"{'='*60}")
+        logging.info(f"Training started {fold_info} {subject_info}")
         
         # Log model info if available
         if hasattr(self.model, 'count_params'):
@@ -374,7 +372,7 @@ class ProgressTrainingLogger(Callback):
             
             # Core metrics display
             core_metrics = []
-            for metric in ['loss', 'accuracy', 'val_loss', 'val_accuracy']:
+            for metric in ['loss', 'MASKED_accuracy', 'val_loss', 'val_MASKED_accuracy']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -386,8 +384,7 @@ class ProgressTrainingLogger(Callback):
         if self.start_time:
             import time
             duration = time.time() - self.start_time
-            logging.info(f"\n✅ Training Complete - Duration: {duration:.1f}s")
-            logging.info(f"{'='*60}\n")
+            logging.info(f"Training complete - Duration: {duration:.1f}s")
 
     def format_metrics(self, logs):
         """Format all metrics in logs dictionary."""
@@ -436,7 +433,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
     if hyperparams and isinstance(hyperparams, dict):
         # Create a shorter parameter string for directory names, excluding certain keys
-        exclude_keys = {'mask_vals', 'loss', 'use_index_masking', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+        exclude_keys = {'mask_values', 'loss', 'use_index_masking', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
         
         # Map parameter names to shorter versions
         param_name_map = {
@@ -810,8 +807,6 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
     
     # Create binary labels - flexible group matching
     group_values = timeseries['Group'].unique()
-    if verbose >= 1:
-        logging.info(f"[LOAD] Found groups: {group_values}")
     
     # Try different possible names for gait modulation
     gait_mod_names = {'gait_modulation', 'gaitMod', 'gait_mod', 'GM'}
@@ -819,34 +814,28 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
     
     if found_gait_mod:
         labels = np.where(timeseries['Group'].isin(found_gait_mod), 1, 0)
-        if verbose >= 1:
-            logging.info(f"[LOAD] Using {found_gait_mod} as positive class")
+        positive_class = found_gait_mod
     else:
         # Fallback to first group as positive
         labels = np.where(timeseries['Group'] == group_values[0], 1, 0)
-        if verbose >= 1:
-            logging.info(f"[LOAD] Using {group_values[0]} as positive class")
+        positive_class = group_values[0]
     
     # Data validation
     if verbose >= 1:
-        logging.info(f"[LOAD] TS_DataMat: {TS_DataMat.shape}")
-        logging.info(f"[LOAD] TimeSeries: {timeseries.shape}")
-        logging.info(f"[LOAD] Operations: {operations.shape}")
-        logging.info(f"[LOAD] Labels: {labels.shape}")
-        logging.info(f"[LOAD] Label distribution: {np.bincount(labels)}")
+        logging.info(f"[LOAD] Data loaded - Shapes: Features={TS_DataMat.shape}, TimeSeries={timeseries.shape}, Operations={operations.shape}")
+        logging.info(f"[LOAD] Labels: {labels.shape}, distribution={dict(zip(['negative', 'positive'], np.bincount(labels)))}, positive_class={positive_class}")
     
-    # NaN check
+    # NaN/Inf validation
     nan_count = np.isnan(TS_DataMat).sum()
+    inf_count = np.isinf(TS_DataMat).sum()
     if nan_count > 0:
         raise ValueError(f"Found {nan_count:,} NaN values in TS_DataMat")
-    
-    # Inf check
-    inf_count = np.isinf(TS_DataMat).sum()
     if inf_count > 0:
         raise ValueError(f"Found {inf_count:,} infinite values in TS_DataMat")
     
     if verbose >= 1:
         logging.info(f"[LOAD] Data validation passed")
+    
     
     return TS_DataMat, timeseries, operations, labels
 
@@ -895,9 +884,8 @@ def parse_epoch_metadata(timeseries_df: pd.DataFrame, verbose: int = 0):
     
     if verbose >= 1:
         n_trials = len(parsed_df.groupby(['patient_id_str', 'trial_num']))
-        logging.info(f"[PARSE] Found {len(subject_ids_unique)} unique subjects")
-        logging.info(f"[PARSE] Subjects: {subject_ids_unique}")
-        logging.info(f"[PARSE] Total trials parsed: {n_trials}")
+        logging.info(f"[PARSE] Parsed {len(parsed_df)} epochs from {len(subject_ids_unique)} subjects ({n_trials} trials)")
+        logging.debug(f"[PARSE] Subjects: {subject_ids_unique}")
     
     return parsed_df, subject_ids_unique
 
@@ -905,6 +893,7 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
     """Group epochs by trial."""
     if verbose >= 1:
         logging.info(f"[GROUP] Grouping {len(parsed_df)} epochs by trial")
+    
     
     X_list, y_list, groups, metadata = [], [], [], []
     
@@ -922,9 +911,8 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
         })
     
     if verbose >= 1:
-        logging.info(f"[GROUP] Created {len(X_list)} trials from {len(parsed_df)} epochs")
         epoch_counts = [len(x) for x in X_list]
-        logging.info(f"[GROUP] Epochs per trial: {min(epoch_counts)}-{max(epoch_counts)} (avg: {np.mean(epoch_counts):.1f})")
+        logging.info(f"[GROUP] Created {len(X_list)} trials from {len(parsed_df)} epochs (epochs/trial: {min(epoch_counts)}-{max(epoch_counts)}, avg={np.mean(epoch_counts):.1f})")
     
     return X_list, y_list, np.array(groups), metadata
 
@@ -953,8 +941,7 @@ def create_mask_arrays_from_lengths(X_list, y_list, max_length=None, verbose: in
         max_length = max(original_lengths)
     
     if verbose >= 1:
-        logging.info(f"[MASK] Creating masks for {len(X_list)} sequences")
-        logging.info(f"[MASK] Length range: {min(original_lengths)}-{max(original_lengths)}, max_length={max_length}")
+        logging.info(f"[MASK] Creating masks for {len(X_list)} sequences (length range: {min(original_lengths)}-{max(original_lengths)}, max_length={max_length})")
     
     # Pad sequences with zeros (any value is fine since we use explicit masks)
     X_padded = pad_sequences(X_list, maxlen=max_length, dtype='float32', padding='post', value=0.0)
@@ -969,16 +956,16 @@ def create_mask_arrays_from_lengths(X_list, y_list, max_length=None, verbose: in
         y_mask[i, :length] = True
     
     if verbose >= 1:
-        logging.info(f"[MASK] Padded shape: X={X_padded.shape}, y={y_padded.shape}")
-        logging.info(f"[MASK] Mask shapes: X_mask={X_mask.shape}, y_mask={y_mask.shape}")
+        logging.info(f"[MASK] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, masks: X_mask={X_mask.shape}, y_mask={y_mask.shape}")
     
     return X_padded, y_padded, X_mask, y_mask, original_lengths
 
-def pad_trials_robust(X_list, y_list, safety_factor=10, use_index_masking=False, verbose: int = 0):
+def pad_trials(X_list, y_list, safety_factor=10, use_index_masking=False, verbose: int = 0):
     """Robust trial padding with better mask value calculation or index-based masking."""
     
     if verbose >= 1:
         logging.info(f"[PAD] Padding {len(X_list)} trials (use_index_masking={use_index_masking})")
+    
     
     if use_index_masking:
         # Use index-based masking approach
@@ -1007,13 +994,12 @@ def pad_trials_robust(X_list, y_list, safety_factor=10, use_index_masking=False,
         X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
         y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
         
-        mask_vals = {'X_mask': X_mask, 'y_mask': y_mask}
+        mask_values = {'X_mask': X_mask, 'y_mask': y_mask}
         
         if verbose >= 1:
-            logging.info(f"[PAD] Padded shape: X={X_padded.shape}, y={y_padded.shape}")
-            logging.info(f"[PAD] Mask values: X_mask={X_mask:.2e}, y_mask={y_mask}")
+            logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, mask_values: X_mask={X_mask:.2e}, y_mask={y_mask}")
         
-        return X_padded, y_padded, mask_vals
+        return X_padded, y_padded, mask_values
 
 
 # ===================================================================
@@ -1021,9 +1007,9 @@ def pad_trials_robust(X_list, y_list, safety_factor=10, use_index_masking=False,
 # ===================================================================
 
 class MaskedAccuracy(tf.keras.metrics.Metric):
-    def __init__(self, mask_value=2, name='masked_accuracy', **kwargs):
+    def __init__(self, y_mask_value=2, name='masked_accuracy', **kwargs):
         super(MaskedAccuracy, self).__init__(name=name, **kwargs)
-        self.mask_value = mask_value
+        self.y_mask_value = y_mask_value
         self.total = self.add_weight(name='total', initializer='zeros')
         self.count = self.add_weight(name='count', initializer='zeros')
 
@@ -1031,8 +1017,8 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
-            
-        mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
+
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
         
@@ -1049,9 +1035,9 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
         self.count.assign(0)
         
 class MaskedF1Score(tf.keras.metrics.Metric):
-    def __init__(self, mask_value=2, name='masked_f1_score', **kwargs):
+    def __init__(self, y_mask_value=2, name='masked_f1_score', **kwargs):
         super(MaskedF1Score, self).__init__(name=name, **kwargs)
-        self.mask_value = mask_value
+        self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
         self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
@@ -1060,8 +1046,8 @@ class MaskedF1Score(tf.keras.metrics.Metric):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
-            
-        mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
+
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
@@ -1086,9 +1072,9 @@ class MaskedF1Score(tf.keras.metrics.Metric):
         self.fn.assign(0)
             
 class MaskedPrecision(tf.keras.metrics.Metric):
-    def __init__(self, mask_value=2, name='masked_precision', **kwargs):
+    def __init__(self, y_mask_value=2, name='masked_precision', **kwargs):
         super(MaskedPrecision, self).__init__(name=name, **kwargs)
-        self.mask_value = mask_value
+        self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
 
@@ -1096,7 +1082,7 @@ class MaskedPrecision(tf.keras.metrics.Metric):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
@@ -1115,9 +1101,9 @@ class MaskedPrecision(tf.keras.metrics.Metric):
         self.fp.assign(0.0)
         
 class MaskedRecall(tf.keras.metrics.Metric):
-    def __init__(self, mask_value=2, name='masked_recall', **kwargs):
+    def __init__(self, y_mask_value=2, name='masked_recall', **kwargs):
         super(MaskedRecall, self).__init__(name=name, **kwargs)
-        self.mask_value = mask_value
+        self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
 
@@ -1125,7 +1111,7 @@ class MaskedRecall(tf.keras.metrics.Metric):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
@@ -1143,15 +1129,15 @@ class MaskedRecall(tf.keras.metrics.Metric):
         self.fn.assign(0.0)
         
 class MaskedROC_AUC(tf.keras.metrics.AUC):
-    def __init__(self, mask_value=2, name='masked_auc', **kwargs):
+    def __init__(self, y_mask_value=2, name='masked_auc', **kwargs):
         super(MaskedROC_AUC, self).__init__(name=name, **kwargs)
-        self.mask_value = mask_value
+        self.y_mask_value = y_mask_value
 
     def update_state(self, y_true, y_pred, sample_weight=None):
         # Handle shape mismatch: squeeze y_pred if it has an extra dimension
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.mask_value), tf.float32)
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_clipped = tf.clip_by_value(y_pred, 0, 1)
 
@@ -1173,9 +1159,8 @@ class MaskAwareScaler(BaseEstimator, TransformerMixin):
     Scaler that handles masked values in sequences.
     Uses RobustScaler by default to prevent overflow issues with large feature values.
     """
-    
-    def __init__(self, mask_value=None, scaler_type='robust'):
-        self.mask_value = mask_value
+    def __init__(self, x_mask_value=None, scaler_type='robust'):
+        self.x_mask_value = x_mask_value
         self.scaler_type = scaler_type
         self.scaler = None
         
@@ -1188,10 +1173,10 @@ class MaskAwareScaler(BaseEstimator, TransformerMixin):
             self.scaler = RobustScaler()
         elif self.scaler_type == 'minmax':
             self.scaler = MinMaxScaler()
-        
-        if self.mask_value is not None:
+
+        if self.x_mask_value is not None:
             # Get non-masked values for fitting
-            mask = X != self.mask_value
+            mask = X != self.x_mask_value
             valid_data = X[mask]
             if len(valid_data) > 0:
                 # Clip extreme values to prevent overflow
@@ -1207,10 +1192,10 @@ class MaskAwareScaler(BaseEstimator, TransformerMixin):
     def transform(self, X):
         """Transform data while preserving masked values."""
         X_transformed = X.copy().astype(np.float64)  # Ensure float64 for stability
-        
-        if self.mask_value is not None:
+
+        if self.x_mask_value is not None:
             # Only transform non-masked values
-            mask = X != self.mask_value
+            mask = X != self.x_mask_value
             if np.any(mask):
                 # Clip extreme values and transform
                 valid_data = np.clip(X[mask], -1e10, 1e10)
@@ -1239,12 +1224,12 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
                  n_features=100,
                  variance_threshold=0.01,
                  correlation_threshold=0.95,
-                 mask_value=None,
+                 x_mask_value=None,
                  selection_method='composite'):
         self.n_features = n_features
         self.variance_threshold = variance_threshold
         self.correlation_threshold = correlation_threshold
-        self.mask_value = mask_value
+        self.x_mask_value = x_mask_value
         self.selection_method = selection_method
         
         # Store feature selection results
@@ -1262,14 +1247,14 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
         else:
             X_flat = X
             n_features = X.shape[1]
-        
-        if self.mask_value is None:
+
+        if self.x_mask_value is None:
             return np.var(X_flat, axis=0)
         
         variances = []
         for i in range(n_features):
             feature_values = X_flat[:, i]
-            valid_mask = feature_values != self.mask_value
+            valid_mask = feature_values != self.x_mask_value
             if np.sum(valid_mask) > 1:
                 variances.append(np.var(feature_values[valid_mask]))
             else:
@@ -1296,13 +1281,13 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
             X_flat = X
             y_flat = y
             n_features = X.shape[1]
-        
-        if self.mask_value is not None:
+
+        if self.x_mask_value is not None:
             # For masked data, calculate scores per feature
             scores = []
             for i in range(n_features):
                 feature_values = X_flat[:, i]
-                valid_mask = feature_values != self.mask_value
+                valid_mask = feature_values != self.x_mask_value
                 
                 # Also filter y using the same mask
                 y_valid = y_flat[valid_mask]
@@ -1344,11 +1329,11 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
             # Reshape from (samples, timesteps, features) to (samples*timesteps, features)
             n_samples, n_timesteps, n_features = X_selected.shape
             X_flat = X_selected.reshape(-1, n_features)
-            
-            # Remove masked values if mask_value is specified
-            if self.mask_value is not None:
+
+            # Remove masked values if x_mask_value is specified
+            if self.x_mask_value is not None:
                 # Create mask for valid (non-masked) entries
-                valid_mask = X_flat != self.mask_value
+                valid_mask = X_flat != self.x_mask_value
                 # Only calculate correlation on features that have enough valid samples
                 min_valid_samples = max(10, n_samples // 2)  # At least 10 or half the samples
                 feature_valid_counts = np.sum(valid_mask, axis=0)
@@ -1371,8 +1356,8 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
                     for i in range(n_valid_features):
                         for j in range(i + 1, n_valid_features):
                             # Get valid entries for both features
-                            valid_i = X_for_corr[:, i] != self.mask_value
-                            valid_j = X_for_corr[:, j] != self.mask_value
+                            valid_i = X_for_corr[:, i] != self.x_mask_value
+                            valid_j = X_for_corr[:, j] != self.x_mask_value
                             common_valid = valid_i & valid_j
                             
                             if np.sum(common_valid) >= 10:  # Need at least 10 common valid entries
@@ -1394,7 +1379,7 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
                     return selected_indices
         else:
             # 2D data - original logic
-            if self.mask_value is not None:
+            if self.x_mask_value is not None:
                 # Calculate correlation ignoring masked values
                 try:
                     corr_matrix = np.corrcoef(X_selected.T)
@@ -1495,7 +1480,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  recurrent_activations=['sigmoid'],
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
-                 loss='binary_crossentropy', mask_vals={'X_mask': 0.0, 'y_mask': 2}, 
+                 loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': 2}, 
                  use_index_masking=True, callbacks=None, 
                  experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None):
@@ -1524,7 +1509,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.callbacks = callbacks if callbacks is not None else []
         
         # Masking parameters
-        self.mask_vals = mask_vals
+        self.mask_values = mask_values
         self.use_index_masking = use_index_masking
         
         # Subject and fold tracking parameters
@@ -1549,48 +1534,29 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] {'='*60}")
         logging.info(f"[BUILD_MODEL] Input shape: {input_shape}")
         logging.info(f"[BUILD_MODEL] Architecture:")
-        logging.info(f"[BUILD_MODEL]   - Hidden layers: {len(self.hidden_dims)} layers {self.hidden_dims}")
-        logging.info(f"[BUILD_MODEL]   - Activations: {self.activations}")
-        logging.info(f"[BUILD_MODEL]   - Recurrent activations: {self.recurrent_activations}")
-        logging.info(f"[BUILD_MODEL]   - Dropout rate: {self.dropout}")
-        logging.info(f"[BUILD_MODEL]   - Dense units: {self.dense_units} (activation: {self.dense_activation})")
-        logging.info(f"[BUILD_MODEL] Masking config:")
-        logging.info(f"[BUILD_MODEL]   - Use index masking: {self.use_index_masking}")
-        logging.info(f"[BUILD_MODEL]   - Mask values: {self.mask_vals}")
-        logging.info(f"[BUILD_MODEL] {'-'*60}")
+        logging.info(f"[BUILD_MODEL] LSTM Architecture: {len(self.hidden_dims)} layers {self.hidden_dims}, dropout={self.dropout}")
+        logging.info(f"[BUILD_MODEL] Activations: {self.activations}, recurrent: {self.recurrent_activations}")
+        masking_type = 'index-based' if self.use_index_masking else f'value-based (X_mask={self.mask_values["X_mask"]:.2e})'
+        logging.info(f"[BUILD_MODEL] Masking: {masking_type}")
         
         model = Sequential()
         
-        # Explicitly use Input layer as the first layer
+        # Add Input layer
         model.add(Input(shape=input_shape))
-        logging.info(f"[BUILD_MODEL] Added Input layer: {input_shape}")
         
-        # Conditional masking: only add Masking layer if not using index-based masking
+        # Conditional masking layer
         if not self.use_index_masking:
-            # Traditional value-based masking
-            model.add(Masking(mask_value=self.mask_vals['X_mask']))
-            logging.info(f"[BUILD_MODEL] Added Masking layer: mask_value={self.mask_vals['X_mask']:.4f}")
-        else:
-            logging.info(f"[BUILD_MODEL] Skipped Masking layer (using index-based masking)")
+            model.add(Masking(mask_value=self.mask_values['X_mask']))
        
-        # Add LSTM layers
-        logging.info(f"[BUILD_MODEL] Building LSTM stack:")
+        # Add LSTM layers with dropout
         for i in range(len(self.hidden_dims)):
-            # For sequence-to-sequence prediction, all LSTM layers should return sequences
-            return_sequences = True  # Always return sequences for sequence-to-sequence
-            layer_type = "Hidden" if i < len(self.hidden_dims) - 1 else "Final"
-            logging.info(f"[BUILD_MODEL]   Layer {i+1}/{len(self.hidden_dims)} ({layer_type}): {self.hidden_dims[i]} units")
-            logging.info(f"[BUILD_MODEL]     activation='{self.activations[i]}', recurrent='{self.recurrent_activations[i]}', return_seq={return_sequences}")
-            
             model.add(LSTM(self.hidden_dims[i], 
                            activation=self.activations[i], 
                            recurrent_activation=self.recurrent_activations[i], 
-                           return_sequences=return_sequences))
+                           return_sequences=True))  # Always return sequences for sequence-to-sequence
             model.add(Dropout(self.dropout))
-            logging.info(f"[BUILD_MODEL]     + Dropout({self.dropout})")
         
-        # Add TimeDistributed output layer for sequence-to-sequence prediction
-        logging.info(f"[BUILD_MODEL] Output layer: TimeDistributed(Dense({self.dense_units}, activation='{self.dense_activation}'))")
+        # Add TimeDistributed output layer
         model.add(TimeDistributed(Dense(self.dense_units, activation=self.dense_activation)))
 
         # Configure optimizer
@@ -1606,24 +1572,23 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] Optimizer: {self.optimizer}(lr={self.lr})")
         
         # Configure compilation
-        y_mask_val = self.mask_vals.get('y_mask', 2) if isinstance(self.mask_vals, dict) else 2
+        y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else 2
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
         model.compile(optimizer=optimizer,
                       loss=self.masked_loss_binary_crossentropy,
                       metrics=[
-                          MaskedAccuracy(mask_value=y_mask_val, name='MASKED_accuracy'), 
-                          MaskedF1Score(mask_value=y_mask_val, name='MASKED_f1_score'), 
-                          MaskedPrecision(mask_value=y_mask_val, name='MASKED_precision'), 
-                          MaskedRecall(mask_value=y_mask_val, name='MASKED_recall'), 
-                          MaskedROC_AUC(mask_value=y_mask_val, name='MASKED_roc_auc')
+                          MaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
+                          MaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
+                          MaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
+                          MaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
+                          MaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc')
                     ])
 
-        logging.info(f"[BUILD_MODEL] Model compilation successful!")
-        logging.info(f"[BUILD_MODEL] {'='*60}")
-        logging.info(f"[BUILD_MODEL] MODEL SUMMARY:")
-        model.summary()
-        logging.info(f"[BUILD_MODEL] {'='*60}\n")
+        logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
+        logging.debug(f"[BUILD_MODEL] Model summary:")
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            model.summary()
         
         return model
 
@@ -1638,22 +1603,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             callbacks: Pre-created callbacks list (if None, simple defaults will be used)
             **kwargs: Additional parameters (allows GridSearchCV to pass extra params)
         """
-        logging.info(f"\n[FIT] {'='*50}")
-        logging.info(f"\n[FIT] {'='*50}")
-        logging.info(f"[FIT] LSTM TRAINING START")
-        logging.info(f"[FIT] {'='*50}")
-        logging.info(f"[FIT] {'='*50}")
-        logging.info(f"[FIT] Data shapes:")
-        logging.info(f"[FIT]   - X: {X.shape} (samples, timesteps, features)")
-        logging.info(f"[FIT]   - y: {y.shape}")
-        logging.info(f"[FIT] Masks provided:")
-        logging.info(f"[FIT]   - X_mask: {X_mask is not None}")
-        logging.info(f"[FIT]   - y_mask: {y_mask is not None}")
-        logging.info(f"[FIT] Training config:")
-        logging.info(f"[FIT]   - Epochs: {self.epochs}")
-        logging.info(f"[FIT]   - Batch size: {self.batch_size}")
-        logging.info(f"[FIT]   - Patience: {self.patience}")
-        logging.info(f"[FIT] {'-'*50}")
+        logging.info(f"[FIT] Training LSTM: X={X.shape}, y={y.shape}, epochs={self.epochs}, batch_size={self.batch_size}, patience={self.patience}")
+        logging.info(f"[FIT] Masks: X_mask={X_mask is not None}, y_mask={y_mask is not None}")
 
         # Store masks for later use
         self.X_mask_ = X_mask
@@ -1665,29 +1616,22 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             logging.info(f"[LSTM FIT] Reshaping 2D input to 3D for LSTM")
             self.input_shape = (1, X.shape[1])
             X = X.reshape(X.shape[0], 1, X.shape[1])
-            logging.info(f"[LSTM FIT] Reshaped X from 2D to 3D: {X.shape}")
             if X_mask is not None:
                 X_mask = X_mask.reshape(X_mask.shape[0], 1, X_mask.shape[1])
-                logging.info(f"[FIT] Reshaped X_mask to 3D: {X_mask.shape}")
+                logging.debug(f"[FIT] Reshaped X_mask to 3D: {X_mask.shape}")
         else:
             self.input_shape = X.shape[1:]
-            logging.info(f"[LSTM FIT] Using 3D input shape as-is: {X.shape}")
         
-        logging.info(f"[LSTM FIT] Final input_shape for model: {self.input_shape}")
-        logging.info(f"[LSTM FIT] Final X shape: {X.shape}")
-        logging.info(f"[LSTM FIT] Final y shape: {y.shape}")
+        logging.debug(f"[FIT] Final shapes: X={X.shape}, y={y.shape}, input_shape={self.input_shape}")
         
         # Build model with determined input shape
-        logging.info(f"[LSTM FIT] Building model with MirroredStrategy")
         strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
             self.model = self.build_model(self.input_shape)
         
         # Calculate class weights
-        logging.info(f"[LSTM FIT] Calculating class weights")
         if self.use_index_masking and y_mask is not None:
             # Use mask array to filter valid labels
-            logging.info(f"[LSTM FIT] Using index-based masking for class weights")
             valid_indices = y_mask.astype(bool)
             y_valid = y[valid_indices]
             class_weights = compute_class_weight('balanced', classes=np.unique(y_valid), y=y_valid)
@@ -1696,14 +1640,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         else:
             # Traditional value-based filtering
             class_weights = self.calculate_class_weights(y)
-            self.classes_ = np.unique(y[y != self.mask_vals['y_mask']])
+            self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
         
-        # Determine fold information - use provided values or stored values for logging context
-        
-        # Debug: Log fold information (both provided and stored)
-        logging.info(f"[DEBUG_LSTM_FIT] outer_fold={self.outer_fold}, inner_fold={self.inner_fold}")
-        logging.info(f"[DEBUG_LSTM_FIT] outer_test_subject={self.outer_test_subject}")
-        logging.info(f"[DEBUG_LSTM_FIT] inner_validation_subject={self.inner_validation_subject}")
+        logging.debug(f"[FIT] Class weights: {class_weights}")
 
         # Setup callbacks - use provided callbacks or create simple defaults
         if callbacks is not None:
@@ -1718,7 +1657,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             'batch_size': self.batch_size,
             'verbose': 1,
             'callbacks': final_callbacks,
-            # 'class_weight': class_weights,  # NOTE: class_weight is intentionally excluded for sequence-to-sequence tasks to prevent shape mismatch errors          
+            # 'class_weight': class_weights,  # NOTE: excluded for sequence-to-sequence tasks to prevent shape mismatch          
         }
         
         # For sequence-to-sequence tasks (TimeDistributed output), class_weight causes shape conflicts
@@ -1759,7 +1698,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
     def calculate_class_weights(self, y):
         # Flatten the array and filter out padding values
         y_flat = y.reshape(-1)
-        y_flat = y_flat[y_flat != self.mask_vals['y_mask']].flatten()  # Ignore padding values
+        y_flat = y_flat[y_flat != self.mask_values['y_mask']].flatten()  # Ignore padding values
         class_weights = compute_class_weight('balanced', classes=np.unique(y_flat), y=y_flat)
         return dict(enumerate(class_weights))
     
@@ -1781,7 +1720,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                 mask = tf.ones_like(y_true, dtype=tf.float32)
         else:
             # Traditional value-based masking
-            mask = tf.cast(tf.not_equal(y_true, self.mask_vals['y_mask']), tf.float32)
+            mask = tf.cast(tf.not_equal(y_true, self.mask_values['y_mask']), tf.float32)
         
         y_true = tf.clip_by_value(y_true, 0, 1)  # Ensure y_true is between 0 and 1
 
@@ -1949,7 +1888,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
 
 
 # # ======================
-def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
+def build_pipeline(model_type='lstm', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
                    params=None):
@@ -1963,8 +1902,7 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
     
     Args:
         model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'lstm')
-        mask_value: Mask value for padding (for mask-aware processing)
-        mask_vals: Full mask values dictionary (for LSTM)
+        mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
         outer_test_subject: Test subject for outer fold
@@ -1974,8 +1912,6 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
         tuple: (pipeline, scoring_functions)
     """
     logging.info(f"[BUILD_PIPELINE] Building pipeline for model_type: {model_type}")
-    # logging.info(f"[BUILD_PIPELINE] Mask value: {mask_value}")
-    # logging.info(f"[BUILD_PIPELINE] Mask vals: {mask_vals}")
     from sklearn.pipeline import Pipeline
     from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score
     
@@ -1983,14 +1919,13 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    # logging.info(f"[BUILD_PIPELINE] Adding AdvancedFeatureSelector with mask_value: {mask_value}")
-    selector = AdvancedFeatureSelector(mask_value=mask_value)
+    selector = AdvancedFeatureSelector(x_mask_value=mask_values.get('X_mask', 0.0))
     steps.append(('feature_selector', selector))
     
     # Scaling step (mask-aware for LSTM)
     if model_type == 'lstm':
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
-        scaler = MaskAwareScaler(mask_value=mask_value, scaler_type='standard')
+        scaler = MaskAwareScaler(x_mask_value=mask_values.get('X_mask', 0.0), scaler_type='standard')
     else:
         logging.info(f"[BUILD_PIPELINE] Adding StandardScaler for non-LSTM model")
         scaler = StandardScaler()
@@ -2022,13 +1957,13 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
             patience=10, monitor='loss', save_models=False, progress_frequency=10)
             
-        use_index_masking = mask_vals.get('use_index_masking', False) if isinstance(mask_vals, dict) else False
+        use_index_masking = mask_values.get('use_index_masking', False) if isinstance(mask_values, dict) else False
         logging.info(f"[BUILD_PIPELINE] Creating LSTMClassifier with use_index_masking: {use_index_masking}")
             
         # Create the LSTM classifier with simplified configuration and subject tracking
-        if mask_vals:
+        if mask_values:
             classifier = LSTMClassifier(
-                mask_vals=mask_vals,
+                mask_values=mask_values,
                 use_index_masking=use_index_masking,
                 experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
@@ -2037,10 +1972,10 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
                 inner_validation_subject=inner_validation_subject,
                 callbacks=callbacks
             )
-            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_vals: {mask_vals}")
+            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_values: {mask_values}")
         else:
             classifier = LSTMClassifier(
-                mask_vals={'X_mask': mask_value, 'y_mask': 2},
+                mask_values={'X_mask': mask_values.get('X_mask', 0.0), 'y_mask': mask_values.get('y_mask', -1)},
                 use_index_masking=False,
                 experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
@@ -2049,7 +1984,7 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
                 inner_validation_subject=inner_validation_subject,
                 callbacks=callbacks
             )
-            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_vals")
+            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_values")
         
         logging.info(f"[BUILD_PIPELINE] LSTMClassifier created with subject tracking - callbacks will be handled externally")
         if outer_fold is not None:
@@ -2076,14 +2011,14 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
             'f1': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_f1_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_vals.get('y_mask', 2) if isinstance(mask_vals, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
             ),
             'auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.masked_roc_auc_score(
                     y_true, y_pred_proba, 
-                    y_mask_val=mask_vals.get('y_mask', 2) if isinstance(mask_vals, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 needs_proba=True,
                 greater_is_better=True
@@ -2091,7 +2026,7 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
             'accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_accuracy_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_vals.get('y_mask', 2) if isinstance(mask_vals, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
             )
@@ -2156,12 +2091,9 @@ def get_default_param_grid(model_type, mask_values=None):
             'classifier__batch_size': [64], #. Number of Batches = ceil(Number of Samples / Batch Size)
             'classifier__threshold': [0.5],
             'classifier__loss': ['binary_crossentropy'],
-            'classifier__mask_vals': [mask_values],
-            'classifier__use_index_masking': [mask_values.get('use_index_masking', False) if isinstance(mask_values, dict) else False],
-            # NOTE: Fold tracking parameters are NOT included in hyperparameter search
-            # They are set during pipeline creation and should not be overwritten by GridSearchCV
         }
         param_grid.update(lstm_params)
+        
         # logging.info(f"[PARAM_GRID] LSTM parameters: {list(lstm_params.keys())}")
         logging.info(f"[PARAM_GRID] Dense units: {lstm_params['classifier__dense_units']}")
         logging.info(f"[PARAM_GRID] Hidden dims: {lstm_params['classifier__hidden_dims']}")
@@ -2192,7 +2124,7 @@ def get_default_param_grid(model_type, mask_values=None):
     return param_grid
 
 def create_gridsearch_pipeline(X_train, y_train, groups_train, 
-                              mask_vals=None,
+                              mask_values=None,
                               subject_names=None,
                               model_type='lstm',
                               refit_scoring_metric='f1',
@@ -2213,7 +2145,7 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
         X_train: Training data
         y_train: Training labels
         groups_train: Groups for cross-validation
-        mask_vals: Mask values dictionary
+        mask_values: Mask values dictionary
         model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
         refit_scoring_metric: Primary scoring metric
         n_jobs: Number of parallel jobs
@@ -2232,20 +2164,13 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     logging.info(f"[CREATE_GRIDSEARCH] groups_train shape: {groups_train.shape}")
     logging.info(f"[CREATE_GRIDSEARCH] Model type: {model_type}")
     logging.info(f"[CREATE_GRIDSEARCH] Refit scoring metric: {refit_scoring_metric}")
-    logging.info(f"[CREATE_GRIDSEARCH] Mask vals: {mask_vals}")
-    
-    # Determine mask value for pipeline
-    mask_value = None
-    if mask_vals and 'X_mask' in mask_vals:
-        mask_value = mask_vals['X_mask']
-    # logging.info(f"[CREATE_GRIDSEARCH] Determined mask_value: {mask_value}")
+    logging.info(f"[CREATE_GRIDSEARCH] Mask vals: {mask_values}")
     
     # Build pipeline using sensible defaults
     logging.info(f"[CREATE_GRIDSEARCH] Building pipeline...")
     pipeline, scoring_functions = build_pipeline(
         model_type=model_type,
-        mask_value=mask_value,
-        mask_vals=mask_vals,
+        mask_values=mask_values,
         outer_fold=outer_fold,
         inner_fold=inner_fold,
         outer_test_subject=outer_test_subject,
@@ -2257,7 +2182,7 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     logging.info(f"[CREATE_GRIDSEARCH] Generating parameter grid...")
     param_grid = get_default_param_grid(
         model_type=model_type, 
-        mask_values=mask_vals,
+        mask_values=mask_values,
     )
     logging.info(f"[CREATE_GRIDSEARCH] Parameter grid generated with {len(param_grid)} parameters")
     # logging.info(f"[CREATE_GRIDSEARCH] Parameter grid keys: {list(param_grid.keys())}")
@@ -2288,7 +2213,7 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     
     return grid_search, param_grid
 
-def run_nested_cv_sklearn(X, y, groups, mask_vals, 
+def run_nested_cv_sklearn(X, y, groups, mask_values, 
                           subject_names=None,
                           model_type='lstm',
                           refit_scoring_metric='f1',
@@ -2323,21 +2248,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
     outer_splits = list(outer_cv.split(X, y, groups))
     n_outer_folds = len(outer_splits)
     
-    # Build pipeline and get parameter grid
-    mask_value = mask_vals.get('X_mask') if mask_vals else None
-    # pipeline, scoring_functions = build_pipeline(
-    #     model_type=model_type,
-    #     mask_value=mask_value,
-    #     mask_vals=mask_vals,
-    #     experiment_dir=None,
-    #     outer_fold=None,
-    #     inner_fold=None,
-    #     outer_test_subject=None,
-    #     inner_validation_subject=None
-    # )
     param_grid = get_default_param_grid(
         model_type=model_type, 
-        mask_values=mask_vals
+        mask_values=mask_values
     )
     param_combinations = list(ParameterGrid(param_grid))
     
@@ -2383,10 +2296,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
         
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
-            if verbose >= 1:
-                logging.info(f"\n[CV] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
-                logging.info(f"[CV] Parameters: {params}")
-            
+                        
             # Storage for this parameter combination
             inner_scores = []
             inner_selected_features = []  # Features selected in each inner fold
@@ -2405,11 +2315,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                     logging.info(f"[CV]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 # Create pipeline with current parameters and subject information
-                mask_value = mask_vals.get('X_mask') if mask_vals else None
                 inner_pipeline, _ = build_pipeline(
                     model_type=model_type,
-                    mask_value=mask_value,
-                    mask_vals=mask_vals,
+                    mask_values=mask_values,
                     experiment_dir=experiment_dir,  
                     outer_fold=outer_fold + 1,
                     inner_fold=inner_fold + 1,
@@ -2428,8 +2336,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                         y_val_pred = inner_pipeline.predict(X_inner_val)
                         
                         # Calculate masked score for LSTM
-                        if mask_vals and 'y_mask' in mask_vals:
-                            y_mask_val = mask_vals['y_mask']
+                        if mask_values and 'y_mask' in mask_values:
+                            y_mask_val = mask_values['y_mask']
                             score = LSTMClassifier.masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
                         else:
                             from sklearn.metrics import f1_score
@@ -2516,11 +2424,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
         
         try:
             # Create final pipeline with best parameters and subject information
-            mask_value = mask_vals.get('X_mask') if mask_vals else None
             final_pipeline, _ = build_pipeline(
                 model_type=model_type,
-                mask_value=mask_value,
-                mask_vals=mask_vals,
+                mask_values=mask_values,
                 experiment_dir=experiment_dir,
                 outer_fold=outer_fold + 1,
                 inner_fold=None,  # No inner fold for final training
@@ -2538,8 +2444,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                 y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
                 
                 # Calculate test metrics for LSTM
-                if mask_vals and 'y_mask' in mask_vals:
-                    y_mask_val = mask_vals['y_mask']
+                if mask_values and 'y_mask' in mask_values:
+                    y_mask_val = mask_values['y_mask']
                     test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
                     test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
                     test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
@@ -2620,275 +2526,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
             logging.info(f"[CV] Average selected features: {avg_features:.1f}")
     
     return outer_results, all_best_params, experiment_dir  
-    n_inner_folds = n_outer_folds - 1  # Each outer fold leaves out 1 subject, so inner CV has n-1 subjects
-
-    if verbose >= 1:
-        logging.info(f"\n[CV] EXPERIMENT OVERVIEW:")
-        logging.info(f"[CV] {'='*80}")
-        logging.info(f"[CV] Cross-Validation Strategy:")
-        logging.info(f"[CV]   - Total subjects: {len(np.unique(groups))}")
-        logging.info(f"[CV]   - Outer CV: {n_outer_folds} folds")
-        logging.info(f"[CV]   - Inner CV: {n_inner_folds} folds per outer fold")
-        logging.info(f"[CV] ")
-        logging.info(f"[CV] Hyperparameter Search:")
-        logging.info(f"[CV]   - Parameter combinations will be determined from first grid search")
-        logging.info(f"[CV] ")
-        logging.info(f"[CV] Computational Load:")
-        logging.info(f"[CV]   - Total fits will be calculated after first parameter grid generation")
-        logging.info(f"[CV]   - Parallel jobs: {n_jobs}")
-        logging.info(f"[CV] {'='*80}")
-    
-    # Results storage
-    outer_results = []
-    all_best_params = []
-    
-    # Outer loop
-    for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
-        # Debug: Log outer fold information
-        logging.info(f"[DEBUG_OUTER_LOOP] Starting outer_fold={outer_fold}, type={type(outer_fold)}")
-        
-        if verbose >= 1:
-            logging.info(f"\n[CV] {'='*70}")
-            logging.info(f"[CV] OUTER FOLD {outer_fold + 1:2d}/{len(outer_splits)} - SUBJECT-LEVEL VALIDATION")
-            logging.info(f"[CV] {'='*70}")
-        
-        # Split data
-        X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
-        y_outer_train, y_outer_test = y[outer_train_idx], y[outer_test_idx]
-        groups_outer_train = groups[outer_train_idx]
-        
-        # Get test subject information
-        test_subject_number = groups[outer_test_idx][0]
-        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
-                
-        if verbose >= 1:
-            logging.info(f"[CV] Test subject: {test_subject_number} - subject name: {test_subject_name}")
-            logging.info(f"[CV]   - Test trials: {len(outer_test_idx)}")
-            logging.info(f"[CV]   - Training trials: {len(outer_train_idx)}")
-            
-        # Get training subject names
-        train_subject_numbers = sorted(np.unique(groups_outer_train))
-        if subject_names:
-            train_subject_names = [f"{idx}:{subject_names[idx]}" for idx in train_subject_numbers]
-        else:
-            train_subject_names = [f"Subject_{idx}" for idx in train_subject_numbers]
-        logging.info(f"[CV]   - Training subjects: {train_subject_names}")
-        
-        if verbose >= 1:            
-            # Handle class distribution safely (filter out negative mask values)
-            y_train_valid = y_outer_train.ravel()
-            y_test_valid = y_outer_test.ravel()
-            y_train_valid = y_train_valid[y_train_valid >= 0]  # Remove mask values
-            y_test_valid = y_test_valid[y_test_valid >= 0]     # Remove mask values
-            
-            logging.info(f"[CV]   - Class distribution - Train: {np.bincount(y_train_valid)}, Test: {np.bincount(y_test_valid)}")
-        
-        # Create GridSearchCV pipeline for inner CV
-        grid_search, param_grid = create_gridsearch_pipeline(
-            X_outer_train, y_outer_train, groups_outer_train,
-            mask_vals=mask_vals,
-            subject_names=subject_names,
-            model_type=model_type,
-            refit_scoring_metric=refit_scoring_metric,
-            n_jobs=n_jobs,
-            outer_fold=outer_fold,
-            outer_test_subject=test_subject_name,
-            verbose=max(0, verbose-1)
-        )
-        
-        # Calculate fit count information
-        n_candidates = len(list(ParameterGrid(param_grid)))
-        n_inner_folds = len(list(grid_search.cv.split(X_outer_train, y_outer_train, groups_outer_train)))
-        total_fits = n_candidates * n_inner_folds
-        
-        # Calculate total estimated fits for entire experiment (log once on first fold)
-        if outer_fold == 0:
-            total_estimated_fits = n_outer_folds * n_inner_folds * n_candidates
-            if verbose >= 1:
-                logging.info(f"\n[CV] PARAMETER GRID DETERMINED FROM FIRST FOLD:")
-                logging.info(f"[CV]   - Parameter combinations: {n_candidates}")
-                logging.info(f"[CV]   - Fits per outer fold: {n_candidates * n_inner_folds}")
-                logging.info(f"[CV]   - Fits per inner fold: {n_candidates}")
-                logging.info(f"[CV]   - TOTAL ESTIMATED FITS: {total_estimated_fits}")
-                logging.info(f"[CV] {'-'*60}")
-        else:
-            total_estimated_fits = n_outer_folds * n_inner_folds * n_candidates
-        
-        # Fit grid search (inner CV)
-        if verbose >= 1:
-            logging.info(f"\n[CV] {'-'*60}")
-            logging.info(f"[CV] INNER CV - GRID SEARCH")
-            logging.info(f"[CV] {'-'*60}")
-            logging.info(f"[CV] Parameter combinations: {n_candidates}")
-            logging.info(f"[CV] Inner CV folds: {n_inner_folds}")
-            logging.info(f"[CV] Total fits for this outer fold: {total_fits}")
-            logging.info(f"[CV] Expected GridSearchCV output format:")
-            logging.info(f"[CV]   - 'Fitting {n_inner_folds} folds for each of {n_candidates} candidates'")
-            logging.info(f"[CV] {'-'*60}")
-        
-        # Track current position in overall nested CV
-        global_fits_completed = (outer_fold * n_candidates * n_inner_folds)
-        global_fits_remaining = total_estimated_fits - global_fits_completed
-        
-        if verbose >= 1:
-            logging.info(f"[CV] Global progress: {global_fits_completed}/{total_estimated_fits} fits completed")
-            logging.info(f"[CV] Remaining fits after this fold: {global_fits_remaining - total_fits}")
-        
-        try:
-            # Clear TensorFlow session before grid search to prevent protobuf issues
-            if model_type == 'lstm':
-                tf.keras.backend.clear_session()
-                import gc
-                gc.collect()
-            
-            if verbose >= 1:
-                logging.info(f"[GRID_SEARCH] Starting grid search with {total_fits} total fits")
-                logging.info(f"[GRID_SEARCH] GridSearchCV will show progress for each parameter combination")
-                logging.info(f"[GRID_SEARCH] Format: 'Fitting {n_candidates} folds for each of {n_candidates} candidates, totalling {total_fits} fits'")
-            
-            # Handle sequence data for LSTM
-            if model_type == 'lstm' and len(X_outer_train.shape) == 3:
-                # For LSTM, create callbacks outside the classifier and pass them as fit parameters
-                # This separates concerns and makes the classifier more reusable
-                
-                # Setup logging paths for this outer fold
-                essential_params = {
-                    "epochs": 50,  # Default epochs for grid search
-                    "batch_size": 32,  # Default batch size
-                    "lr": 1e-3  # Default learning rate
-                }
-                
-                callbacks_paths = setup_nested_cv_logging(
-                    outer_fold=outer_fold,
-                    inner_fold=None,  # Will be set per inner fold
-                    outer_test_subject=test_subject_name,
-                    inner_validation_subject=None,  # Will be set per inner fold
-                    experiment_dir=experiment_dir,
-                    hyperparams=default_hyperparams
-                )
-                
-                # Create base callbacks (without inner fold info, will be customized per inner fold)
-                base_callbacks = create_nested_cv_callbacks(
-                    paths=callbacks_paths,
-                    outer_fold=outer_fold,
-                    inner_fold=None,  # Will be set per inner fold
-                    outer_test_subject=test_subject_name,
-                    inner_validation_subject=None,  # Will be set per inner fold
-                    patience=10,
-                    monitor='loss',
-                    save_models=False,
-                    progress_frequency=10
-                )
-                
-                if verbose >= 1:
-                    logging.info(f"[GRID_SEARCH] Created callbacks for outer fold {outer_fold}")
-                    logging.info(f"[GRID_SEARCH] TensorBoard logs: {callbacks_paths['experiment_dir']}")
-                    logging.info(f"[GRID_SEARCH] Fitting LSTM with 3D data: {X_outer_train.shape}")
-                
-                # Pass callbacks as fit parameters to GridSearchCV
-                # These will be passed to each inner fold fit
-                fit_params = {
-                    'classifier__callbacks': base_callbacks,
-                    'classifier__outer_fold': outer_fold,
-                    'classifier__outer_test_subject': test_subject_name
-                }
-                
-                grid_search.fit(X_outer_train, y_outer_train, groups=groups_outer_train, **fit_params)
-            else:
-                # For other models, flatten to 2D
-                X_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
-                if verbose >= 1:
-                    logging.info(f"[GRID_SEARCH] Fitting {model_type} with 2D data: {X_train_2d.shape}")
-                grid_search.fit(X_train_2d, y_outer_train, groups=groups_outer_train)
-            
-            # Log hyperparameter tuning results to TensorBoard
-            if hparam_logger is not None:
-                try:
-                    logging.info(f"[HPARAMS] Logging hyperparameter results for outer fold {outer_fold}")
-                    log_gridsearch_results(hparam_logger, grid_search, outer_fold)
-                except Exception as e:
-                    logging.warning(f"Failed to log hyperparameter results: {e}")
-            
-            if verbose >= 1:
-                logging.info(f"[GRID_SEARCH] Grid search completed successfully")
-                logging.info(f"[GRID_SEARCH] All {total_fits} fits completed")
-            
-            # Get best parameters
-            best_params = grid_search.best_params_
-            best_score = grid_search.best_score_
-            
-            if verbose >= 1:
-                logging.info(f"[CV] Best parameters: {best_params}")
-                logging.info(f"[CV] Best inner CV score: {best_score:.4f}")
-            
-            # Test on held-out subject
-            if model_type == 'lstm' and len(X_outer_test.shape) == 3:
-                y_test_pred = grid_search.predict(X_outer_test) #TODO: print shape of  X_outer_test and y_test_pred
-                y_test_pred_proba = grid_search.predict_proba(X_outer_test)
-            else:
-                X_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
-                y_test_pred = grid_search.predict(X_test_2d)
-                y_test_pred_proba = grid_search.predict_proba(X_test_2d)
-            
-            # Calculate metrics
-            if model_type == 'lstm' and mask_vals is not None:
-                y_mask_val = mask_vals.get('y_mask', 2) if isinstance(mask_vals, dict) else 2
-                test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
-                
-                # Handle probability array properly for AUC calculation
-                # For sequence-to-sequence, predict_proba returns 2D array with positive class probabilities
-                test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
-                test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
-            else:
-                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
-                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
-                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
-                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
-            
-            outer_results.append({
-                'fold': outer_fold + 1,
-                'test_subject': test_subject_number,
-                'best_params': best_params,
-                'best_inner_score': best_score,
-                'test_f1': test_f1,
-                'test_auc': test_auc,
-                'test_accuracy': test_accuracy
-            })
-            
-            all_best_params.append(best_params)
-            
-            # Calculate progress after this fold
-            fits_completed_after_fold = ((outer_fold + 1) * n_candidates * n_inner_folds)
-            progress_percentage = (fits_completed_after_fold / total_estimated_fits) * 100
-            
-            if verbose >= 1:
-                logging.info(f"[CV] Test results - F1: {test_f1:.4f}, AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
-                logging.info(f"[CV] OUTER FOLD {outer_fold + 1}/{len(outer_splits)} COMPLETED")
-                logging.info(f"[CV] Global progress: {fits_completed_after_fold}/{total_estimated_fits} fits ({progress_percentage:.1f}%)")
-                logging.info(f"[CV] Remaining outer folds: {len(outer_splits) - (outer_fold + 1)}")
-                logging.info(f"[CV] {'='*80}")
-            
-        except Exception as e:
-            fits_completed_after_fold = ((outer_fold + 1) * n_candidates * n_inner_folds)
-            progress_percentage = (fits_completed_after_fold / total_estimated_fits) * 100
-            
-            if verbose >= 1:
-                logging.info(f"[CV] Error in outer fold {outer_fold + 1}: {e}")
-                logging.info(f"[CV] OUTER FOLD {outer_fold + 1}/{len(outer_splits)} FAILED")
-                logging.info(f"[CV] Global progress: {fits_completed_after_fold}/{total_estimated_fits} fits ({progress_percentage:.1f}%)")
-                logging.info(f"[CV] Remaining outer folds: {len(outer_splits) - (outer_fold + 1)}")
-                logging.info(f"[CV] {'='*80}")
-            outer_results.append({
-                'fold': outer_fold + 1,
-                'test_subject': test_subject_number,
-                'best_params': {},
-                'best_inner_score': 0.0,
-                'test_f1': 0.0,
-                'test_auc': 0.0,
-                'test_accuracy': 0.0
-            })
-    
-    return outer_results, all_best_params, experiment_dir
 
 
 def get_optimal_n_jobs(model_type='lstm', conservative=True):
@@ -2949,17 +2586,30 @@ def get_optimal_n_jobs(model_type='lstm', conservative=True):
 
 
 
-# ===================================================================
-# Logging Setup
-# ===================================================================
-def setup_logging(log_dir="logs", log_level=logging.INFO):
-    """Setup logging to file and console."""
-    # Create logs directory if it doesn't exist
-    os.makedirs(log_dir, exist_ok=True)
+# Configure logging levels
+def setup_logging(verbose_level=2, log_dir=None):
+    """
+    Configure logging with different verbosity levels and optional file logging.
     
-    # Create a timestamp for the log file
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"lstm_hctsa_training_{timestamp}.log")
+    Args:
+        verbose_level (int): 
+            0 = ERROR only (quiet)
+            1 = WARNING and above 
+            2 = INFO and above (default - normal output)
+            3 = DEBUG and above (most verbose)
+        log_dir (str, optional): Directory for log file. If None, console only.
+        
+    Returns:
+        str: Path to log file if log_dir provided, None otherwise
+    """
+    log_levels = {
+        0: logging.ERROR,
+        1: logging.WARNING, 
+        2: logging.INFO,
+        3: logging.DEBUG
+    }
+    
+    level = log_levels.get(verbose_level, logging.INFO)
     
     # Create formatter
     formatter = logging.Formatter(
@@ -2967,31 +2617,43 @@ def setup_logging(log_dir="logs", log_level=logging.INFO):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # Remove any existing handlers
+    # Remove any existing handlers to avoid duplicates
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
     
-    # Setup file handler
-    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(formatter)
-    
     # Setup console handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
+    console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
-    
-    # Configure root logger
-    logging.root.setLevel(log_level)
-    logging.root.addHandler(file_handler)
     logging.root.addHandler(console_handler)
     
-    logging.info(f"Logging initialized. Log file: {log_file}")
+    log_file = None
+    # Setup file handler if log directory specified
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(log_dir, f"lstm_hctsa_training_{timestamp}.log")
+        
+        file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        logging.root.addHandler(file_handler)
+        
+        logging.info(f"Logging initialized. Log file: {log_file}")
+    
+    # Configure root logger
+    logging.root.setLevel(level)
+    
+    # Suppress TensorFlow logging unless in debug mode
+    if verbose_level < 3:
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        tf_logger = logging.getLogger('tensorflow')
+        tf_logger.setLevel(logging.ERROR)
+    
     return log_file
 
 
-
-def main(verbose: int = 1):
+def main(verbose: int = 2):
     """Main nested cross-validation pipeline."""
     
     # Initialize TensorFlow
@@ -2999,11 +2661,11 @@ def main(verbose: int = 1):
     
     # Setup hierarchical experiment logging structure
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    experiment_dir = f"logs/nested_cv/experiment_{timestamp}"
+    experiment_dir = f"logs/nested_cv_{timestamp}"
     os.makedirs(experiment_dir, exist_ok=True)
     
     # Create main experiment log
-    log_file = setup_logging(log_dir=experiment_dir, log_level=logging.INFO)
+    log_file = setup_logging(verbose_level=verbose, log_dir=experiment_dir)
     
     logging.info("="*80)
     logging.info("LSTM HCTSA NESTED CV EXPERIMENT STARTED")
@@ -3052,17 +2714,17 @@ def main(verbose: int = 1):
     USE_INDEX_MASKING = False  # Change to False to use traditional value-based masking
     
     if USE_INDEX_MASKING:
-        X_padded, y_padded, X_mask, y_mask, original_lengths = pad_trials_robust(
+        X_padded, y_padded, X_mask, y_mask, original_lengths = pad_trials(
             X_list, y_list, use_index_masking=True, verbose=verbose
         )
-        mask_vals = {'use_index_masking': True, 'X_mask': None, 'y_mask': None}
+        mask_values = {'use_index_masking': True, 'X_mask': None, 'y_mask': None}
         if verbose >= 1:
             logging.info(f"[MAIN] Using index-based masking with sequence lengths: {min(original_lengths)}-{max(original_lengths)}")
     else:
-        X_padded, y_padded, mask_vals = pad_trials_robust(X_list, y_list, use_index_masking=False, verbose=verbose)
+        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, use_index_masking=False, verbose=verbose)
         X_mask, y_mask = None, None
         if verbose >= 1:
-            logging.info(f"[MAIN] Using value-based masking: {mask_vals}")
+            logging.info(f"[MAIN] Using value-based masking: {mask_values}")
     
     if verbose >= 1:
         logging.info(f"[MAIN] Final data shape: {X_padded.shape}")
@@ -3089,19 +2751,18 @@ def main(verbose: int = 1):
     
     # Get parameter grid for hyperparameter logging setup
     from sklearn.model_selection import ParameterGrid
-    dummy_param_grid = get_default_param_grid('lstm', mask_vals)
-    total_param_combinations = len(list(ParameterGrid(dummy_param_grid)))
+    default_param_grid = get_default_param_grid('lstm', mask_values)
+    total_param_combinations = len(list(ParameterGrid(default_param_grid)))
     
     logging.info(f"[MAIN] Hyperparameter space: {total_param_combinations} combinations")
-    logging.info(f"[MAIN] TensorBoard will visualize all hyperparameter trials")
     
     # Setup hyperparameter experiment
-    hparam_logger = setup_hyperparameter_experiment(experiment_dir, dummy_param_grid)
+    hparam_logger = setup_hyperparameter_experiment(experiment_dir, default_param_grid)
     
     # Run nested CV with sklearn-based approach
     logging.info(f"[MAIN] Starting nested CV with data shapes - X: {X_padded.shape}, y: {y_padded.shape}")
     outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
-        X_padded, y_padded, groups, mask_vals,
+        X_padded, y_padded, groups, mask_values,
         subject_names=subject_names,
         model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
         refit_scoring_metric='f1',
@@ -3211,8 +2872,8 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
-    parser.add_argument("--verbose", type=int, default=1, choices=[0, 1, 2],
-                        help="Verbosity level (0=quiet, 1=normal, 2=detailed)")
+    parser.add_argument("--verbose", type=int, default=3, choices=[0, 1, 2, 3],
+                        help="Verbosity level (0=errors only, 1=warnings+, 2=info+, 3=debug+)")
     parser.add_argument("--n_jobs", type=int, default=None,
                         help="Number of parallel jobs (default: auto-detect)")
     parser.add_argument("--force_n_jobs_all", action="store_true",
@@ -3222,16 +2883,19 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Setup logging based on verbosity level (console only for CLI usage)
+    setup_logging(verbose_level=args.verbose)
+    
     # Override n_jobs if specified
     if args.force_n_jobs_all:
-        print("WARNING: Forcing n_jobs=-1 - this may cause memory issues with LSTM!")
+        logging.warning("Forcing n_jobs=-1 - this may cause memory issues with LSTM!")
         import sys
         # Temporarily modify the get_optimal_n_jobs function
         def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
             return -1
         sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
     elif args.n_jobs is not None:
-        print(f"Using manual n_jobs={args.n_jobs}")
+        logging.info(f"Using manual n_jobs={args.n_jobs}")
         import sys
         def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
             return args.n_jobs
