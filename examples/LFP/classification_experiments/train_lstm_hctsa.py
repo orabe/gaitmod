@@ -54,6 +54,14 @@ from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras import backend as K
 import tensorflow as tf
 
+# Import for hyperparameter visualization with TensorBoard
+try:
+    from tensorboard.plugins.hparams import api as hp
+    HPARAMS_AVAILABLE = True
+except ImportError:
+    HPARAMS_AVAILABLE = False
+    logging.warning("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited.")
+
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score
 from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score
@@ -80,85 +88,422 @@ from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
 
 
 # ===================================================================
-# Logging Setup
+# TensorBoard Hyperparameter Visualization
 # ===================================================================
-def setup_logging(log_dir="logs", log_level=logging.INFO):
-    """Setup logging to file and console."""
-    # Create logs directory if it doesn't exist
-    os.makedirs(log_dir, exist_ok=True)
+
+class HyperparameterTensorBoardLogger:
+    """
+    TensorBoard logger specifically designed for hyperparameter tuning visualization.
+    Creates comprehensive visualizations of hyperparameter combinations and their performance.
+    """
     
-    # Create a timestamp for the log file
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"lstm_hctsa_training_{timestamp}.log")
-    
-    # Create formatter
-    formatter = logging.Formatter(
-        fmt='%(asctime)s | %(levelname)-8s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    
-    # Remove any existing handlers
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
-    
-    # Setup file handler
-    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(formatter)
-    
-    # Setup console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    
-    # Configure root logger
-    logging.root.setLevel(log_level)
-    logging.root.addHandler(file_handler)
-    logging.root.addHandler(console_handler)
-    
-    logging.info(f"Logging initialized. Log file: {log_file}")
-    return log_file
+    def __init__(self, base_log_dir, experiment_name="hyperparameter_tuning"):
+        self.base_log_dir = base_log_dir
+        self.experiment_name = experiment_name
+        self.hparams_log_dir = os.path.join(base_log_dir, "hparams_tuning", experiment_name)
+        self.session_num = 0
+        
+        # Ensure directory exists
+        os.makedirs(self.hparams_log_dir, exist_ok=True)
+        
+        # Initialize hyperparameter definitions
+        self.hparam_definitions = {}
+        self.metric_definitions = []
+        self.initialized = False
+        
+    def setup_hparams_experiment(self, param_grid):
+        """
+        Setup the hyperparameter experiment configuration for TensorBoard.
+        This defines what hyperparameters and metrics will be tracked.
+        """
+        if not HPARAMS_AVAILABLE:
+            logging.warning("TensorBoard HParams not available - skipping setup")
+            return
+            
+        try:
+            # Define hyperparameters from the parameter grid
+            hparams = []
+            
+            for param_name, param_values in param_grid.items():
+                # Clean parameter name for better visualization
+                clean_name = param_name.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
+                
+                # Handle different parameter types
+                if isinstance(param_values[0], (int, float)):
+                    # Numeric parameters
+                    if all(isinstance(v, int) for v in param_values):
+                        hparams.append(hp.HParam(clean_name, hp.Discrete(param_values)))
+                    else:
+                        min_val, max_val = min(param_values), max(param_values)
+                        hparams.append(hp.HParam(clean_name, hp.RealInterval(min_val, max_val)))
+                        
+                elif isinstance(param_values[0], str):
+                    # String parameters (optimizers, activations, etc.)
+                    hparams.append(hp.HParam(clean_name, hp.Discrete(param_values)))
+                    
+                elif isinstance(param_values[0], list):
+                    # List parameters (hidden dimensions, etc.)
+                    str_values = [str(v) for v in param_values]
+                    hparams.append(hp.HParam(clean_name, hp.Discrete(str_values)))
+                    
+                else:
+                    # Other types - convert to string
+                    str_values = [str(v) for v in param_values]
+                    hparams.append(hp.HParam(clean_name, hp.Discrete(str_values)))
+            
+            # Define metrics to track
+            metrics = [
+                hp.Metric('cv_score', display_name='CV Score'),
+                hp.Metric('cv_std', display_name='CV Std'),
+                hp.Metric('train_loss', display_name='Training Loss'),
+                hp.Metric('val_loss', display_name='Validation Loss'),
+                hp.Metric('train_accuracy', display_name='Training Accuracy'),
+                hp.Metric('val_accuracy', display_name='Validation Accuracy'),
+                hp.Metric('train_f1', display_name='Training F1'),
+                hp.Metric('val_f1', display_name='Validation F1'),
+                hp.Metric('train_roc_auc', display_name='Training ROC AUC'),
+                hp.Metric('val_roc_auc', display_name='Validation ROC AUC'),
+            ]
+            
+            # Write the experiment configuration
+            with tf.summary.create_file_writer(self.hparams_log_dir).as_default():
+                hp.hparams_config(hparams=hparams, metrics=metrics)
+                
+            self.hparam_definitions = {h.name: h for h in hparams}
+            self.metric_definitions = metrics
+            self.initialized = True
+            
+            logging.info(f"[HPARAMS] Initialized TensorBoard experiment with {len(hparams)} hyperparameters")
+            logging.info(f"[HPARAMS] Tracking {len(metrics)} metrics")
+            
+        except Exception as e:
+            logging.error(f"Failed to setup hyperparameter experiment: {e}")
+            
+    def log_hyperparameter_trial(self, trial_params, trial_results, session_id=None):
+        """
+        Log a single hyperparameter trial with its results.
+        
+        Args:
+            trial_params: Dictionary of hyperparameter values for this trial
+            trial_results: Dictionary of metric results
+            session_id: Optional custom session ID
+        """
+        if not HPARAMS_AVAILABLE or not self.initialized:
+            return
+            
+        if session_id is None:
+            session_id = f"trial_{self.session_num:03d}"
+            self.session_num += 1
+            
+        try:
+            # Create session directory
+            session_dir = os.path.join(self.hparams_log_dir, session_id)
+            
+            # Clean and prepare hyperparameters
+            clean_hparams = {}
+            for key, value in trial_params.items():
+                clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
+                
+                # Convert complex types to strings for logging
+                if isinstance(value, (list, dict)):
+                    clean_hparams[clean_key] = str(value)
+                elif isinstance(value, (np.ndarray,)):
+                    clean_hparams[clean_key] = str(value.tolist())
+                else:
+                    clean_hparams[clean_key] = value
+                    
+            # Write hyperparameters and metrics
+            with tf.summary.create_file_writer(session_dir).as_default():
+                # Log hyperparameters
+                hp.hparams(clean_hparams)
+                
+                # Log metrics
+                step = 0
+                for metric_name, metric_value in trial_results.items():
+                    if metric_value is not None and not (isinstance(metric_value, float) and np.isnan(metric_value)):
+                        tf.summary.scalar(metric_name, float(metric_value), step=step)
+                        
+                # Flush the writer
+                tf.summary.experimental.get_step()
+                
+            logging.info(f"[HPARAMS] Logged trial {session_id} with {len(clean_hparams)} hyperparameters and {len(trial_results)} metrics")
+            
+        except Exception as e:
+            logging.warning(f"Failed to log hyperparameter trial {session_id}: {e}")
+            
+    def create_hyperparameter_summary(self, all_trials_results):
+        """
+        Create a comprehensive summary of all hyperparameter trials.
+        
+        Args:
+            all_trials_results: List of dictionaries containing trial results
+        """
+        if not all_trials_results:
+            return
+            
+        try:
+            summary_dir = os.path.join(self.hparams_log_dir, "summary")
+            
+            with tf.summary.create_file_writer(summary_dir).as_default():
+                # Calculate summary statistics
+                scores = [trial.get('cv_score', 0) for trial in all_trials_results]
+                best_score = max(scores) if scores else 0
+                mean_score = np.mean(scores) if scores else 0
+                std_score = np.std(scores) if scores else 0
+                
+                # Log summary statistics
+                tf.summary.scalar('best_cv_score', best_score, step=0)
+                tf.summary.scalar('mean_cv_score', mean_score, step=0)
+                tf.summary.scalar('std_cv_score', std_score, step=0)
+                tf.summary.scalar('num_trials', len(all_trials_results), step=0)
+                
+                # Create text summary
+                summary_text = f"""
+                Hyperparameter Tuning Summary:
+                - Total trials: {len(all_trials_results)}
+                - Best CV score: {best_score:.4f}
+                - Mean CV score: {mean_score:.4f} ± {std_score:.4f}
+                """
+                
+                tf.summary.text('experiment_summary', summary_text, step=0)
+                
+            logging.info(f"[HPARAMS] Created summary for {len(all_trials_results)} trials")
+            
+        except Exception as e:
+            logging.warning(f"Failed to create hyperparameter summary: {e}")
 
 
+# ===================================================================
+# Enhanced TensorBoard Callback with Hyperparameter Logging
+# ===================================================================
+
+class HyperparameterAwareTensorBoard(TensorBoard):
+    """
+    Enhanced TensorBoard callback that includes hyperparameter information in logs.
+    """
+
+    def __init__(self, log_dir, hyperparams=None, **kwargs):
+
+        super().__init__(log_dir=log_dir, **kwargs)
+        
+        self.hyperparams = hyperparams or {}
+        
+    def on_train_begin(self, logs=None):
+        super().on_train_begin(logs)
+        
+        # Log hyperparameters as text summary
+        if self.hyperparams:
+            try:
+                with self._get_writer().as_default():
+                    # Create hyperparameter text summary
+                    hparam_text = "\n".join([f"{k}: {v}" for k, v in self.hyperparams.items()])
+                    tf.summary.text('hyperparameters', hparam_text, step=0)
+                    
+                    # Log individual hyperparameters as scalars where possible
+                    for key, value in self.hyperparams.items():
+                        clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
+                        
+                        # Log numeric hyperparameters as scalars
+                        if isinstance(value, (int, float)):
+                            tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
+                        elif isinstance(value, bool):
+                            tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
+                            
+            except Exception as e:
+                logging.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
+
+# ==================================================================
+# Streamlined Training Progress Logger
+# ==================================================================
+class ProgressTrainingLogger(Callback):
+    """
+    Streamlined training progress logger with fold information.
+    Provides clean, informative logging without overwhelming verbosity.
+    """
+    def __init__(self, outer_fold=None, inner_fold=None, outer_test_subject=None, 
+                 inner_validation_subject=None, print_frequency=10):
+        super().__init__()
+        self.outer_fold = outer_fold
+        self.inner_fold = inner_fold
+        self.outer_test_subject = outer_test_subject
+        self.inner_validation_subject = inner_validation_subject
+        self.print_frequency = print_frequency
+        self.start_time = None
+        
+    @property
+    def fold_identifier(self):
+        """Generate a unique identifier for the current fold configuration."""
+        parts = []
+        if self.outer_fold is not None:
+            parts.append(f"outer{self.outer_fold}")
+        if self.inner_fold is not None:
+            parts.append(f"inner{self.inner_fold}")
+        return "_".join(parts) if parts else "unknown"
+    
+    @property 
+    def subject_identifier(self):
+        """Generate identifier for subjects involved in this fold."""
+        parts = []
+        if self.outer_test_subject:
+            parts.append(f"test:{self.outer_test_subject}")
+        if self.inner_validation_subject:
+            parts.append(f"val:{self.inner_validation_subject}")
+        return "_".join(parts) if parts else "unknown_subjects"
+        
+    def on_train_begin(self, logs=None):
+        """Initialize training session logging."""
+        import time
+        self.start_time = time.time()
+        
+        fold_info = f"[{self.fold_identifier}]"
+        subject_info = f"[{self.subject_identifier}]"
+        
+        logging.info(f"\n{'='*60}")
+        logging.info(f"Training Started {fold_info} {subject_info}")
+        logging.info(f"{'='*60}")
+        
+        # Log model info if available
+        if hasattr(self.model, 'count_params'):
+            params = self.model.count_params()
+            logging.info(f"Model Parameters: {params:,}")
+            
+    def on_epoch_end(self, epoch, logs=None):
+        """Log progress at specified intervals."""
+        if epoch % self.print_frequency == 0 or epoch == 0:
+            metrics = self.format_metrics(logs)
+            
+            # Core metrics display
+            core_metrics = []
+            for metric in ['loss', 'accuracy', 'val_loss', 'val_accuracy']:
+                if metric in metrics:
+                    core_metrics.append(f"{metric}: {metrics[metric]}")
+            
+            metrics_str = " | ".join(core_metrics)
+            logging.info(f"Epoch {epoch + 1:3d}: {metrics_str}")
+    
+    def on_train_end(self, logs=None):
+        """Summarize training completion."""
+        if self.start_time:
+            import time
+            duration = time.time() - self.start_time
+            logging.info(f"\n✅ Training Complete - Duration: {duration:.1f}s")
+            logging.info(f"{'='*60}\n")
+
+    def format_metrics(self, logs):
+        """Format all metrics in logs dictionary."""
+        if not logs:
+            return {}
+        return {key: self.safe_format(val) for key, val in logs.items()}
+
+    def safe_format(self, value, precision=4):
+        """Safely format numeric values with error handling."""
+        try:
+            if isinstance(value, (int, float)) and not np.isnan(float(value)):
+                return f"{float(value):.{precision}f}"
+            return str(value)
+        except (ValueError, TypeError, OverflowError):
+            return "N/A"
+        
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
 # ===================================================================
-def setup_nested_cv_logging(outer_fold=None, inner_fold=None, subject_name=None, 
-                           experiment_name=None, hyperparams=None, experiment_dir=None,
-                           outer_test_subject=None, inner_validation_subject=None):
+def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
+                            inner_fold=None, outer_test_subject=None, hyperparams=None,
+                            inner_validation_subject=None):
     """
     Setup hierarchical logging structure for nested cross-validation with improved organization.
     
-    Structure:
-    logs/
-    └── nested_cv/
-        └── experiment_YYYYMMDD_HHMMSS/
-            ├── outer_fold_00_test_SubjectA/
-            │   ├── inner_fold_00_val_SubjectB/
-            │   │   ├── callbacks/
-            │   │   ├── tensorboard/
-            │   │   ├── models/
-            │   │   └── history/
-            │   ├── inner_fold_01_val_SubjectC/
-            │   └── ...
-            ├── outer_fold_01_test_SubjectB/
-            └── summary/
+    Args:
+        outer_fold: Outer fold number
+        inner_fold: Inner fold number
+        subject_name: Subject identifier (deprecated, use outer_test_subject instead)
+        experiment_name: Name of the experiment
+        hyperparams: Dictionary of hyperparameters for unique identification
+        experiment_dir: Base experiment directory
+        outer_test_subject: Test subject identifier for outer fold
+        inner_validation_subject: Validation subject identifier for inner fold
+        
+    Returns:
+        Dictionary with all logging paths and identifiers
     """
+    # Use subject_name as fallback for backward compatibility
+    if outer_fold is not None and outer_test_subject is not None:
+        outer_fold_dir = os.path.join(experiment_dir, f"outer_fold_{outer_fold:02d}_test_{outer_test_subject}")
     
-    # Create timestamp for unique identification
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    # Create run identifier with hyperparameters
     unique_id = str(uuid.uuid4())[:8]
     
-    # Build directory structure
-    if outer_fold is not None:
-        outer_fold_dir = os.path.join(experiment_dir, f"outer_fold_{outer_fold:02d}_test_{outer_test_subject}")
+
+    if hyperparams and isinstance(hyperparams, dict):
+        # Create a shorter parameter string for directory names, excluding certain keys
+        exclude_keys = {'mask_vals', 'loss', 'use_index_masking', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+        
+        # Map parameter names to shorter versions
+        param_name_map = {
+            'batch_size': 'bs',
+            'epochs': 'ep',
+            'learning_rate': 'lr',
+            'dropout': 'do',
+            'hidden_dims': 'hd',
+            'dense_units': 'du',
+            'dense_activation': 'da',
+            'optimizer': 'opt',
+            'n_features': 'nf',
+            'variance_threshold': 'vt',
+            'correlation_threshold': 'ct',
+            'recurrent_activations': 'ra',
+            'activations': 'act'
+        }
+        
+        param_parts = []
+        for k, v in hyperparams.items():
+            # Remove known pipeline prefixes for cleaner directory names
+            for prefix in ['classifier__', 'scaler__', 'feature_selector__']:
+                if k.startswith(prefix):
+                    k = k[len(prefix):]
+                    break  # Only remove one prefix
+            if k in exclude_keys:
+                continue
+            
+            # Use shorter name if available
+            short_k = param_name_map.get(k, k)
+            
+            # Format value more compactly
+            if isinstance(v, list):
+                # For lists like [32, 32], convert to 32x32
+                if all(isinstance(x, (int, float)) for x in v):
+                    v_str = 'x'.join(map(str, v))
+                else:
+                    v_str = str(v).replace(' ', '').replace("'", "")
+            elif isinstance(v, float):
+                # Format floats more compactly
+                if v == int(v):
+                    v_str = str(int(v))
+                else:
+                    v_str = f"{v:.4f}".rstrip('0').rstrip('.')
+            else:
+                v_str = str(v)
+            
+            param_parts.append(f"{short_k}{v_str}")
+        
+        param_str = "_".join(param_parts)
+        
+        # Ensure the path isn't too long (limit to ~100 characters)
+        if len(param_str) > 100:
+            # Keep only the most important parameters
+            priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
+            priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
+            param_str = "_".join(priority_parts[:6])  # Limit to 6 most important params
     else:
-        outer_fold_dir = os.path.join(experiment_dir, f"training_{timestamp}")
-    
-    if inner_fold is not None:
-        inner_fold_dir = os.path.join(outer_fold_dir, f"inner_fold_{inner_fold:02d}_val_{inner_validation_subject}")
+        param_str = "default"
+        
+    run_id = f"{unique_id}--{param_str}"
+    hyperparams_dir = os.path.join(outer_fold_dir, param_str)
+
+    if inner_fold is not None and inner_validation_subject is not None:
+        inner_fold_dir = os.path.join(hyperparams_dir, f"inner_fold_{inner_fold:02d}_val_{inner_validation_subject}")
     else:
-        inner_fold_dir = outer_fold_dir
+        inner_fold_dir = os.path.join(hyperparams_dir, "final_training")
         
     # Create subdirectories
     callbacks_dir = os.path.join(inner_fold_dir, "callbacks")
@@ -170,17 +515,11 @@ def setup_nested_cv_logging(outer_fold=None, inner_fold=None, subject_name=None,
     for directory in [callbacks_dir, tensorboard_dir, models_dir, history_dir]:
         os.makedirs(directory, exist_ok=True)
 
-    # Create run identifier with hyperparameters
-    if hyperparams:
-        param_str = "_".join([f"{k}={v}" for k, v in hyperparams.items()])
-        run_id = f"{param_str}_{unique_id}"
-    else:
-        run_id = unique_id
-
     # Return all paths
     paths = {
         'experiment_dir': experiment_dir,
         'outer_fold_dir': outer_fold_dir,
+        'hyperparams_dir': hyperparams_dir,
         'inner_fold_dir': inner_fold_dir,
         'callbacks_dir': callbacks_dir,
         'tensorboard_dir': tensorboard_dir,
@@ -193,32 +532,44 @@ def setup_nested_cv_logging(outer_fold=None, inner_fold=None, subject_name=None,
     return paths
 
 
-def create_nested_cv_callbacks(paths, outer_fold=None, inner_fold=None, subject_name=None, patience=10, monitor='loss', save_models=False):
+def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
+                               outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
+                               patience=10, monitor='loss', save_models=False, progress_frequency=10):
     """
     Create callbacks for nested cross-validation training.
     
     Args:
-        paths: Dictionary with logging paths from setup_nested_cv_logging()
         outer_fold: Outer fold number
         inner_fold: Inner fold number
-        subject_name: Subject identifier
+        subject_name: Subject identifier (deprecated, use outer_test_subject instead)
+        outer_test_subject: Outer test subject identifier
+        inner_validation_subject: Inner validation subject identifier
         patience: Early stopping patience
         monitor: Metric to monitor for early stopping
         save_models: Whether to save model checkpoints (for speed, set to False)
+        progress_frequency: How often to print progress (epochs)
     
     Returns:
         List of Keras callbacks
     """
+    paths = _setup_nested_cv_logging(
+        experiment_dir=experiment_dir,
+        outer_fold=outer_fold,
+        inner_fold=inner_fold,
+        outer_test_subject=outer_test_subject,
+        inner_validation_subject=inner_validation_subject,
+        hyperparams=hyperparameters
+    )
     unique_id = paths['unique_id']
     
     callbacks = [
-        # Custom training logger
-        CustomTrainingLogger(),
-        
-        # Nested CV TensorBoard logger
-        NestedCVTensorBoardLogger(
+        # Progress training logger
+        ProgressTrainingLogger(
             outer_fold=outer_fold,
-            inner_folds=inner_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+            print_frequency=progress_frequency
         ),
         
         # CSV logging
@@ -247,16 +598,18 @@ def create_nested_cv_callbacks(paths, outer_fold=None, inner_fold=None, subject_
             min_lr=1e-7
         ), 
         
-        # TensorBoard logging
-        TensorBoard(
+        # Enhanced TensorBoard with hyperparameter visualization
+        HyperparameterAwareTensorBoard(
             log_dir=paths['tensorboard_dir'],
-            histogram_freq=1,
+            hyperparams=hyperparameters or {},
+            histogram_freq=1,  # Enable histograms for better insights
             write_graph=True,
-            write_images=True,
+            write_images=False,
             update_freq='epoch',
-            profile_batch='500,520',  # Profile batches for performance analysis
-            embeddings_freq=1
+            profile_batch=0,  # Disable profiling to avoid issues
+            embeddings_freq=0,  # Disable embeddings to avoid issues
         ),
+
     ]
     
     # Optionally add model checkpointing (can be disabled for speed)
@@ -271,6 +624,126 @@ def create_nested_cv_callbacks(paths, outer_fold=None, inner_fold=None, subject_
         ))
     
     return callbacks
+
+
+def setup_hyperparameter_experiment(experiment_dir, param_grid):
+    """
+    Setup TensorBoard hyperparameter experiment for visualization.
+    
+    Args:
+        experiment_dir: Base experiment directory
+        param_grid: Parameter grid for hyperparameter tuning
+        
+    Returns:
+        HyperparameterTensorBoardLogger instance
+    """
+    hparam_logger = HyperparameterTensorBoardLogger(experiment_dir, "lstm_hctsa_tuning")
+    hparam_logger.setup_hparams_experiment(param_grid)
+    return hparam_logger
+
+
+def log_gridsearch_results(hparam_logger, grid_search, outer_fold=None):
+    """
+    Log GridSearchCV results to TensorBoard for hyperparameter visualization.
+    
+    Args:
+        hparam_logger: HyperparameterTensorBoardLogger instance
+        grid_search: Fitted GridSearchCV object
+        outer_fold: Current outer fold number
+    """
+    if not hparam_logger or not hasattr(grid_search, 'cv_results_'):
+        return
+        
+    try:
+        cv_results = grid_search.cv_results_
+        
+        # Log each parameter combination
+        for i in range(len(cv_results['params'])):
+            trial_params = cv_results['params'][i]
+            
+            # Gather trial results
+            trial_results = {
+                'cv_score': cv_results['mean_test_score'][i],
+                'cv_std': cv_results['std_test_score'][i],
+                'rank': cv_results['rank_test_score'][i],
+            }
+            
+            # Add other available metrics
+            for key, values in cv_results.items():
+                if key.startswith('mean_test_') and key != 'mean_test_score':
+                    metric_name = key.replace('mean_test_', '')
+                    trial_results[metric_name] = values[i]
+                    trial_results[f'{metric_name}_std'] = cv_results[f'std_test_{metric_name}'][i]
+            
+            # Create unique session ID
+            session_id = f"fold{outer_fold:02d}_trial{i:03d}" if outer_fold else f"trial{i:03d}"
+            
+            # Log the trial
+            hparam_logger.log_hyperparameter_trial(trial_params, trial_results, session_id)
+            
+        logging.info(f"[HPARAMS] Logged {len(cv_results['params'])} hyperparameter trials for fold {outer_fold}")
+        
+    except Exception as e:
+        logging.warning(f"Failed to log GridSearch results: {e}")
+
+
+def create_hyperparameter_summary_plots(experiment_dir, all_fold_results):
+    """
+    Create comprehensive hyperparameter analysis plots and summaries.
+    
+    Args:
+        experiment_dir: Base experiment directory
+        all_fold_results: List of results from all outer folds
+    """
+    try:
+        # Create summary directory
+        summary_dir = os.path.join(experiment_dir, "hyperparameter_analysis")
+        os.makedirs(summary_dir, exist_ok=True)
+        
+        # Collect all trial data
+        all_trials = []
+        for fold_idx, fold_result in enumerate(all_fold_results):
+            if hasattr(fold_result['grid_search'], 'cv_results_'):
+                cv_results = fold_result['grid_search'].cv_results_
+                for i, params in enumerate(cv_results['params']):
+                    trial_data = {
+                        'fold': fold_idx,
+                        'trial': i,
+                        'params': params,
+                        'cv_score': cv_results['mean_test_score'][i],
+                        'cv_std': cv_results['std_test_score'][i],
+                        'rank': cv_results['rank_test_score'][i]
+                    }
+                    all_trials.append(trial_data)
+        
+        # Create TensorBoard summary
+        with tf.summary.create_file_writer(os.path.join(summary_dir, "tensorboard")).as_default():
+            if all_trials:
+                scores = [t['cv_score'] for t in all_trials]
+                tf.summary.scalar('overall_best_score', max(scores), step=0)
+                tf.summary.scalar('overall_mean_score', np.mean(scores), step=0)
+                tf.summary.scalar('overall_std_score', np.std(scores), step=0)
+                tf.summary.scalar('total_trials', len(all_trials), step=0)
+                
+                # Create comprehensive summary text
+                best_trial = max(all_trials, key=lambda x: x['cv_score'])
+                summary_text = f"""
+                Hyperparameter Tuning Results:
+                
+                Total Trials: {len(all_trials)}
+                Best CV Score: {max(scores):.4f}
+                Mean CV Score: {np.mean(scores):.4f} ± {np.std(scores):.4f}
+                
+                Best Configuration:
+                {json.dumps(best_trial['params'], indent=2)}
+                """
+                
+                tf.summary.text('hyperparameter_summary', summary_text, step=0)
+        
+        logging.info(f"[HPARAMS] Created comprehensive summary with {len(all_trials)} trials")
+        
+    except Exception as e:
+        logging.warning(f"Failed to create hyperparameter summary: {e}")
 
 
 def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_name=None):
@@ -690,89 +1163,6 @@ class MaskedROC_AUC(tf.keras.metrics.AUC):
 
         super().update_state(y_true_masked, y_pred_clipped, sample_weight)
 
-class CustomTrainingLogger(Callback):
-    def __init__(self, fold=0):
-        super().__init__()
-        self.fold = fold
-        self.current_epoch = 0
-        
-    def on_epoch_begin(self, epoch, logs=None):
-        self.current_epoch = epoch
-
-    def on_batch_end(self, batch, logs=None):
-        logging.info(
-            f"[Fold {self.fold}] [Epoch {self.current_epoch + 1}/{self.params['epochs']}] [Batch {batch+1}/{self.params['steps']}]: "
-            f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
-            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
-            f"Accuracy: {self.safe_format(logs.get('MASKED_accuracy', 'N/A'))}, "
-            f"F1Score: {self.safe_format(logs.get('MASKED_f1_score', 'N/A'))}, " 
-            f"Precision: {self.safe_format(logs.get('MASKED_precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('MASKED_recall', 'N/A'))}, "
-            f"AUC: {self.safe_format(logs.get('MASKED_roc_auc', 'N/A'))}"
-        )
-        
-    def on_epoch_end(self, epoch, logs=None):
-        logging.info(
-            f"[Fold {self.fold}] [Epoch {epoch + 1}/{self.params['epochs']}]: "
-            f"Loss: {self.safe_format(logs.get('loss', 0.4))}, "
-            f"Learning Rate: {self.safe_format(logs.get('lr', 'N/A'))}, "
-            f"Accuracy: {self.safe_format(logs.get('MASKED_accuracy', 'N/A'))}, "
-            f"F1Score: {self.safe_format(logs.get('MASKED_f1_score', 'N/A'))}, "
-            f"Precision: {self.safe_format(logs.get('MASKED_precision', 'N/A'))}, "
-            f"Recall: {self.safe_format(logs.get('MASKED_recall', 'N/A'))}, "
-            f"AUC: {self.safe_format(logs.get('MASKED_roc_auc', 'N/A'))}"
-        )
-
-    def safe_format(self, value):
-        try:
-            return f"{float(value):.4f}"
-        except (ValueError, TypeError):
-            return str(value)
-
-
-class NestedCVTensorBoardLogger(Callback):
-    """Enhanced TensorBoard logging for nested cross-validation experiments."""
-
-    def __init__(self, outer_fold=None, inner_folds=None):
-        super().__init__()
-        self.outer_fold = outer_fold
-        self.inner_fold = inner_folds  # Note: parameter is inner_folds but we store as inner_fold for consistency
-        
-    def on_train_begin(self, logs=None):
-        # Log experiment metadata
-        if hasattr(self.model, 'optimizer') and self.model.optimizer:
-            try:
-                # Handle both regular variables and MirroredVariables from distributed strategy
-                lr_var = self.model.optimizer.learning_rate
-                if hasattr(lr_var, 'numpy'):
-                    lr = float(lr_var.numpy())
-                else:
-                    lr = float(lr_var)
-            except (TypeError, AttributeError):
-                lr = "N/A"
-        else:
-            lr = "N/A"
-            
-        metadata = {
-            'outer_fold': self.outer_fold,
-            'inner_fold': self.inner_fold,
-            'learning_rate': lr,
-            'model_params': self.model.count_params() if hasattr(self.model, 'count_params') else 0
-        }
-        
-        # Write metadata to TensorBoard as text
-        if hasattr(self.model, 'history'):
-            tf.summary.text('experiment_metadata', str(metadata), step=0)
-    
-    def on_epoch_end(self, epoch, logs=None):
-        # Add custom scalars for nested CV tracking
-        if logs:
-            # Prefix metrics with fold information for better organization
-            prefix = f"fold_{self.outer_fold}_{self.inner_fold}" if self.outer_fold is not None else "training"
-            
-            for metric_name, value in logs.items():
-                if isinstance(value, (int, float)) and not np.isnan(value):
-                    tf.summary.scalar(f"{prefix}/{metric_name}", value, step=epoch)
 
 
 # ===================================================================
@@ -1101,12 +1491,13 @@ class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
 # LSTM CLASSIFIER SECTION
 # ===================================================================
 class LSTMClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, hidden_dims=[64], activations=['tanh'], recurrent_activations=['sigmoid'],
+    def __init__(self, hidden_dims=[64], activations=['tanh'], 
+                 recurrent_activations=['sigmoid'],
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_vals={'X_mask': 0.0, 'y_mask': 2}, 
-                 use_index_masking=True, callbacks=None,
-                 outer_fold=None, inner_fold=None,
+                 use_index_masking=True, callbacks=None, 
+                 experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
@@ -1137,6 +1528,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.use_index_masking = use_index_masking
         
         # Subject and fold tracking parameters
+        self.experiment_dir = experiment_dir
         self.outer_fold = outer_fold
         self.inner_fold = inner_fold
         self.outer_test_subject = outer_test_subject
@@ -1218,13 +1610,15 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
         model.compile(optimizer=optimizer,
-                    loss=self.masked_loss_binary_crossentropy,
-                    metrics=[MaskedAccuracy(mask_value=y_mask_val, name='MASKED_accuracy'), 
-                            MaskedF1Score(mask_value=y_mask_val, name='MASKED_f1_score'), 
-                            MaskedPrecision(mask_value=y_mask_val, name='MASKED_precision'), 
-                            MaskedRecall(mask_value=y_mask_val, name='MASKED_recall'), 
-                            MaskedROC_AUC(mask_value=y_mask_val, name='MASKED_roc_auc')])
-        
+                      loss=self.masked_loss_binary_crossentropy,
+                      metrics=[
+                          MaskedAccuracy(mask_value=y_mask_val, name='MASKED_accuracy'), 
+                          MaskedF1Score(mask_value=y_mask_val, name='MASKED_f1_score'), 
+                          MaskedPrecision(mask_value=y_mask_val, name='MASKED_precision'), 
+                          MaskedRecall(mask_value=y_mask_val, name='MASKED_recall'), 
+                          MaskedROC_AUC(mask_value=y_mask_val, name='MASKED_roc_auc')
+                    ])
+
         logging.info(f"[BUILD_MODEL] Model compilation successful!")
         logging.info(f"[BUILD_MODEL] {'='*60}")
         logging.info(f"[BUILD_MODEL] MODEL SUMMARY:")
@@ -1233,8 +1627,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         return model
 
-    def fit(self, X, y, X_mask=None, y_mask=None, outer_fold=None, inner_fold=None, subject_name=None,
-            outer_test_subject=None, inner_validation_subject=None, callbacks=None):
+    def fit(self, X, y, X_mask=None, y_mask=None, callbacks=None, **kwargs):
         """Fit the LSTM model - sklearn compatible interface.
         
         Args:
@@ -1242,12 +1635,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             y: Target labels
             X_mask: Input mask array (for index-based masking)
             y_mask: Target mask array (for index-based masking)
-            outer_fold: Outer fold number (can be passed from outside)
-            inner_fold: Inner fold number (can be passed from outside)
-            subject_name: Subject name (can be passed from outside)
-            outer_test_subject: Outer test subject (can be passed from outside)
-            inner_validation_subject: Inner validation subject (can be passed from outside)
             callbacks: Pre-created callbacks list (if None, simple defaults will be used)
+            **kwargs: Additional parameters (allows GridSearchCV to pass extra params)
         """
         logging.info(f"\n[FIT] {'='*50}")
         logging.info(f"\n[FIT] {'='*50}")
@@ -1260,8 +1649,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[FIT] Masks provided:")
         logging.info(f"[FIT]   - X_mask: {X_mask is not None}")
         logging.info(f"[FIT]   - y_mask: {y_mask is not None}")
-        if outer_fold is not None:
-            logging.info(f"[FIT] Fold info: Outer={outer_fold}, Inner={inner_fold}, Subject={subject_name}")
         logging.info(f"[FIT] Training config:")
         logging.info(f"[FIT]   - Epochs: {self.epochs}")
         logging.info(f"[FIT]   - Batch size: {self.batch_size}")
@@ -1312,56 +1699,26 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             self.classes_ = np.unique(y[y != self.mask_vals['y_mask']])
         
         # Determine fold information - use provided values or stored values for logging context
-        use_outer_fold = outer_fold if outer_fold is not None else self.outer_fold
-        use_outer_test_subject = outer_test_subject if outer_test_subject is not None else self.outer_test_subject
-        use_inner_fold = inner_fold if inner_fold is not None else self.inner_fold
-        use_inner_validation_subject = inner_validation_subject if inner_validation_subject is not None else self.inner_validation_subject
         
         # Debug: Log fold information (both provided and stored)
-        logging.info(f"[DEBUG_LSTM_FIT] Provided: outer_fold={outer_fold}, inner_fold={inner_fold}")
-        logging.info(f"[DEBUG_LSTM_FIT] Provided: outer_test_subject={outer_test_subject}, subject_name={subject_name}")
-        logging.info(f"[DEBUG_LSTM_FIT] Stored: outer_fold={self.outer_fold}, inner_fold={self.inner_fold}")
-        logging.info(f"[DEBUG_LSTM_FIT] Using: outer_fold={use_outer_fold}, inner_fold={use_inner_fold}")
-        
+        logging.info(f"[DEBUG_LSTM_FIT] outer_fold={self.outer_fold}, inner_fold={self.inner_fold}")
+        logging.info(f"[DEBUG_LSTM_FIT] outer_test_subject={self.outer_test_subject}")
+        logging.info(f"[DEBUG_LSTM_FIT] inner_validation_subject={self.inner_validation_subject}")
+
         # Setup callbacks - use provided callbacks or create simple defaults
         if callbacks is not None:
-            # Use externally created callbacks (preferred approach)
-            logging.info(f"[LSTM_FIT] Using {len(callbacks)} externally provided callbacks")
             final_callbacks = callbacks.copy()
-            
-            # Add any additional callbacks from the classifier instance
             final_callbacks.extend(self.callbacks)
         else:
-            # Fallback: create simple default callbacks (minimal logging)
-            logging.info(f"[LSTM_FIT] No external callbacks provided, creating simple defaults")
-            final_callbacks = [
-                CustomTrainingLogger(),
-                EarlyStopping(
-                    monitor='loss',
-                    patience=self.patience,
-                    restore_best_weights=True,
-                    verbose=1,
-                    mode='min'
-                ),
-                ReduceLROnPlateau(
-                    monitor='loss',
-                    factor=0.5,
-                    patience=self.patience//2,
-                    verbose=1,
-                    mode='min',
-                    min_lr=1e-7
-                )
-            ]
+            final_callbacks = self.callbacks.copy()
             
-            # Add any additional callbacks from the classifier instance
-            final_callbacks.extend(self.callbacks)
-        
         # Prepare training arguments
         fit_kwargs = {
             'epochs': self.epochs,
             'batch_size': self.batch_size,
             'verbose': 1,
             'callbacks': final_callbacks,
+            # 'class_weight': class_weights,  # NOTE: class_weight is intentionally excluded for sequence-to-sequence tasks to prevent shape mismatch errors          
         }
         
         # For sequence-to-sequence tasks (TimeDistributed output), class_weight causes shape conflicts
@@ -1375,11 +1732,21 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             fit_kwargs['sample_weight'] = X_mask.astype(float)
             logging.info(f"[LSTM FIT] Using sample_weight for masking with shape: {X_mask.shape}")
         
+        # Log training configuration
+        logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
+        logging.info(f"[LSTM FIT] Number of callbacks: {len(fit_kwargs.get('callbacks', []))}")
+        
         # Check if a GPU is available, else default to CPU
         if tf.config.list_physical_devices('GPU'):
             logging.info("Training on GPU")
             with tf.device('/device:GPU:0'):
-                history = self.model.fit(X, y, **fit_kwargs).history
+                try:
+                    history = self.model.fit(X, y, **fit_kwargs).history
+                    logging.info(f"[LSTM FIT] Training completed successfully. Epochs trained: {len(history.get('loss', []))}")
+                except Exception as e:
+                    logging.error(f"[LSTM FIT] GPU training failed: {e}")
+                    logging.info("[LSTM FIT] Falling back to CPU training")
+                    history = self.model.fit(X, y, **fit_kwargs).history
         else:
             logging.info("Training on CPU")
             history = self.model.fit(X, y, **fit_kwargs).history
@@ -1583,8 +1950,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
 
 # # ======================
 def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
-                   outer_fold=None, inner_fold=None,
-                   outer_test_subject=None, inner_validation_subject=None):
+                   experiment_dir=None, outer_fold=None, inner_fold=None,
+                   outer_test_subject=None, inner_validation_subject=None,
+                   params=None):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -1648,28 +2016,38 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
             classifier = RandomForestClassifier(random_state=42)
             logging.info(f"[BUILD_PIPELINE] Created RandomForestClassifier (XGBoost fallback)")
     elif model_type == 'lstm':
+
+        callbacks = create_nested_cv_callbacks(
+            experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
+            patience=10, monitor='loss', save_models=False, progress_frequency=10)
+            
         use_index_masking = mask_vals.get('use_index_masking', False) if isinstance(mask_vals, dict) else False
         logging.info(f"[BUILD_PIPELINE] Creating LSTMClassifier with use_index_masking: {use_index_masking}")
-        
+            
         # Create the LSTM classifier with simplified configuration and subject tracking
         if mask_vals:
             classifier = LSTMClassifier(
                 mask_vals=mask_vals,
                 use_index_masking=use_index_masking,
+                experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
                 inner_fold=inner_fold,
                 outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject
+                inner_validation_subject=inner_validation_subject,
+                callbacks=callbacks
             )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_vals: {mask_vals}")
         else:
             classifier = LSTMClassifier(
                 mask_vals={'X_mask': mask_value, 'y_mask': 2},
                 use_index_masking=False,
+                experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
                 inner_fold=inner_fold,
                 outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject
+                inner_validation_subject=inner_validation_subject,
+                callbacks=callbacks
             )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_vals")
         
@@ -1728,51 +2106,7 @@ def build_pipeline(model_type='lstm', mask_value=None, mask_vals=None,
     
     return pipeline, scoring_functions
 
-def create_pipeline_with_subject_info(model_type='lstm', mask_vals=None,
-                                     outer_fold=1, inner_fold=None,
-                                     outer_test_subject="TestSubject", inner_validation_subject=None):
-    """
-    Convenience function to create a pipeline with subject information.
-    
-    Example usage:
-        # Create pipeline with subject tracking
-        pipeline, scoring_functions = create_pipeline_with_subject_info(
-            model_type='lstm',
-            mask_vals={'X_mask': 0.0, 'y_mask': 2, 'use_index_masking': True},
-            outer_fold=1,
-            outer_test_subject="Patient_01"
-        )
-        
-        # Pipeline steps include classifier with subject parameters:
-        # steps.append(('classifier', LSTMClassifier(outer_fold=1, ...)))
-        # pipeline = Pipeline(steps)
-    
-    Args:
-        model_type: Type of classifier
-        mask_vals: Mask values dictionary
-        outer_fold: Outer fold number
-        inner_fold: Inner fold number (optional)
-        outer_test_subject: Test subject name
-        inner_validation_subject: Validation subject name (optional)
-        
-    Returns:
-        tuple: (pipeline, scoring_functions)
-    """
-    mask_value = mask_vals.get('X_mask') if mask_vals else None
-    
-    return build_pipeline(
-        model_type=model_type,
-        mask_value=mask_value,
-        mask_vals=mask_vals,
-        outer_fold=outer_fold,
-        inner_fold=inner_fold,
-        outer_test_subject=outer_test_subject,
-        inner_validation_subject=inner_validation_subject
-    )
-
-def get_default_param_grid(model_type, mask_values=None,
-                          outer_fold=None, inner_fold=None,
-                          outer_test_subject=None, inner_validation_subject=None):
+def get_default_param_grid(model_type, mask_values=None):
     """
     Get sensible default parameter grids for different model types.
     
@@ -1924,10 +2258,6 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     param_grid = get_default_param_grid(
         model_type=model_type, 
         mask_values=mask_vals,
-        outer_fold=outer_fold,
-        inner_fold=inner_fold,
-        outer_test_subject=outer_test_subject,
-        inner_validation_subject=inner_validation_subject
     )
     logging.info(f"[CREATE_GRIDSEARCH] Parameter grid generated with {len(param_grid)} parameters")
     # logging.info(f"[CREATE_GRIDSEARCH] Parameter grid keys: {list(param_grid.keys())}")
@@ -1964,7 +2294,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                           refit_scoring_metric='f1',
                           experiment_dir=None,
                           n_jobs=1, 
-                          verbose: int = 1):
+                          verbose: int = 1,
+                          hparam_logger=None):
     """
     Nested cross-validation with feature selection aggregation and final retraining.
     
@@ -1994,22 +2325,19 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
     
     # Build pipeline and get parameter grid
     mask_value = mask_vals.get('X_mask') if mask_vals else None
-    pipeline, scoring_functions = build_pipeline(
-        model_type=model_type,
-        mask_value=mask_value,
-        mask_vals=mask_vals,
-        outer_fold=None,
-        inner_fold=None,
-        outer_test_subject=None,
-        inner_validation_subject=None
-    )
+    # pipeline, scoring_functions = build_pipeline(
+    #     model_type=model_type,
+    #     mask_value=mask_value,
+    #     mask_vals=mask_vals,
+    #     experiment_dir=None,
+    #     outer_fold=None,
+    #     inner_fold=None,
+    #     outer_test_subject=None,
+    #     inner_validation_subject=None
+    # )
     param_grid = get_default_param_grid(
         model_type=model_type, 
-        mask_values=mask_vals,
-        outer_fold=None,
-        inner_fold=None,
-        outer_test_subject=None,
-        inner_validation_subject=None
+        mask_values=mask_vals
     )
     param_combinations = list(ParameterGrid(param_grid))
     
@@ -2077,17 +2405,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                     logging.info(f"[CV]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 # Create pipeline with current parameters and subject information
-                inner_pipeline, _ = create_pipeline_with_subject_info(
+                mask_value = mask_vals.get('X_mask') if mask_vals else None
+                inner_pipeline, _ = build_pipeline(
                     model_type=model_type,
+                    mask_value=mask_value,
                     mask_vals=mask_vals,
+                    experiment_dir=experiment_dir,  
                     outer_fold=outer_fold + 1,
                     inner_fold=inner_fold + 1,
                     outer_test_subject=test_subject_name,
-                    inner_validation_subject=val_subject_name
+                    inner_validation_subject=val_subject_name,
+                    params=params # used for callbacks
                 )
                 inner_pipeline.set_params(**params)
                 
                 try:
+
                     # Fit pipeline (includes feature selection and model training)
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
                         # For LSTM, use 3D data
@@ -2183,9 +2516,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
         
         try:
             # Create final pipeline with best parameters and subject information
-            final_pipeline, _ = create_pipeline_with_subject_info(
+            mask_value = mask_vals.get('X_mask') if mask_vals else None
+            final_pipeline, _ = build_pipeline(
                 model_type=model_type,
+                mask_value=mask_value,
                 mask_vals=mask_vals,
+                experiment_dir=experiment_dir,
                 outer_fold=outer_fold + 1,
                 inner_fold=None,  # No inner fold for final training
                 outer_test_subject=test_subject_name,
@@ -2425,8 +2761,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                 callbacks_paths = setup_nested_cv_logging(
                     outer_fold=outer_fold,
                     inner_fold=None,  # Will be set per inner fold
-                    subject_name=test_subject_name,
+                    outer_test_subject=test_subject_name,
+                    inner_validation_subject=None,  # Will be set per inner fold
                     experiment_dir=experiment_dir,
+                    hyperparams=default_hyperparams
                 )
                 
                 # Create base callbacks (without inner fold info, will be customized per inner fold)
@@ -2434,10 +2772,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                     paths=callbacks_paths,
                     outer_fold=outer_fold,
                     inner_fold=None,  # Will be set per inner fold
-                    subject_name=test_subject_name,
+                    outer_test_subject=test_subject_name,
+                    inner_validation_subject=None,  # Will be set per inner fold
                     patience=10,
                     monitor='loss',
-                    save_models=False
+                    save_models=False,
+                    progress_frequency=10
                 )
                 
                 if verbose >= 1:
@@ -2460,6 +2800,14 @@ def run_nested_cv_sklearn(X, y, groups, mask_vals,
                 if verbose >= 1:
                     logging.info(f"[GRID_SEARCH] Fitting {model_type} with 2D data: {X_train_2d.shape}")
                 grid_search.fit(X_train_2d, y_outer_train, groups=groups_outer_train)
+            
+            # Log hyperparameter tuning results to TensorBoard
+            if hparam_logger is not None:
+                try:
+                    logging.info(f"[HPARAMS] Logging hyperparameter results for outer fold {outer_fold}")
+                    log_gridsearch_results(hparam_logger, grid_search, outer_fold)
+                except Exception as e:
+                    logging.warning(f"Failed to log hyperparameter results: {e}")
             
             if verbose >= 1:
                 logging.info(f"[GRID_SEARCH] Grid search completed successfully")
@@ -2600,6 +2948,49 @@ def get_optimal_n_jobs(model_type='lstm', conservative=True):
         return 1
 
 
+
+# ===================================================================
+# Logging Setup
+# ===================================================================
+def setup_logging(log_dir="logs", log_level=logging.INFO):
+    """Setup logging to file and console."""
+    # Create logs directory if it doesn't exist
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create a timestamp for the log file
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"lstm_hctsa_training_{timestamp}.log")
+    
+    # Create formatter
+    formatter = logging.Formatter(
+        fmt='%(asctime)s | %(levelname)-8s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Remove any existing handlers
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    
+    # Setup file handler
+    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(formatter)
+    
+    # Setup console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.root.setLevel(log_level)
+    logging.root.addHandler(file_handler)
+    logging.root.addHandler(console_handler)
+    
+    logging.info(f"Logging initialized. Log file: {log_file}")
+    return log_file
+
+
+
 def main(verbose: int = 1):
     """Main nested cross-validation pipeline."""
     
@@ -2688,10 +3079,24 @@ def main(verbose: int = 1):
         if len(X_padded.shape) == 3:
             logging.info(f"[MAIN] 3D data detected: (samples={X_padded.shape[0]}, timesteps={X_padded.shape[1]}, features={X_padded.shape[2]})")
     
-    # Step 7-19: Nested Cross-Validation
+    # Step 7-19: Nested Cross-Validation with Hyperparameter Visualization
     if verbose >= 1:
-        logging.info("\n[MAIN] 3. NESTED CROSS-VALIDATION")
+        logging.info("\n[MAIN] 3. NESTED CROSS-VALIDATION WITH HYPERPARAMETER TUNING")
         logging.info("[MAIN] " + "-" * 40)
+    
+    # Setup hyperparameter experiment logging for TensorBoard visualization
+    logging.info("[MAIN] Setting up TensorBoard hyperparameter visualization...")
+    
+    # Get parameter grid for hyperparameter logging setup
+    from sklearn.model_selection import ParameterGrid
+    dummy_param_grid = get_default_param_grid('lstm', mask_vals)
+    total_param_combinations = len(list(ParameterGrid(dummy_param_grid)))
+    
+    logging.info(f"[MAIN] Hyperparameter space: {total_param_combinations} combinations")
+    logging.info(f"[MAIN] TensorBoard will visualize all hyperparameter trials")
+    
+    # Setup hyperparameter experiment
+    hparam_logger = setup_hyperparameter_experiment(experiment_dir, dummy_param_grid)
     
     # Run nested CV with sklearn-based approach
     logging.info(f"[MAIN] Starting nested CV with data shapes - X: {X_padded.shape}, y: {y_padded.shape}")
@@ -2702,7 +3107,8 @@ def main(verbose: int = 1):
         refit_scoring_metric='f1',
         experiment_dir=experiment_dir,
         n_jobs=n_jobs,
-        verbose=verbose
+        verbose=verbose,
+        hparam_logger=hparam_logger  # Pass the hyperparameter logger
     )
     
     # Step 19: Final Evaluation
