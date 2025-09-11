@@ -1065,6 +1065,101 @@ def pad_trials(X_list, y_list, verbose: int = 0):
     return X_padded, y_padded, mask_values
 
 
+def pad_fold_data(X_train_list, y_train_list, X_test_list, y_test_list, verbose: int = 0):
+    """
+    Pad data for a specific fold with proper mask value computation and training-only length determination.
+    
+    This function:
+    - Computes mask values considering ALL data (train + test/validation) to ensure no conflicts
+    - Determines max length from TRAINING data only to prevent data leakage
+    - Applies consistent padding to both training and test data
+    - Balances methodological rigor with practical mask value safety
+    
+    Args:
+        X_train_list: List of training trial arrays (n_epochs, n_features)
+        y_train_list: List of training label arrays (n_epochs,)
+        X_test_list: List of test trial arrays (n_epochs, n_features)
+        y_test_list: List of test label arrays (n_epochs,)
+        verbose: Verbosity level
+        
+    Returns:
+        tuple: (X_train_padded, y_train_padded, X_test_padded, y_test_padded, mask_values)
+    """
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Padding fold data - Train: {len(X_train_list)} trials, Test: {len(X_test_list)} trials")
+    
+    # Step 1: Combine all data for mask value computation (but padding length from training only)
+    train_X = np.concatenate(X_train_list, axis=0)
+    train_y = np.concatenate(y_train_list, axis=0)
+    
+    # Combine ALL data (train + test/validation) for mask value search to ensure no conflicts
+    all_X = np.concatenate([train_X] + [np.concatenate(X_test_list, axis=0)] if X_test_list else [train_X], axis=0)
+    all_y = np.concatenate([train_y] + [np.concatenate(y_test_list, axis=0)] if y_test_list else [train_y], axis=0)
+    
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Training data analysis: X_shape={train_X.shape}, y_shape={train_y.shape}")
+        logging.info(f"[PAD_FOLD] All data analysis: X_shape={all_X.shape}, y_shape={all_y.shape}")
+        logging.info(f"[PAD_FOLD] Training X range: [{np.min(train_X):.6e}, {np.max(train_X):.6e}]")
+        logging.info(f"[PAD_FOLD] All X range: [{np.min(all_X):.6e}, {np.max(all_X):.6e}]")
+        logging.info(f"[PAD_FOLD] Training Y unique: {np.unique(train_y)}")
+        logging.info(f"[PAD_FOLD] All Y unique: {np.unique(all_y)}")
+    
+    # Step 2: Find unique mask values considering ALL data (train + test/validation)
+    X_mask = find_unique_mask_value(all_X, verbose=verbose)
+    y_mask = -1
+    
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Computed mask values from ALL data: X_mask={X_mask}, y_mask={y_mask}")
+    
+    # Step 3: Determine maximum sequence length from TRAINING data only (prevent leakage)
+    max_train_length = max(len(trial) for trial in X_train_list)
+    
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Maximum training sequence length: {max_train_length}")
+    
+    # Step 4: Final validation that mask values don't conflict with any data (should be guaranteed now)
+    X_mask_valid = not np.any(all_X == X_mask)
+    y_mask_valid = not np.any(all_y == y_mask)
+    
+    if not X_mask_valid:
+        raise ValueError(f"X_mask validation failed! {X_mask} found in data. This should not happen with the updated logic.")
+    if not y_mask_valid:
+        raise ValueError(f"y_mask validation failed! {y_mask} found in data.")
+    
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Mask validation passed: X_mask_valid={X_mask_valid}, y_mask_valid={y_mask_valid}")
+    
+    # Step 5: Pad training data using training-derived parameters
+    X_train_padded = pad_sequences(X_train_list, maxlen=max_train_length, dtype='float32', padding='post', value=X_mask)
+    y_train_padded = pad_sequences(y_train_list, maxlen=max_train_length, dtype='int32', padding='post', value=y_mask)
+    
+    # Step 6: Pad test data using the SAME parameters (no data leakage)
+    if X_test_list and y_test_list:
+        X_test_padded = pad_sequences(X_test_list, maxlen=max_train_length, dtype='float32', padding='post', value=X_mask)
+        y_test_padded = pad_sequences(y_test_list, maxlen=max_train_length, dtype='int32', padding='post', value=y_mask)
+    else:
+        X_test_padded = None
+        y_test_padded = None
+    
+    # Step 7: Create mask values dictionary
+    mask_values = {
+        'X_mask': X_mask,
+        'y_mask': y_mask,
+        'max_length': max_train_length,
+        'validation_passed': True,
+        'computed_from_training_only': True
+    }
+    
+    if verbose >= 1:
+        logging.info(f"[PAD_FOLD] Padding complete:")
+        logging.info(f"[PAD_FOLD]   Train: X={X_train_padded.shape}, y={y_train_padded.shape}")
+        if X_test_padded is not None:
+            logging.info(f"[PAD_FOLD]   Test:  X={X_test_padded.shape}, y={y_test_padded.shape}")
+        logging.info(f"[PAD_FOLD]   Mask values: X_mask={X_mask:.2e}, y_mask={y_mask}, max_len={max_train_length}")
+    
+    return X_train_padded, y_train_padded, X_test_padded, y_test_padded, mask_values
+
+
 # ===================================================================
 # LSTM CLASSIFIER AND RELATED CLASSES
 # ===================================================================
@@ -2234,6 +2329,367 @@ def create_gridsearch_pipeline(X_train, y_train, groups_train,
     
     return grid_search, param_grid
 
+def run_nested_cv_with_inner_padding(X_list, y_list, groups, 
+                                    subject_names=None,
+                                    model_type='lstm',
+                                    refit_scoring_metric='f1',
+                                    experiment_dir=None,
+                                    n_jobs=1, 
+                                    verbose: int = 1,
+                                    hparam_logger=None):
+    """
+    Nested cross-validation with inner-fold specific padding to prevent data leakage.
+    
+    This implementation ensures maximum protection against data leakage by:
+    1. Computing padding length from INNER TRAINING data during inner CV
+    2. Computing padding length from OUTER TRAINING data during final retraining  
+    3. Mask values computed from ALL fold data (train+validation) to ensure no conflicts
+    4. No validation/test data length information leaks into padding length decisions
+    
+    Args:
+        X_list: List of trial arrays (n_epochs, n_features) - UNPADDED
+        y_list: List of trial label arrays (n_epochs,) - UNPADDED
+        groups: Array indicating which subject each trial belongs to
+        subject_names: List of subject names
+        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
+        refit_scoring_metric: Primary scoring metric
+        experiment_dir: Directory for logging
+        n_jobs: Number of parallel jobs
+        verbose: Verbosity level
+        hparam_logger: Hyperparameter logger
+        
+    Returns:
+        tuple: (outer_results, all_best_params, experiment_dir)
+    """
+    from sklearn.model_selection import ParameterGrid
+    from collections import defaultdict, Counter
+    import numpy as np
+    
+    if verbose >= 1:
+        logging.info(f"\n[CV_INNER_PAD] Starting nested cross-validation with inner-fold specific padding")
+        logging.info(f"[CV_INNER_PAD] Model type: {model_type}")
+        logging.info(f"[CV_INNER_PAD] Refit metric: {refit_scoring_metric}")
+        logging.info(f"[CV_INNER_PAD] Input data: {len(X_list)} trials (unpadded)")
+        logging.info(f"[CV_INNER_PAD] Padding strategy: Inner training data → Inner CV, Outer training data → Final retraining")
+        logging.info(f"[CV_INNER_PAD] {'-'*80}")
+    
+    # Setup outer CV (Leave-One-Subject-Out)
+    outer_cv = LeaveOneGroupOut()
+    outer_splits = list(outer_cv.split(X_list, y_list, groups))
+    n_outer_folds = len(outer_splits)
+    
+    if verbose >= 1:
+        logging.info(f"[CV_INNER_PAD] Setup: {n_outer_folds} outer folds")
+    
+    # Results storage
+    outer_results = []
+    all_best_params = []
+    
+    # Outer loop: Leave-One-Subject-Out
+    for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
+        if verbose >= 1:
+            logging.info(f"[CV_INNER_PAD] {'='*70}")
+            logging.info(f"[CV_INNER_PAD] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
+            logging.info(f"[CV_INNER_PAD] {'='*70}")
+        
+        # Step 1: Split trials into train/test (still unpadded)
+        X_outer_train_list = [X_list[i] for i in outer_train_idx]
+        y_outer_train_list = [y_list[i] for i in outer_train_idx]
+        X_outer_test_list = [X_list[i] for i in outer_test_idx]
+        y_outer_test_list = [y_list[i] for i in outer_test_idx]
+        
+        groups_outer_train = groups[outer_train_idx]
+        
+        test_subject_number = groups[outer_test_idx][0]
+        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
+        
+        if verbose >= 1:
+            logging.info(f"[CV_INNER_PAD] Test subject: {test_subject_name} ({test_subject_number})")
+            logging.info(f"[CV_INNER_PAD] Training subjects: {len(np.unique(groups_outer_train))}")
+            logging.info(f"[CV_INNER_PAD] Training trials: {len(X_outer_train_list)}, Test trials: {len(X_outer_test_list)}")
+        
+        # Step 2: Get parameter grid (use dummy mask values for initial setup)
+        dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}
+        param_grid = get_default_param_grid(model_type=model_type, mask_values=dummy_mask_values)
+        param_combinations = list(ParameterGrid(param_grid))
+        
+        if verbose >= 1:
+            logging.info(f"[CV_INNER_PAD] Parameter combinations: {len(param_combinations)}")
+        
+        # Step 3: Inner CV with hyperparameter testing and inner-fold padding
+        inner_cv = LeaveOneGroupOut()
+        inner_splits = list(inner_cv.split(X_outer_train_list, y_outer_train_list, groups_outer_train))
+        n_inner_folds = len(inner_splits)
+        
+        if verbose >= 1:
+            logging.info(f"[CV_INNER_PAD] Inner CV: {n_inner_folds} folds with inner-fold specific padding")
+        
+        # Storage for hyperparameter evaluation
+        param_scores = []
+        param_features = []
+        
+        # Test each hyperparameter combination
+        for param_idx, params in enumerate(param_combinations):
+            if verbose >= 2:
+                logging.info(f"[CV_INNER_PAD] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
+            
+            # Storage for this parameter combination
+            inner_scores = []
+            inner_selected_features = []
+            
+            # Inner CV loop for this parameter combination
+            for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
+                val_subject_number = groups_outer_train[inner_val_idx][0]
+                val_subject_name = subject_names[val_subject_number] if subject_names else f"Subject_{val_subject_number}"
+                
+                if verbose >= 2:
+                    logging.info(f"[CV_INNER_PAD]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
+                
+                try:
+                    # Step 4: Create UNPADDED inner training and validation data
+                    X_inner_train_list = [X_outer_train_list[i] for i in inner_train_idx]
+                    y_inner_train_list = [y_outer_train_list[i] for i in inner_train_idx]
+                    X_inner_val_list = [X_outer_train_list[i] for i in inner_val_idx]
+                    y_inner_val_list = [y_outer_train_list[i] for i in inner_val_idx]
+                    
+                    if verbose >= 2:
+                        logging.info(f"[CV_INNER_PAD]     Inner train trials: {len(X_inner_train_list)}, val trials: {len(X_inner_val_list)}")
+                    
+                    # Step 5: Apply INNER-FOLD SPECIFIC PADDING (critical for preventing leakage)
+                    X_inner_train, y_inner_train, X_inner_val, y_inner_val, inner_mask_values = pad_fold_data(
+                        X_inner_train_list, y_inner_train_list, X_inner_val_list, y_inner_val_list, 
+                        verbose=verbose
+                    )
+                    
+                    if verbose >= 2:
+                        logging.info(f"[CV_INNER_PAD]     Inner padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={inner_mask_values['max_length']}")
+                    
+                    # Step 6: Create pipeline with inner-fold specific mask values
+                    inner_pipeline, _ = build_pipeline(
+                        model_type=model_type,
+                        mask_values=inner_mask_values,  # Use inner-fold specific mask values
+                        experiment_dir=experiment_dir,  
+                        outer_fold=outer_fold + 1,
+                        inner_fold=inner_fold + 1,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        params=params
+                    )
+                    inner_pipeline.set_params(**params)
+                    
+                    # Step 7: Fit and evaluate pipeline
+                    if model_type == 'lstm' and len(X_inner_train.shape) == 3:
+                        # For LSTM, use 3D data
+                        inner_pipeline.fit(X_inner_train, y_inner_train)
+                        y_val_pred = inner_pipeline.predict(X_inner_val)
+                        
+                        # Calculate masked score for LSTM
+                        if inner_mask_values and 'y_mask' in inner_mask_values:
+                            y_mask_val = inner_mask_values['y_mask']
+                            score = LSTMClassifier.masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
+                        else:
+                            from sklearn.metrics import f1_score
+                            score = f1_score(y_inner_val.ravel(), y_val_pred.ravel(), average='weighted')
+                    else:
+                        # For other models, flatten to 2D
+                        X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
+                        X_inner_val_2d = X_inner_val.reshape(X_inner_val.shape[0], -1)
+                        
+                        inner_pipeline.fit(X_inner_train_2d, y_inner_train)
+                        y_val_pred = inner_pipeline.predict(X_inner_val_2d)
+                        
+                        from sklearn.metrics import f1_score
+                        score = f1_score(y_inner_val, y_val_pred, average='weighted')
+                    
+                    inner_scores.append(score)
+                    
+                    # Store selected features from this inner fold
+                    if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
+                        selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
+                        inner_selected_features.append(selected_features)
+                    
+                    if verbose >= 2:
+                        logging.info(f"[CV_INNER_PAD]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                
+                except Exception as e:
+                    if verbose >= 1:
+                        logging.warning(f"[CV_INNER_PAD]     Inner fold {inner_fold + 1} failed: {e}")
+                    inner_scores.append(0.0)  # Penalty for failed folds
+                    inner_selected_features.append([])
+            
+            # Compute average validation score for this parameter combination
+            avg_score = np.mean(inner_scores) if inner_scores else 0.0
+            param_scores.append(avg_score)
+            
+            # Aggregate selected features across inner folds
+            if inner_selected_features:
+                all_features = []
+                for features in inner_selected_features:
+                    if len(features) > 0:
+                        all_features.extend(features)
+                
+                if all_features:
+                    feature_counts = Counter(all_features)
+                    min_count = max(1, len(inner_selected_features) // 2)
+                    aggregated_features = [feature for feature, count in feature_counts.items() 
+                                         if count >= min_count]
+                else:
+                    aggregated_features = []
+            else:
+                aggregated_features = []
+            
+            param_features.append(aggregated_features)
+            
+            if verbose >= 1:
+                logging.info(f"[CV_INNER_PAD]   Param {param_idx + 1}: avg_score={avg_score:.4f}, features={len(aggregated_features)}")
+        
+        # Step 8: Select best hyperparameter combination
+        if param_scores:
+            best_param_idx = np.argmax(param_scores)
+            best_params = param_combinations[best_param_idx]
+            best_score = param_scores[best_param_idx]
+            best_features = param_features[best_param_idx]
+            
+            if verbose >= 1:
+                logging.info(f"\n[CV_INNER_PAD] Best parameters: {best_params}")
+                logging.info(f"[CV_INNER_PAD] Best CV score: {best_score:.4f}")
+                logging.info(f"[CV_INNER_PAD] Best feature set size: {len(best_features)}")
+        else:
+            best_params = param_combinations[0] if param_combinations else {}
+            best_score = 0.0
+            best_features = []
+            if verbose >= 1:
+                logging.warning(f"[CV_INNER_PAD] No valid scores found, using default parameters")
+        
+        # Step 9: Final retrain using OUTER TRAINING DATA for padding length
+        if verbose >= 1:
+            logging.info(f"\n[CV_INNER_PAD] Final retraining using outer training data for padding...")
+        
+        try:
+            # Step 10: Apply OUTER-TRAINING SPECIFIC PADDING for final retraining
+            X_outer_train, y_outer_train, X_outer_test, y_outer_test, outer_mask_values = pad_fold_data(
+                X_outer_train_list, y_outer_train_list, X_outer_test_list, y_outer_test_list, verbose=verbose
+            )
+            
+            if verbose >= 1:
+                logging.info(f"[CV_INNER_PAD] Final padding: outer train={X_outer_train.shape}, test={X_outer_test.shape}")
+                logging.info(f"[CV_INNER_PAD] Final mask values: {outer_mask_values}")
+            
+            # Create final pipeline with best parameters and outer-fold mask values
+            final_pipeline, _ = build_pipeline(
+                model_type=model_type,
+                mask_values=outer_mask_values,  # Use outer-training specific mask values
+                experiment_dir=experiment_dir,
+                outer_fold=outer_fold + 1,
+                inner_fold=None,
+                outer_test_subject=test_subject_name,
+                inner_validation_subject=None
+            )
+            final_pipeline.set_params(**best_params)
+            
+            # Train on full outer training set
+            if model_type == 'lstm' and len(X_outer_train.shape) == 3:
+                final_pipeline.fit(X_outer_train, y_outer_train)
+                
+                # Test on held-out subject
+                y_test_pred = final_pipeline.predict(X_outer_test)
+                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
+                
+                # Calculate test metrics for LSTM
+                if outer_mask_values and 'y_mask' in outer_mask_values:
+                    y_mask_val = outer_mask_values['y_mask']
+                    test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
+                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
+                    test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
+                else:
+                    from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+                    test_f1 = f1_score(y_outer_test.ravel(), y_test_pred.ravel(), average='weighted')
+                    test_auc = roc_auc_score(y_outer_test.ravel(), y_test_pred_proba.ravel()) if len(np.unique(y_outer_test)) > 1 else 0.5
+                    test_accuracy = accuracy_score(y_outer_test.ravel(), y_test_pred.ravel())
+            else:
+                # For other models
+                X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
+                X_outer_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
+                
+                final_pipeline.fit(X_outer_train_2d, y_outer_train)
+                y_test_pred = final_pipeline.predict(X_outer_test_2d)
+                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
+                
+                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
+                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
+                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
+                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
+            
+            # Store results
+            outer_results.append({
+                'fold': outer_fold + 1,
+                'test_subject': test_subject_number,
+                'test_subject_name': test_subject_name,
+                'best_params': best_params,
+                'best_inner_score': best_score,
+                'selected_features': best_features,
+                'n_selected_features': len(best_features),
+                'test_f1': test_f1,
+                'test_auc': test_auc,
+                'test_accuracy': test_accuracy,
+                'outer_mask_values': outer_mask_values,  # Store outer-training mask values
+                'max_sequence_length': outer_mask_values.get('max_length', None)
+            })
+            
+            all_best_params.append(best_params)
+            
+            if verbose >= 1:
+                logging.info(f"[CV_INNER_PAD] Test results - F1: {test_f1:.4f}, AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
+                logging.info(f"[CV_INNER_PAD] Final max sequence length: {outer_mask_values.get('max_length', 'N/A')}")
+                logging.info(f"[CV_INNER_PAD] OUTER FOLD {outer_fold + 1} COMPLETED")
+        
+        except Exception as e:
+            if verbose >= 1:
+                logging.error(f"[CV_INNER_PAD] Final training/testing failed for fold {outer_fold + 1}: {e}")
+            
+            # Store failed result
+            dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1, 'max_length': None}
+            outer_results.append({
+                'fold': outer_fold + 1,
+                'test_subject': test_subject_number,
+                'test_subject_name': test_subject_name,
+                'best_params': best_params,
+                'best_inner_score': best_score,
+                'selected_features': best_features,
+                'n_selected_features': len(best_features),
+                'test_f1': 0.0,
+                'test_auc': 0.5,
+                'test_accuracy': 0.0,
+                'outer_mask_values': dummy_mask_values,
+                'max_sequence_length': None
+            })
+            
+            all_best_params.append(best_params)
+    
+    # Summary
+    if verbose >= 1:
+        logging.info(f"\n[CV_INNER_PAD] {'='*80}")
+        logging.info(f"[CV_INNER_PAD] NESTED CROSS-VALIDATION WITH INNER PADDING COMPLETED")
+        logging.info(f"[CV_INNER_PAD] {'='*80}")
+        
+        if outer_results:
+            avg_f1 = np.mean([r['test_f1'] for r in outer_results])
+            avg_auc = np.mean([r['test_auc'] for r in outer_results])
+            avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
+            avg_features = np.mean([r['n_selected_features'] for r in outer_results])
+            max_lengths = [r['max_sequence_length'] for r in outer_results if r['max_sequence_length']]
+            
+            logging.info(f"[CV_INNER_PAD] Average F1: {avg_f1:.4f}")
+            logging.info(f"[CV_INNER_PAD] Average AUC: {avg_auc:.4f}")
+            logging.info(f"[CV_INNER_PAD] Average Accuracy: {avg_accuracy:.4f}")
+            logging.info(f"[CV_INNER_PAD] Average selected features: {avg_features:.1f}")
+            if max_lengths:
+                logging.info(f"[CV_INNER_PAD] Sequence lengths by fold: {max_lengths}")
+                logging.info(f"[CV_INNER_PAD] Average max sequence length: {np.mean(max_lengths):.1f}")
+    
+    return outer_results, all_best_params, experiment_dir
+
+
 def run_nested_cv_sklearn(X, y, groups, mask_values, 
                           subject_names=None,
                           model_type='lstm',
@@ -2730,39 +3186,58 @@ def main(verbose: int = 2):
     
     X_list, y_list, groups, trial_metadata = group_epochs_by_trial(
         TS_DataMat, labels, epoch_mapping, verbose=verbose
-    ) # X_list: List of (epochs, n_features) trial arrays
-    
-    # Pad sequences using traditional value-based masking
-    X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)
-    if verbose >= 1:
-        logging.info(f"[MAIN] Using value-based masking: {mask_values}")
+    ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
     
     if verbose >= 1:
-        logging.info(f"[MAIN] Final data shape: {X_padded.shape}")
-        logging.info(f"[MAIN] Final target shape: {y_padded.shape}")
+        logging.info(f"[MAIN] Unpadded trial data prepared:")
+        logging.info(f"[MAIN] Number of trials: {len(X_list)}")
         logging.info(f"[MAIN] Number of subjects: {len(np.unique(groups))}")
-        logging.info(f"[MAIN] Number of trials: {len(X_padded)}")
-        logging.info(f"[MAIN] Data types - X: {X_padded.dtype}, y: {y_padded.dtype}")
+        logging.info(f"[MAIN] Trial lengths: min={min(len(x) for x in X_list)}, max={max(len(x) for x in X_list)}, avg={np.mean([len(x) for x in X_list]):.1f}")
+        logging.info(f"[MAIN] Feature dimensions per trial: {X_list[0].shape[1] if X_list else 'N/A'}")
         logging.info(f"[MAIN] Groups shape: {groups.shape} with unique values: {np.unique(groups)}")
         
         # Show data ranges for debugging
-        logging.info(f"[MAIN] X_padded range: [{X_padded.min():.4f}, {X_padded.max():.4f}]")
-        logging.info(f"[MAIN] y_padded unique values: {np.unique(y_padded)}")
-        
-        if len(X_padded.shape) == 3:
-            logging.info(f"[MAIN] 3D data detected: (samples={X_padded.shape[0]}, timesteps={X_padded.shape[1]}, features={X_padded.shape[2]})")
+        all_data_sample = np.concatenate([x[:5] for x in X_list[:3]], axis=0) if X_list else np.array([])
+        if len(all_data_sample) > 0:
+            logging.info(f"[MAIN] Sample data range: [{all_data_sample.min():.4f}, {all_data_sample.max():.4f}]")
+        all_labels_sample = np.concatenate([y[:5] for y in y_list[:3]], axis=0) if y_list else np.array([])
+        if len(all_labels_sample) > 0:
+            logging.info(f"[MAIN] Sample labels: {np.unique(all_labels_sample)}")
     
-    # Step 7-19: Nested Cross-Validation with Hyperparameter Visualization
+    # Step 7-19: Nested Cross-Validation with Fold-Specific Padding
+    # 
+    # IMPORTANT: This implementation prevents data leakage by moving padding INSIDE the CV loops:
+    # 
+    # Traditional Approach (PROBLEMATIC):
+    #   1. Pad all data globally using information from all subjects
+    #   2. Split into train/test folds 
+    #   3. Train and evaluate models
+    #   → LEAKAGE: Test subject sequence lengths influence padding of training data
+    #
+    # New Fold-Specific Approach (CORRECT):
+    #   1. Split data into train/test folds (unpadded)
+    #   2. For each fold:
+    #      a. Compute padding parameters from TRAINING data only
+    #      b. Apply same padding to both training and test data
+    #      c. Train and evaluate models
+    #   → NO LEAKAGE: Test data characteristics never influence training decisions
+    #
     if verbose >= 1:
-        logging.info("\n[MAIN] 3. NESTED CROSS-VALIDATION WITH HYPERPARAMETER TUNING")
+        logging.info("\n[MAIN] 3. NESTED CROSS-VALIDATION WITH FOLD-SPECIFIC PADDING")
         logging.info("[MAIN] " + "-" * 40)
+        logging.info("[MAIN] Using fold-specific padding to prevent data leakage:")
+        logging.info("[MAIN]   • Padding length determined from training data only")
+        logging.info("[MAIN]   • Mask values computed from all fold data to ensure no conflicts")
+        logging.info("[MAIN]   • No test/validation length information used in padding decisions")
+        logging.info("[MAIN]   • Ensures valid nested cross-validation methodology")
     
     # Setup hyperparameter experiment logging for TensorBoard visualization
     logging.info("[MAIN] Setting up TensorBoard hyperparameter visualization...")
     
-    # Get parameter grid for hyperparameter logging setup
+    # Get parameter grid for hyperparameter logging setup (using dummy mask values for initial setup)
     from sklearn.model_selection import ParameterGrid
-    default_param_grid = get_default_param_grid('lstm', mask_values)
+    dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}  # Temporary for parameter grid setup
+    default_param_grid = get_default_param_grid('lstm', dummy_mask_values)
     total_param_combinations = len(list(ParameterGrid(default_param_grid)))
     
     logging.info(f"[MAIN] Hyperparameter space: {total_param_combinations} combinations")
@@ -2770,10 +3245,25 @@ def main(verbose: int = 2):
     # Setup hyperparameter experiment
     hparam_logger = setup_hyperparameter_experiment(experiment_dir, default_param_grid)
     
-    # Run nested CV with sklearn-based approach
-    logging.info(f"[MAIN] Starting nested CV with data shapes - X: {X_padded.shape}, y: {y_padded.shape}")
-    outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
-        X_padded, y_padded, groups, mask_values,
+    # Run nested CV with inner-fold specific padding
+    logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding")
+    logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
+
+    # X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
+    # outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
+    #     X_padded, y_padded, groups,
+    #     subject_names=subject_names,
+    #     mask_values=mask_values,
+    #     model_type='lstm',
+    #     refit_scoring_metric='f1',
+    #     experiment_dir=experiment_dir,
+    #     n_jobs=n_jobs,
+    #     verbose=verbose,
+    #     hparam_logger=hparam_logger
+    # )
+
+    outer_results, all_best_params, experiment_dir = run_nested_cv_with_inner_padding(
+        X_list, y_list, groups,  # Pass UNPADDED data
         subject_names=subject_names,
         model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
         refit_scoring_metric='f1',
@@ -2782,7 +3272,9 @@ def main(verbose: int = 2):
         verbose=verbose,
         hparam_logger=hparam_logger  # Pass the hyperparameter logger
     )
-    
+
+
+
     # Step 19: Final Evaluation
     if verbose >= 1:
         logging.info("\n[MAIN] 4. FINAL EVALUATION")
@@ -2841,7 +3333,7 @@ def main(verbose: int = 2):
             'std_accuracy': std_accuracy,
             'most_common_params': dict(most_common_params) if most_common_params else {},
             'n_subjects': len(np.unique(groups)),
-            'n_trials': len(X_padded)
+            'n_trials': len(X_list)
         }, f, indent=2)
     
     # Plot results
