@@ -348,7 +348,7 @@ class ProgressTrainingLogger(Callback):
             parts.append(f"test:{self.outer_test_subject}")
         if self.inner_validation_subject:
             parts.append(f"val:{self.inner_validation_subject}")
-        return "_".join(parts) if parts else "unknown_subjects"
+        return "--".join(parts) if parts else "unknown_subjects"
         
     def on_train_begin(self, logs=None):
         """Initialize training session logging."""
@@ -433,7 +433,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
     if hyperparams and isinstance(hyperparams, dict):
         # Create a shorter parameter string for directory names, excluding certain keys
-        exclude_keys = {'mask_values', 'loss', 'use_index_masking', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+        exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
         
         # Map parameter names to shorter versions
         param_name_map = {
@@ -916,90 +916,153 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
     
     return X_list, y_list, np.array(groups), metadata
 
-def create_mask_arrays_from_lengths(X_list, y_list, max_length=None, verbose: int = 0):
-    """
-    Create mask arrays based on original sequence lengths instead of mask values.
-    
-    Args:
-        X_list: List of sequences (each can have different lengths)
-        y_list: List of label sequences 
-        max_length: Maximum sequence length (if None, use longest sequence)
-        verbose: Verbosity level (0=silent, 1=minimal, 2=detailed)
-    
-    Returns:
-        X_padded: Padded feature sequences
-        y_padded: Padded label sequences  
-        X_mask: Boolean mask array for X (True=valid, False=padded)
-        y_mask: Boolean mask array for y (True=valid, False=padded)
-        original_lengths: List of original sequence lengths
-    """
-    
-    # Get original lengths
-    original_lengths = [len(seq) for seq in X_list]
-    
-    if max_length is None:
-        max_length = max(original_lengths)
-    
-    if verbose >= 1:
-        logging.info(f"[MASK] Creating masks for {len(X_list)} sequences (length range: {min(original_lengths)}-{max(original_lengths)}, max_length={max_length})")
-    
-    # Pad sequences with zeros (any value is fine since we use explicit masks)
-    X_padded = pad_sequences(X_list, maxlen=max_length, dtype='float32', padding='post', value=0.0)
-    y_padded = pad_sequences(y_list, maxlen=max_length, dtype='int32', padding='post', value=0)
-    
-    # Create boolean mask arrays
-    X_mask = np.zeros((len(X_list), max_length), dtype=bool)
-    y_mask = np.zeros((len(y_list), max_length), dtype=bool)
-    
-    for i, length in enumerate(original_lengths):
-        X_mask[i, :length] = True
-        y_mask[i, :length] = True
-    
-    if verbose >= 1:
-        logging.info(f"[MASK] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, masks: X_mask={X_mask.shape}, y_mask={y_mask.shape}")
-    
-    return X_padded, y_padded, X_mask, y_mask, original_lengths
 
-def pad_trials(X_list, y_list, safety_factor=10, use_index_masking=False, verbose: int = 0):
-    """Robust trial padding with better mask value calculation or index-based masking."""
+
+def find_unique_mask_value(data_array, max_search=10000, verbose=0):
+    """
+    Simple systematic search for unique mask value with bidirectional search and percentile fallback.
+    
+    Parameters:
+    -----------
+    data_array : np.array
+        Array of data values
+    max_search : int
+        Maximum range to search (default: 10000)
+    verbose : int
+        Verbosity level
+        
+    Returns:
+    --------
+    float
+        Unique mask value
+    """
+    # Convert to set for fast lookup
+    data_set = set(data_array.flatten())
+    
+    # First attempt: Search upward from 0 (0, 1, 2, 3, ...)
+    if verbose >= 2:
+        logging.debug(f"[MASK SEARCH] Starting upward search from 0...")
+    
+    for candidate in range(0, max_search):
+        candidate_f32 = np.float32(candidate)
+        if candidate_f32 not in data_set:
+            if verbose >= 2:
+                logging.info(f"[MASK SEARCH] Found unique value (upward search): {candidate_f32}")
+            return candidate_f32
+    
+    # Second attempt: Search downward from -1 (-1, -2, -3, ...)
+    if verbose >= 1:
+        logging.debug(f"[MASK SEARCH] Upward search failed, trying downward from -1...")
+    
+    for candidate in range(-1, -max_search, -1):
+        candidate_f32 = np.float32(candidate)
+        if candidate_f32 not in data_set:
+            if verbose >= 2:
+                logging.info(f"[MASK SEARCH] Found unique value (downward): {candidate_f32}")
+            return candidate_f32
+    
+    # If both systematic searches fail, use percentile-based fallback
+    if verbose >= 1:
+        logging.warning(f"[MASK SEARCH] Both systematic searches failed, using percentile fallback")
+    
+    # Percentile-based fallback - go far below minimum
+    p1 = np.percentile(data_array, 1)
+    data_range = np.max(data_array) - np.min(data_array)
+    fallback_value = np.float32(p1 - 10 * data_range)
+    
+    # Ensure fallback value is unique
+    iteration = 0
+    while fallback_value in data_set and iteration < 100:
+        fallback_value = np.float32(fallback_value * 1.1 - 1000)
+        iteration += 1
+    
+    if fallback_value in data_set:
+        raise ValueError(f"Could not find unique mask value even with percentile fallback!")
+    
+    if verbose >= 2:
+        logging.info(f"[MASK SEARCH] Using percentile fallback value: {fallback_value}")
+    
+    return fallback_value
+
+
+def pad_trials(X_list, y_list, verbose: int = 0):
+    """
+    Systematic padding with unique mask values found by searching from zero.
+    
+    This implementation:
+    - Starts from 0 and searches systematically upward/downward
+    - Ensures mask values never occur in actual data
+    - Uses exact integer representation in float32/64
+    - Is safe for tf.keras.layers.Masking
+    - Provides comprehensive validation
+    """
+    if verbose >= 1:
+        logging.info(f"[PAD] Padding {len(X_list)} trials using systematic mask value search")
+    
+    # Concatenate all data for comprehensive analysis
+    all_X = np.concatenate(X_list, axis=0)
+    all_y = np.concatenate(y_list, axis=0)
     
     if verbose >= 1:
-        logging.info(f"[PAD] Padding {len(X_list)} trials (use_index_masking={use_index_masking})")
+        logging.info(f"[PAD] Analyzing combined data: X_shape={all_X.shape}, y_shape={all_y.shape}")
+        logging.info(f"[PAD] X data range: [{np.min(all_X):.6e}, {np.max(all_X):.6e}]")
+        logging.info(f"[PAD] Y unique values: {np.unique(all_y)}")
     
+    # Find unique X mask value starting from 0 and going upward
+    if verbose >= 1:
+        logging.info(f"[PAD] Searching for unique X mask value (starting from 0, upward)...")
+    X_mask = find_unique_mask_value(all_X, verbose=verbose)
     
-    if use_index_masking:
-        # Use index-based masking approach
-        return create_mask_arrays_from_lengths(X_list, y_list, verbose=verbose)
-    else:
-        # Use traditional value-based masking approach
-        all_X = np.concatenate(X_list, axis=0)
-        all_y = np.concatenate(y_list, axis=0)
-        
-        # Use percentile-based approach for extreme values
-        p1, p99 = np.percentile(all_X, [1, 99])
-        iqr = p99 - p1
-        
-        # Safe mask value
-        X_mask = p1 - safety_factor * iqr
-        y_mask = -1  # Safe for binary labels
-        
-        # Ensure mask values don't conflict
-        while np.any(all_X == X_mask):
-            X_mask -= abs(X_mask) * 0.1
-        
-        while np.any(all_y == y_mask):
-            y_mask -= 1
-        
-        # Pad sequences
-        X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
-        y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
-        
-        mask_values = {'X_mask': X_mask, 'y_mask': y_mask}
-        
-        if verbose >= 1:
-            logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, mask_values: X_mask={X_mask:.2e}, y_mask={y_mask}")
-        
-        return X_padded, y_padded, mask_values
+    # Set Y mask value to always be -1 (simple and reliable for binary labels)
+    y_mask = -1
+    if verbose >= 1:
+        logging.info(f"[PAD] Using fixed Y mask value: {y_mask}")
+    
+    # Validation: Ensure mask values are truly unique
+    X_mask_valid = not np.any(all_X == X_mask)
+    y_mask_valid = not np.any(all_y == y_mask)
+    
+    if not X_mask_valid:
+        raise ValueError(f"X_mask validation failed! {X_mask} found in data.")
+    if not y_mask_valid:
+        raise ValueError(f"y_mask validation failed! {y_mask} found in data.")
+    
+    if verbose >= 1:
+        logging.info(f"[PAD] Found valid mask values: X_mask={X_mask}, y_mask={y_mask}")
+        logging.info(f"[PAD] Mask validation: X_mask_valid={X_mask_valid}, y_mask_valid={y_mask_valid}")
+    
+    # Pad sequences with validated mask values
+    X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
+    y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
+    
+    # Final validation after padding
+    X_data_mask = X_padded != X_mask
+    y_data_mask = y_padded != y_mask
+    
+    n_X_padded = np.sum(~X_data_mask)
+    n_y_padded = np.sum(~y_data_mask)
+    
+    # Double-check: ensure no conflicts after padding
+    X_data_values = X_padded[X_data_mask]
+    if len(X_data_values) > 0 and np.any(X_data_values == X_mask):
+        raise ValueError(f"Post-padding validation failed! X_mask {X_mask} found in data values.")
+    
+    y_data_values = y_padded[y_data_mask]
+    if len(y_data_values) > 0 and np.any(y_data_values == y_mask):
+        raise ValueError(f"Post-padding validation failed! y_mask {y_mask} found in data values.")
+    
+    mask_values = {
+        'X_mask': X_mask,
+        'y_mask': y_mask,
+        'X_padded_count': n_X_padded,
+        'y_padded_count': n_y_padded,
+        'validation_passed': True
+    }
+    
+    if verbose >= 1:
+        logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, mask_values: X_mask={X_mask:.2e}, y_mask={y_mask}")
+    
+    return X_padded, y_padded, mask_values
 
 
 # ===================================================================
@@ -1481,8 +1544,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': 2}, 
-                 use_index_masking=True, callbacks=None, 
-                 experiment_dir=None, outer_fold=None, inner_fold=None,
+                 callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
@@ -1510,7 +1572,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Masking parameters
         self.mask_values = mask_values
-        self.use_index_masking = use_index_masking
         
         # Subject and fold tracking parameters
         self.experiment_dir = experiment_dir
@@ -1536,17 +1597,15 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] Architecture:")
         logging.info(f"[BUILD_MODEL] LSTM Architecture: {len(self.hidden_dims)} layers {self.hidden_dims}, dropout={self.dropout}")
         logging.info(f"[BUILD_MODEL] Activations: {self.activations}, recurrent: {self.recurrent_activations}")
-        masking_type = 'index-based' if self.use_index_masking else f'value-based (X_mask={self.mask_values["X_mask"]:.2e})'
-        logging.info(f"[BUILD_MODEL] Masking: {masking_type}")
+        logging.info(f"[BUILD_MODEL] Masking: value-based (X_mask={self.mask_values['X_mask']:.2e})")
         
         model = Sequential()
         
         # Add Input layer
         model.add(Input(shape=input_shape))
         
-        # Conditional masking layer
-        if not self.use_index_masking:
-            model.add(Masking(mask_value=self.mask_values['X_mask']))
+        # Add masking layer for value-based masking
+        model.add(Masking(mask_value=self.mask_values['X_mask']))
        
         # Add LSTM layers with dropout
         for i in range(len(self.hidden_dims)):
@@ -1592,23 +1651,16 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         return model
 
-    def fit(self, X, y, X_mask=None, y_mask=None, callbacks=None, **kwargs):
+    def fit(self, X, y, callbacks=None, **kwargs):
         """Fit the LSTM model - sklearn compatible interface.
         
         Args:
             X: Input features
             y: Target labels
-            X_mask: Input mask array (for index-based masking)
-            y_mask: Target mask array (for index-based masking)
             callbacks: Pre-created callbacks list (if None, simple defaults will be used)
             **kwargs: Additional parameters (allows GridSearchCV to pass extra params)
         """
         logging.info(f"[FIT] Training LSTM: X={X.shape}, y={y.shape}, epochs={self.epochs}, batch_size={self.batch_size}, patience={self.patience}")
-        logging.info(f"[FIT] Masks: X_mask={X_mask is not None}, y_mask={y_mask is not None}")
-
-        # Store masks for later use
-        self.X_mask_ = X_mask
-        self.y_mask_ = y_mask
         
         # Handle input shape determination and reshaping
         if len(X.shape) == 2:
@@ -1616,9 +1668,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             logging.info(f"[LSTM FIT] Reshaping 2D input to 3D for LSTM")
             self.input_shape = (1, X.shape[1])
             X = X.reshape(X.shape[0], 1, X.shape[1])
-            if X_mask is not None:
-                X_mask = X_mask.reshape(X_mask.shape[0], 1, X_mask.shape[1])
-                logging.debug(f"[FIT] Reshaped X_mask to 3D: {X_mask.shape}")
         else:
             self.input_shape = X.shape[1:]
         
@@ -1629,18 +1678,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         with strategy.scope():
             self.model = self.build_model(self.input_shape)
         
-        # Calculate class weights
-        if self.use_index_masking and y_mask is not None:
-            # Use mask array to filter valid labels
-            valid_indices = y_mask.astype(bool)
-            y_valid = y[valid_indices]
-            class_weights = compute_class_weight('balanced', classes=np.unique(y_valid), y=y_valid)
-            class_weights = dict(enumerate(class_weights))
-            self.classes_ = np.unique(y_valid)
-        else:
-            # Traditional value-based filtering
-            class_weights = self.calculate_class_weights(y)
-            self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
+        # Calculate class weights using value-based filtering
+        class_weights = self.calculate_class_weights(y)
+        self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
         
         logging.debug(f"[FIT] Class weights: {class_weights}")
 
@@ -1666,14 +1706,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[LSTM FIT] Skipping class_weight for sequence-to-sequence task to avoid shape conflicts")
         logging.info(f"[LSTM FIT] Class distribution for reference: {class_weights}") #TODO: round the values
         
-        # Add mask arrays if using index-based masking
-        if self.use_index_masking and X_mask is not None:
-            fit_kwargs['sample_weight'] = X_mask.astype(float)
-            logging.info(f"[LSTM FIT] Using sample_weight for masking with shape: {X_mask.shape}")
-        
         # Log training configuration
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
-        logging.info(f"[LSTM FIT] Number of callbacks: {len(fit_kwargs.get('callbacks', []))}")
         
         # Check if a GPU is available, else default to CPU
         if tf.config.list_physical_devices('GPU'):
@@ -1711,16 +1745,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
             y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
 
-        if self.use_index_masking:
-            # Use sample_weight as mask (1.0 for valid, 0.0 for padded)
-            if sample_weight is not None:
-                mask = tf.cast(sample_weight, tf.float32)
-            else:
-                # Fallback: assume all are valid if no sample_weight provided
-                mask = tf.ones_like(y_true, dtype=tf.float32)
-        else:
-            # Traditional value-based masking
-            mask = tf.cast(tf.not_equal(y_true, self.mask_values['y_mask']), tf.float32)
+        # Use value-based masking
+        mask = tf.cast(tf.not_equal(y_true, self.mask_values['y_mask']), tf.float32)
         
         y_true = tf.clip_by_value(y_true, 0, 1)  # Ensure y_true is between 0 and 1
 
@@ -1957,14 +1983,10 @@ def build_pipeline(model_type='lstm', mask_values=None,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
             patience=10, monitor='loss', save_models=False, progress_frequency=10)
             
-        use_index_masking = mask_values.get('use_index_masking', False) if isinstance(mask_values, dict) else False
-        logging.info(f"[BUILD_PIPELINE] Creating LSTMClassifier with use_index_masking: {use_index_masking}")
-            
         # Create the LSTM classifier with simplified configuration and subject tracking
         if mask_values:
             classifier = LSTMClassifier(
                 mask_values=mask_values,
-                use_index_masking=use_index_masking,
                 experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
                 inner_fold=inner_fold,
@@ -1976,7 +1998,6 @@ def build_pipeline(model_type='lstm', mask_values=None,
         else:
             classifier = LSTMClassifier(
                 mask_values={'X_mask': mask_values.get('X_mask', 0.0), 'y_mask': mask_values.get('y_mask', -1)},
-                use_index_masking=False,
                 experiment_dir=experiment_dir,
                 outer_fold=outer_fold,
                 inner_fold=inner_fold,
@@ -2706,25 +2727,15 @@ def main(verbose: int = 2):
     
     timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
     epoch_mapping, subject_names = parse_epoch_metadata(timeseries, verbose=verbose)
+    
     X_list, y_list, groups, trial_metadata = group_epochs_by_trial(
         TS_DataMat, labels, epoch_mapping, verbose=verbose
-    )
+    ) # X_list: List of (epochs, n_features) trial arrays
     
-    # Pad sequences - use index-based masking to avoid unique value issues
-    USE_INDEX_MASKING = False  # Change to False to use traditional value-based masking
-    
-    if USE_INDEX_MASKING:
-        X_padded, y_padded, X_mask, y_mask, original_lengths = pad_trials(
-            X_list, y_list, use_index_masking=True, verbose=verbose
-        )
-        mask_values = {'use_index_masking': True, 'X_mask': None, 'y_mask': None}
-        if verbose >= 1:
-            logging.info(f"[MAIN] Using index-based masking with sequence lengths: {min(original_lengths)}-{max(original_lengths)}")
-    else:
-        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, use_index_masking=False, verbose=verbose)
-        X_mask, y_mask = None, None
-        if verbose >= 1:
-            logging.info(f"[MAIN] Using value-based masking: {mask_values}")
+    # Pad sequences using traditional value-based masking
+    X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)
+    if verbose >= 1:
+        logging.info(f"[MAIN] Using value-based masking: {mask_values}")
     
     if verbose >= 1:
         logging.info(f"[MAIN] Final data shape: {X_padded.shape}")
