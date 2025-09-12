@@ -294,20 +294,23 @@ class HyperparameterAwareTensorBoard(TensorBoard):
         # Log hyperparameters as text summary
         if self.hyperparams:
             try:
-                with self._get_writer().as_default():
-                    # Create hyperparameter text summary
-                    hparam_text = "\n".join([f"{k}: {v}" for k, v in self.hyperparams.items()])
-                    tf.summary.text('hyperparameters', hparam_text, step=0)
-                    
-                    # Log individual hyperparameters as scalars where possible
-                    for key, value in self.hyperparams.items():
-                        clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
+                # Use self._train_writer instead of deprecated _get_writer
+                writer = getattr(self, '_train_writer', None) or getattr(self, 'writer', None)
+                if writer:
+                    with writer.as_default():
+                        # Create hyperparameter text summary
+                        hparam_text = "\n".join([f"{k}: {v}" for k, v in self.hyperparams.items()])
+                        tf.summary.text('hyperparameters', hparam_text, step=0)
                         
-                        # Log numeric hyperparameters as scalars
-                        if isinstance(value, (int, float)):
-                            tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
-                        elif isinstance(value, bool):
-                            tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
+                        # Log individual hyperparameters as scalars where possible
+                        for key, value in self.hyperparams.items():
+                            clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
+                            
+                            # Log numeric hyperparameters as scalars
+                            if isinstance(value, (int, float)):
+                                tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
+                            elif isinstance(value, bool):
+                                tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
                             
             except Exception as e:
                 logging.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
@@ -531,7 +534,8 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
-                               patience=10, monitor='loss', save_models=False, progress_frequency=10):
+                               patience=10, monitor='loss', save_models=False, progress_frequency=10,
+                               has_validation_data=False):
     """
     Create callbacks for nested cross-validation training.
     
@@ -559,6 +563,16 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     )
     unique_id = paths['unique_id']
     
+    # Adaptive monitor selection based on validation data availability
+    if has_validation_data:
+        # Use validation loss when validation data is available (inner CV)
+        effective_monitor = 'val_loss' if 'loss' in monitor else f'val_{monitor}'
+        logging.info(f"[CALLBACKS] Using validation monitor: {effective_monitor} (validation data available)")
+    else:
+        # Use training loss when no validation data (final retraining)
+        effective_monitor = monitor
+        logging.info(f"[CALLBACKS] Using training monitor: {effective_monitor} (no validation data)")
+    
     callbacks = [
         # Progress training logger
         ProgressTrainingLogger(
@@ -578,20 +592,20 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         
         # Early stopping
         EarlyStopping(
-            monitor=monitor,
+            monitor=effective_monitor,
             patience=patience,
             restore_best_weights=True,
             verbose=1,
-            mode='min' if 'loss' in monitor else 'max'
+            mode='min' if 'loss' in effective_monitor else 'max'
         ), 
         
         # Learning rate reduction
         ReduceLROnPlateau(
-            monitor=monitor,
+            monitor=effective_monitor,
             factor=0.5,
             patience=patience//2,
             verbose=1,
-            mode='min' if 'loss' in monitor else 'max',
+            mode='min' if 'loss' in effective_monitor else 'max',
             min_lr=1e-7
         ), 
         
@@ -1308,6 +1322,34 @@ class MaskedROC_AUC(tf.keras.metrics.AUC):
         super().update_state(y_true_masked, y_pred_clipped, sample_weight)
 
 
+class MaskedPR_AUC(tf.keras.metrics.AUC):
+    """
+    Masked Precision-Recall Area Under Curve metric.
+    Computes PR AUC while ignoring masked/padded values in sequences.
+    """
+    def __init__(self, y_mask_value=2, name='masked_pr_auc', **kwargs):
+        # Initialize AUC with curve='PR' for Precision-Recall curve
+        super(MaskedPR_AUC, self).__init__(name=name, curve='PR', **kwargs)
+        self.y_mask_value = y_mask_value
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
+        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
+            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
+            
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_clipped = tf.clip_by_value(y_pred, 0, 1)
+
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+
+        super().update_state(y_true_masked, y_pred_clipped, sample_weight)
+
+
 
 # ===================================================================
 # MASK-AWARE SCALER SECTION
@@ -1373,7 +1415,7 @@ class MaskAwareScaler(BaseEstimator, TransformerMixin):
 # ===================================================================
 # ADVANCED FEATURE SELECTION SECTION
 # ===================================================================
-class AdvancedFeatureSelector(BaseEstimator, TransformerMixin):
+class FeatureSelector(BaseEstimator, TransformerMixin):
     """
     Advanced feature selection pipeline with multiple criteria.
     """
@@ -1736,7 +1778,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                           MaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
                           MaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
                           MaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
-                          MaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc')
+                          MaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
+                          MaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
                     ])
 
         logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
@@ -1746,13 +1789,14 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         return model
 
-    def fit(self, X, y, callbacks=None, **kwargs):
+    def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
         """Fit the LSTM model - sklearn compatible interface.
         
         Args:
             X: Input features
             y: Target labels
             callbacks: Pre-created callbacks list (if None, simple defaults will be used)
+            validation_data: Optional (X_val, y_val) tuple for validation monitoring
             **kwargs: Additional parameters (allows GridSearchCV to pass extra params)
         """
         logging.info(f"[FIT] Training LSTM: X={X.shape}, y={y.shape}, epochs={self.epochs}, batch_size={self.batch_size}, patience={self.patience}")
@@ -1795,6 +1839,20 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             # 'class_weight': class_weights,  # NOTE: excluded for sequence-to-sequence tasks to prevent shape mismatch          
         }
         
+        # Check for validation data (either passed directly or stored as attribute)
+        validation_data_to_use = validation_data or getattr(self, '_validation_data', None)
+        
+        if validation_data_to_use is not None:
+            X_val, y_val = validation_data_to_use
+            # Handle reshaping for validation data consistency
+            if len(X_val.shape) == 2 and self.input_shape is not None:
+                if self.input_shape[0] == 1:  # Was reshaped during training
+                    X_val = X_val.reshape(X_val.shape[0], 1, X_val.shape[1])
+            fit_kwargs['validation_data'] = (X_val, y_val)
+            logging.info(f"[LSTM FIT] Using validation data: X_val={X_val.shape}, y_val={y_val.shape}")
+        else:
+            logging.info(f"[LSTM FIT] No validation data provided - training only")
+        
         # For sequence-to-sequence tasks (TimeDistributed output), class_weight causes shape conflicts
         # Class balancing should be handled in the custom loss function instead
         # TODO: Implement class balancing in the masked loss function if needed
@@ -1804,23 +1862,31 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         # Log training configuration
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
         
-        # Check if a GPU is available, else default to CPU
+        # Try GPU training first, fallback to CPU if validation data causes issues
         if tf.config.list_physical_devices('GPU'):
             logging.info("Training on GPU")
-            with tf.device('/device:GPU:0'):
-                try:
+            try:
+                with tf.device('/device:GPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[LSTM FIT] Training completed successfully. Epochs trained: {len(history.get('loss', []))}")
-                except Exception as e:
-                    logging.error(f"[LSTM FIT] GPU training failed: {e}")
-                    logging.info("[LSTM FIT] Falling back to CPU training")
+                    logging.info(f"[LSTM FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}")
+            except Exception as e:
+                logging.warning(f"[LSTM FIT] GPU training failed (likely MPS validation data shapes): {e}")
+                logging.info("[LSTM FIT] Falling back to CPU training")
+                with tf.device('/CPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
+                    logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
         else:
             logging.info("Training on CPU")
-            history = self.model.fit(X, y, **fit_kwargs).history
+            with tf.device('/CPU:0'):
+                history = self.model.fit(X, y, **fit_kwargs).history
+                logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
         
         # Store the training history for each fold (for backward compatibility)
         self.history_.append(history)
+        
+        # Clear validation data after training to prevent issues
+        if hasattr(self, '_validation_data'):
+            delattr(self, '_validation_data')
         
         return self
     
@@ -2007,12 +2073,59 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         mask = y_true != y_mask_val
         return confusion_matrix(y_true[mask], y_pred[mask])
 
+    @staticmethod
+    def masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
+        """
+        Calculate PR AUC with masking support for sequence data.
+        
+        Args:
+            y_true: True labels (2D or flattened)
+            y_pred_proba: Predicted probabilities (should be 2D: [n_samples, n_classes])
+            y_mask_val: Value representing masked/padded positions
+            
+        Returns:
+            float: PR AUC score for valid (non-masked) positions
+        """
+        from sklearn.metrics import average_precision_score
+        
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        
+        # Handle probability array - ensure it's 2D
+        if y_pred_proba.ndim == 1:
+            # Convert to 2D probability matrix for binary classification
+            y_pred_proba_2d = np.column_stack([1 - y_pred_proba, y_pred_proba])
+        else:
+            y_pred_proba_2d = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+        
+        # Create mask for valid positions
+        mask = y_true_flat != y_mask_val
+        
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+            
+        # Get valid data
+        y_true_valid = y_true_flat[mask]
+        y_pred_proba_valid = y_pred_proba_2d[mask]
+        
+        # Check if we have at least 2 classes
+        valid_classes = np.unique(y_true_valid)
+        if len(valid_classes) < 2:
+            return 0.0
+        
+        # For multi-class, use weighted average
+        if len(valid_classes) > 2:
+            return average_precision_score(y_true_valid, y_pred_proba_valid, average='weighted')
+        else:
+            # Binary classification - use positive class probability
+            return average_precision_score(y_true_valid, y_pred_proba_valid[:, 1])
+
 
 # # ======================
 def build_pipeline(model_type='lstm', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
-                   params=None):
+                   params=None, has_validation_data=False):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -2040,7 +2153,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    selector = AdvancedFeatureSelector(x_mask_value=mask_values.get('X_mask', 0.0))
+    selector = FeatureSelector(x_mask_value=mask_values.get('X_mask', 0.0))
     steps.append(('feature_selector', selector))
     
     # Scaling step (mask-aware for LSTM)
@@ -2076,7 +2189,8 @@ def build_pipeline(model_type='lstm', mask_values=None,
         callbacks = create_nested_cv_callbacks(
             experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
-            patience=10, monitor='loss', save_models=False, progress_frequency=10)
+            patience=10, monitor='loss', save_models=False, progress_frequency=10,
+            has_validation_data=has_validation_data)
             
         # Create the LSTM classifier with simplified configuration and subject tracking
         if mask_values:
@@ -2131,8 +2245,30 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 ),
                 greater_is_better=True
             ),
+            'precision': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_precision_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),
+            'recall': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_recall_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),
             'auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.masked_roc_auc_score(
+                    y_true, y_pred_proba, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                needs_proba=True,
+                greater_is_better=True
+            ),
+            'pr_auc': make_scorer(
+                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.masked_pr_auc_score(
                     y_true, y_pred_proba, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
@@ -2149,9 +2285,13 @@ def build_pipeline(model_type='lstm', mask_values=None,
         }
     else:
         # Standard sklearn scoring functions for non-LSTM models
+        from sklearn.metrics import average_precision_score, precision_score, recall_score
         scoring_functions = {
             'f1': make_scorer(f1_score, average='weighted'),
+            'precision': make_scorer(precision_score, average='weighted'),
+            'recall': make_scorer(recall_score, average='weighted'),
             'auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
+            'pr_auc': make_scorer(average_precision_score, needs_proba=True, average='weighted'),
             'accuracy': make_scorer(accuracy_score)
         }
     
@@ -2177,36 +2317,117 @@ def get_default_param_grid(model_type, mask_values=None):
     
     param_grid = {}
     
-    # Feature selection parameters (always use advanced feature selection)
+    # Feature selection parameters - HCTSA-specific feature engineering
     param_grid.update({
-        'feature_selector__n_features': [50], # 100, 150],
-        'feature_selector__variance_threshold': [0.001], # 0.01, 0.1],
-        'feature_selector__correlation_threshold': [0.9], # 0.95, 0.99]
+        'feature_selector__n_features': [
+            # 50,     # Minimal: Top 50 most informative features (fast training, risk of underfitting)
+            # 75,     # Moderate: Good balance between info retention and noise reduction
+            # 100,    # Standard: Comprehensive set for most datasets (baseline choice)
+            150,    # Rich: Maximum info retention for complex patterns (current: best for HCTSA diversity)
+        ],
+        'feature_selector__variance_threshold': [
+            # 0.001,  # Strict: Removes near-constant features aggressively (may lose subtle patterns)
+            0.01,   # Moderate: Balanced noise filtering (current: good for HCTSA feature scales)
+            # 0.1,    # Lenient: Keeps more features with low variance (risk of noise inclusion)
+        ],
+        'feature_selector__correlation_threshold': [
+            0.85,   # Strict: Aggressive redundancy removal (current: prevents multicollinearity issues)
+            # 0.90,   # Moderate: Standard correlation filtering (balanced approach)
+            # 0.95,   # Lenient: Minimal correlation filtering (keeps complementary info)
+        ]
     })
     
-    # Scaling parameters (for mask-aware models)
+    # Scaling parameters - Critical for HCTSA's heterogeneous feature distributions
     if model_type == 'lstm':
         param_grid.update({
-            'scaler__scaler_type': ['standard'], # 'robust']
+            'scaler__scaler_type': [
+                'robust',   # Robust scaler: Uses median/IQR, best for HCTSA outliers (current choice)
+                # 'standard', # Standard scaler: Mean/std normalization, assumes Gaussian distribution
+                # 'minmax',   # MinMax scaler: [0,1] bounded scaling, good for sigmoid activations
+            ]
         })
     
     # Model-specific parameters
     if model_type == 'lstm':
         logging.info(f"[PARAM_GRID] Creating LSTM parameter grid")
         lstm_params = {
-            'classifier__hidden_dims': [[32, 32]],
-            'classifier__activations': [['tanh', 'relu']],
-            'classifier__recurrent_activations': [['sigmoid', 'hard_sigmoid']],
-            'classifier__dropout': [0.2],
-            'classifier__dense_units': [1], # n_windows
-            'classifier__dense_activation': ['sigmoid'],
-            'classifier__optimizer': ['adam'],
-            'classifier__lr': [0.001],
-            'classifier__patience': [10],
-            'classifier__epochs': [2, 3],
-            'classifier__batch_size': [64], #. Number of Batches = ceil(Number of Samples / Batch Size)
-            'classifier__threshold': [0.5],
-            'classifier__loss': ['binary_crossentropy'],
+            # Network Architecture - Layer configuration for temporal pattern learning
+            'classifier__hidden_dims': [
+                # [64, 32],           # Funnel: Feature extraction → refinement (good for noise reduction)
+                [128, 64],          # Large-to-medium: Max capacity for complex temporal patterns (current)
+                # [64, 64, 32],       # Deep funnel: Multi-level hierarchical learning (3-layer depth)
+                # [32, 64, 32],       # Hourglass: Compression → expansion → compression (bottleneck learning)
+            ],
+            
+            # Activation Functions - Non-linearity for different learning phases
+            'classifier__activations': [
+                ['tanh', 'relu'],       # Smooth-to-sharp: Tanh captures subtle patterns, ReLU for sparse features (current)
+                # ['relu', 'tanh'],       # Sharp-to-smooth: ReLU for early features, tanh for refined output
+                # ['swish', 'relu'],      # Modern combo: Self-gated smooth + standard sharp (EfficientNet style)
+                # ['gelu', 'tanh'],       # BERT-inspired: Gaussian error + hyperbolic tangent (NLP-proven)
+            ],
+            
+            # Recurrent Activations - Gate control mechanisms for memory flow
+            'classifier__recurrent_activations': [
+                # ['sigmoid', 'hard_sigmoid'],    # Standard: Smooth gating → fast approximation
+                ['tanh', 'sigmoid'],            # Expressive: Full range gating → standard sigmoid (current)
+                # ['hard_sigmoid', 'sigmoid'],    # Efficient: Fast approximation → standard (speed optimized)
+            ],
+            
+            # Dropout Regularization - Overfitting prevention for sequence learning
+            'classifier__dropout': [
+                # 0.1,    # Light: Minimal regularization for small/clean datasets
+                0.2,    # Moderate: Balanced regularization for most cases (current: good baseline)
+                # 0.3,    # Strong: Heavy regularization for complex models prone to overfitting
+                # 0.4,    # Very strong: Maximum regularization for very complex/noisy data
+            ],
+            # Output Layer Configuration - Final classification head
+            'classifier__dense_units': [1],           # Single output for binary classification
+            'classifier__dense_activation': ['sigmoid'],  # Sigmoid for probability output [0,1]
+            
+            # Optimization Strategy - Gradient-based learning algorithm
+            'classifier__optimizer': [
+                'adam',         # Adam: Adaptive moments, excellent default for most cases (current choice)
+                # 'adamw',        # AdamW: Adam with weight decay, better generalization, SOTA for transformers
+                # 'rmsprop',      # RMSprop: Root mean square prop, specifically good for RNNs, handles vanishing gradients
+            ],
+            
+            # Learning Rate - Step size for gradient updates (critical hyperparameter)
+            'classifier__lr': [
+                # 0.0005,     # Conservative: Slower convergence but more stable, good for complex losses
+                0.001,      # Balanced: Standard choice, good convergence vs stability trade-off (current)
+                # 0.002,      # Aggressive: Faster convergence but risk of overshooting minima
+                # 0.0001,     # Very conservative: Fine-tuning rate, good for transfer learning
+            ],
+            
+            # Early Stopping Configuration - Convergence and overfitting control
+            'classifier__patience': [
+                # 15,     # Moderate patience: Good balance between training time and performance
+                20,     # High patience: Extensive search for optimal performance (current: thorough training)
+                # 10,     # Standard patience: Faster training, may stop too early for complex patterns
+            ],
+            'classifier__epochs': [
+                # 150,    # Extended: More learning opportunities for complex patterns
+                100,    # Long training: Maximum learning for intricate temporal dependencies (current)
+                # 120,    # Baseline: Standard training duration for most LSTM tasks
+            ],
+            
+            # Batch Size - Memory efficiency vs gradient quality trade-off
+            'classifier__batch_size': [
+                16,     # Small batches: Noisy gradients promote generalization, better for small datasets (current)
+                # 32,     # Medium batches: Balanced approach, good for most scenarios
+                # 64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
+            ],
+            
+            # Classification Decision Boundary - CRITICAL: Should reflect class balance and costs
+            'classifier__threshold': [
+                0.5,    # Standard: Assumes balanced classes (50/50 split)
+                # 0.3,    # Lower: Favor positive class (use when positive class is minority)
+                # 0.7,    # Higher: Favor negative class (use when negative class is minority)
+                # 0.4,    # Slight bias toward positive class
+                # 0.6,    # Slight bias toward negative class
+            ],
+            'classifier__loss': ['binary_crossentropy'],       # BCE: Standard loss for binary classification with sigmoid
         }
         param_grid.update(lstm_params)
         
@@ -2473,15 +2694,52 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         inner_fold=inner_fold + 1,
                         outer_test_subject=test_subject_name,
                         inner_validation_subject=val_subject_name,
-                        params=params
+                        params=params,
+                        has_validation_data=True  # Enable validation data monitoring
                     )
                     inner_pipeline.set_params(**params)
                     
-                    # Step 7: Fit and evaluate pipeline
+                    # Step 7: Fit and evaluate pipeline with proper validation data handling
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
-                        # For LSTM, use 3D data
-                        inner_pipeline.fit(X_inner_train, y_inner_train)
-                        y_val_pred = inner_pipeline.predict(X_inner_val)
+                        # Implement proper pipeline-aware validation data handling
+                        if verbose >= 2:
+                            logging.info(f"[CV_INNER_PAD]     Training with pipeline-aware validation data")
+                        
+                        # Step 7a: Fit pipeline preprocessing steps (feature selection + scaling) on training data only
+                        # This ensures no data leakage from validation data into preprocessing
+                        preprocessing_steps = inner_pipeline.steps[:-1]  # All steps except classifier
+                        
+                        # Apply preprocessing pipeline to training data
+                        X_train_transformed = X_inner_train
+                        for step_name, transformer in preprocessing_steps:
+                            if verbose >= 2:
+                                logging.info(f"[CV_INNER_PAD]       Fitting {step_name} on training data: {X_train_transformed.shape}")
+                            transformer.fit(X_train_transformed, y_inner_train)
+                            X_train_transformed = transformer.transform(X_train_transformed)
+                            if verbose >= 2:
+                                logging.info(f"[CV_INNER_PAD]       After {step_name}: {X_train_transformed.shape}")
+                        
+                        # Step 7b: Transform validation data using fitted preprocessing pipeline
+                        X_val_transformed = X_inner_val
+                        for step_name, transformer in preprocessing_steps:
+                            X_val_transformed = transformer.transform(X_val_transformed)
+                            if verbose >= 2:
+                                logging.info(f"[CV_INNER_PAD]       Transformed validation through {step_name}: {X_val_transformed.shape}")
+                        
+                        # Step 7c: Fit LSTM classifier with validation data
+                        lstm_classifier = inner_pipeline.steps[-1][1]  # Get the classifier
+                        
+                        # Set validation data for the LSTM classifier
+                        lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
+                        
+                        if verbose >= 2:
+                            logging.info(f"[CV_INNER_PAD]       Training LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                        
+                        # Fit the LSTM classifier with validation monitoring
+                        lstm_classifier.fit(X_train_transformed, y_inner_train)
+                        
+                        # Step 7d: Evaluate on validation data
+                        y_val_pred = lstm_classifier.predict(X_val_transformed)
                         
                         # Calculate masked score for LSTM
                         if inner_mask_values and 'y_mask' in inner_mask_values:
@@ -2510,6 +2768,16 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                     
                     if verbose >= 2:
                         logging.info(f"[CV_INNER_PAD]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                    
+                    # Memory cleanup for inner fold
+                    if model_type == 'lstm':
+                        lstm_classifier = inner_pipeline.named_steps['classifier']
+                        if hasattr(lstm_classifier, 'model') and lstm_classifier.model is not None:
+                            del lstm_classifier.model
+                        import tensorflow as tf
+                        tf.keras.backend.clear_session()
+                        import gc
+                        gc.collect()
                 
                 except Exception as e:
                     if verbose >= 1:
@@ -2583,17 +2851,43 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 outer_fold=outer_fold + 1,
                 inner_fold=None,
                 outer_test_subject=test_subject_name,
-                inner_validation_subject=None
+                inner_validation_subject=None,
+                has_validation_data=True  # Use test set for validation monitoring during final training
             )
             final_pipeline.set_params(**best_params)
             
-            # Train on full outer training set
+            # Train on full outer training set with test set as validation for early stopping
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
-                final_pipeline.fit(X_outer_train, y_outer_train)
+                # Apply pipeline-aware validation data handling for final training
+                if verbose >= 1:
+                    logging.info(f"[CV_INNER_PAD] Final training with test set as validation data for early stopping")
                 
-                # Test on held-out subject
-                y_test_pred = final_pipeline.predict(X_outer_test)
-                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
+                # Fit preprocessing steps on training data only
+                preprocessing_steps = final_pipeline.steps[:-1]
+                
+                X_train_final = X_outer_train
+                for step_name, transformer in preprocessing_steps:
+                    transformer.fit(X_train_final, y_outer_train)
+                    X_train_final = transformer.transform(X_train_final)
+                
+                # Transform test data using fitted preprocessing pipeline  
+                X_test_final = X_outer_test
+                for step_name, transformer in preprocessing_steps:
+                    X_test_final = transformer.transform(X_test_final)
+                
+                # Set validation data for LSTM classifier (test set for early stopping)
+                lstm_classifier = final_pipeline.steps[-1][1]
+                lstm_classifier._validation_data = (X_test_final, y_outer_test)
+                
+                if verbose >= 1:
+                    logging.info(f"[CV_INNER_PAD] Final training: train={X_train_final.shape}, test_as_val={X_test_final.shape}")
+                
+                # Fit the LSTM classifier with test set validation monitoring
+                lstm_classifier.fit(X_train_final, y_outer_train)
+                
+                # Get predictions from transformed test data
+                y_test_pred = lstm_classifier.predict(X_test_final)
+                y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
                 
                 # Calculate test metrics for LSTM
                 if outer_mask_values and 'y_mask' in outer_mask_values:
