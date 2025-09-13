@@ -1178,9 +1178,10 @@ def pad_fold_data(X_train_list, y_train_list, X_test_list, y_test_list, verbose:
 # LSTM CLASSIFIER AND RELATED CLASSES
 # ===================================================================
 
-class MaskedAccuracy(tf.keras.metrics.Metric):
-    def __init__(self, y_mask_value=2, name='masked_accuracy', **kwargs):
-        super(MaskedAccuracy, self).__init__(name=name, **kwargs)
+class MonitoringMaskedAccuracy(tf.keras.metrics.Metric):
+    """Real-time masked accuracy monitoring metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_accuracy', **kwargs):
+        super(MonitoringMaskedAccuracy, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.total = self.add_weight(name='total', initializer='zeros')
         self.count = self.add_weight(name='count', initializer='zeros')
@@ -1206,9 +1207,10 @@ class MaskedAccuracy(tf.keras.metrics.Metric):
         self.total.assign(0)
         self.count.assign(0)
         
-class MaskedF1Score(tf.keras.metrics.Metric):
-    def __init__(self, y_mask_value=2, name='masked_f1_score', **kwargs):
-        super(MaskedF1Score, self).__init__(name=name, **kwargs)
+class MonitoringMaskedF1Score(tf.keras.metrics.Metric):
+    """Real-time masked F1 score monitoring metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_f1_score', **kwargs):
+        super(MonitoringMaskedF1Score, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
@@ -1243,9 +1245,10 @@ class MaskedF1Score(tf.keras.metrics.Metric):
         self.fp.assign(0)
         self.fn.assign(0)
             
-class MaskedPrecision(tf.keras.metrics.Metric):
-    def __init__(self, y_mask_value=2, name='masked_precision', **kwargs):
-        super(MaskedPrecision, self).__init__(name=name, **kwargs)
+class MonitoringMaskedPrecision(tf.keras.metrics.Metric):
+    """Real-time masked precision monitoring metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_precision', **kwargs):
+        super(MonitoringMaskedPrecision, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
@@ -1272,9 +1275,10 @@ class MaskedPrecision(tf.keras.metrics.Metric):
         self.tp.assign(0.0)
         self.fp.assign(0.0)
         
-class MaskedRecall(tf.keras.metrics.Metric):
-    def __init__(self, y_mask_value=2, name='masked_recall', **kwargs):
-        super(MaskedRecall, self).__init__(name=name, **kwargs)
+class MonitoringMaskedRecall(tf.keras.metrics.Metric):
+    """Real-time masked recall monitoring metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_recall', **kwargs):
+        super(MonitoringMaskedRecall, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
         self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
@@ -1300,9 +1304,10 @@ class MaskedRecall(tf.keras.metrics.Metric):
         self.tp.assign(0.0)
         self.fn.assign(0.0)
         
-class MaskedROC_AUC(tf.keras.metrics.AUC):
-    def __init__(self, y_mask_value=2, name='masked_auc', **kwargs):
-        super(MaskedROC_AUC, self).__init__(name=name, **kwargs)
+class MonitoringMaskedROC_AUC(tf.keras.metrics.AUC):
+    """Real-time masked ROC AUC monitoring metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_roc_auc', **kwargs):
+        super(MonitoringMaskedROC_AUC, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
 
     def update_state(self, y_true, y_pred, sample_weight=None):
@@ -1322,14 +1327,14 @@ class MaskedROC_AUC(tf.keras.metrics.AUC):
         super().update_state(y_true_masked, y_pred_clipped, sample_weight)
 
 
-class MaskedPR_AUC(tf.keras.metrics.AUC):
+class MonitoringMaskedPR_AUC(tf.keras.metrics.AUC):
     """
-    Masked Precision-Recall Area Under Curve metric.
+    Real-time masked Precision-Recall Area Under Curve monitoring metric for TensorFlow/Keras models.
     Computes PR AUC while ignoring masked/padded values in sequences.
     """
-    def __init__(self, y_mask_value=2, name='masked_pr_auc', **kwargs):
+    def __init__(self, y_mask_value=2, name='monitoring_masked_pr_auc', **kwargs):
         # Initialize AUC with curve='PR' for Precision-Recall curve
-        super(MaskedPR_AUC, self).__init__(name=name, curve='PR', **kwargs)
+        super(MonitoringMaskedPR_AUC, self).__init__(name=name, curve='PR', **kwargs)
         self.y_mask_value = y_mask_value
 
     def update_state(self, y_true, y_pred, sample_weight=None):
@@ -1774,12 +1779,12 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         model.compile(optimizer=optimizer,
                       loss=self.masked_loss_binary_crossentropy,
                       metrics=[
-                          MaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
-                          MaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
-                          MaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
-                          MaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
-                          MaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
-                          MaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
+                          MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
+                          MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
+                          MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
+                          MonitoringMaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
+                          MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
+                          MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
                     ])
 
         logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
@@ -2002,7 +2007,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return lr
     
     @staticmethod
-    def masked_accuracy_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_accuracy_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked accuracy score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
         y_pred_flat = y_pred.ravel()
@@ -2012,7 +2018,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
 
     @staticmethod
-    def masked_f1_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_f1_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked F1 score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
         y_pred_flat = y_pred.ravel()
@@ -2025,7 +2032,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return f1_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
-    def masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=2):
+    def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=2):
+        """Evaluation-time masked ROC AUC score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
         y_pred_proba_flat = y_pred_proba.ravel()
@@ -2038,7 +2046,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
     
     @staticmethod
-    def masked_precision_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_precision_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked precision score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
         y_pred_flat = y_pred.ravel()
@@ -2051,7 +2060,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return precision_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
-    def masked_recall_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_recall_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked recall score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
         y_pred_flat = y_pred.ravel()
@@ -2074,8 +2084,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return confusion_matrix(y_true[mask], y_pred[mask])
 
     @staticmethod
-    def masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
+    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
         """
+        Evaluation-time masked PR AUC score for sklearn compatibility.
         Calculate PR AUC with masking support for sequence data.
         
         Args:
@@ -2239,28 +2250,28 @@ def build_pipeline(model_type='lstm', mask_values=None,
         logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
         scoring_functions = {
             'f1': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_f1_score(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_f1_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
             ),
             'precision': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_precision_score(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_precision_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
             ),
             'recall': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_recall_score(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_recall_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
             ),
             'auc': make_scorer(
-                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.masked_roc_auc_score(
+                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_roc_auc_score(
                     y_true, y_pred_proba, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
@@ -2268,7 +2279,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 greater_is_better=True
             ),
             'pr_auc': make_scorer(
-                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.masked_pr_auc_score(
+                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_pr_auc_score(
                     y_true, y_pred_proba, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
@@ -2276,7 +2287,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 greater_is_better=True
             ),
             'accuracy': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.masked_accuracy_score(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_accuracy_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
@@ -2408,15 +2419,15 @@ def get_default_param_grid(model_type, mask_values=None):
             ],
             'classifier__epochs': [
                 # 150,    # Extended: More learning opportunities for complex patterns
-                100,    # Long training: Maximum learning for intricate temporal dependencies (current)
+                2, 3,    # Long training: Maximum learning for intricate temporal dependencies (current)
                 # 120,    # Baseline: Standard training duration for most LSTM tasks
             ],
             
             # Batch Size - Memory efficiency vs gradient quality trade-off
             'classifier__batch_size': [
-                16,     # Small batches: Noisy gradients promote generalization, better for small datasets (current)
+                # 16,     # Small batches: Noisy gradients promote generalization, better for small datasets (current)
                 # 32,     # Medium batches: Balanced approach, good for most scenarios
-                # 64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
+                64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
             ],
             
             # Classification Decision Boundary - CRITICAL: Should reflect class balance and costs
@@ -2558,6 +2569,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
         # Storage for hyperparameter evaluation
         param_scores = []
         param_features = []
+        param_all_metrics = []  # Storage for all metrics across parameter combinations
         
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
@@ -2567,6 +2579,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             # Storage for this parameter combination
             inner_scores = []
             inner_selected_features = []
+            inner_all_metrics = []  # Storage for all metrics across inner folds
             
             # Inner CV loop for this parameter combination
             for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
@@ -2596,7 +2609,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         logging.info(f"[CV_INNER_PAD]     Inner padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={inner_mask_values['max_length']}")
                     
                     # Step 6: Create pipeline with inner-fold specific mask values
-                    inner_pipeline, _ = build_pipeline(
+                    inner_pipeline, scoring_functions = build_pipeline(
                         model_type=model_type,
                         mask_values=inner_mask_values,  # Use inner-fold specific mask values
                         experiment_dir=experiment_dir,  
@@ -2648,16 +2661,48 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         # Fit the LSTM classifier with validation monitoring
                         lstm_classifier.fit(X_train_transformed, y_inner_train)
                         
-                        # Step 7d: Evaluate on validation data
+                        # Step 7d: Evaluate on validation data using multi-metric evaluation
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
+                        y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
                         
-                        # Calculate masked score for LSTM
-                        if inner_mask_values and 'y_mask' in inner_mask_values:
-                            y_mask_val = inner_mask_values['y_mask']
-                            score = LSTMClassifier.masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
-                        else:
-                            from sklearn.metrics import f1_score
-                            score = f1_score(y_inner_val.ravel(), y_val_pred.ravel(), average='weighted')
+                        # Multi-metric evaluation using scoring functions
+                        fold_scores = {}
+                        for metric_name, scorer in scoring_functions.items():
+                            try:
+                                # Check if scorer needs probabilities by examining metric name or scorer attributes
+                                needs_proba = (
+                                    'auc' in metric_name.lower() or 
+                                    'roc' in metric_name.lower() or 
+                                    hasattr(scorer, '_needs_proba') and scorer._needs_proba or
+                                    hasattr(scorer, '_kwargs') and scorer._kwargs.get('needs_proba', False)
+                                )
+                                
+                                if needs_proba:
+                                    # For metrics that need probabilities (AUC, PR-AUC)
+                                    if len(y_val_proba.shape) == 2 and y_val_proba.shape[1] == 2:
+                                        # Standard binary classification probabilities
+                                        fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_proba[:, 1].ravel())
+                                    else:
+                                        # Sequence-to-sequence case - use direct scoring function
+                                        if hasattr(scorer._score_func, '__name__') and 'masked' in scorer._score_func.__name__:
+                                            fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_proba, inner_mask_values.get('y_mask', -1))
+                                        else:
+                                            # Fallback to flattened approach
+                                            fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_proba.ravel())
+                                else:
+                                    # For metrics that need predictions (F1, precision, recall, accuracy)
+                                    if hasattr(scorer._score_func, '__name__') and 'masked' in scorer._score_func.__name__:
+                                        fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_pred, inner_mask_values.get('y_mask', -1))
+                                    else:
+                                        fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_pred.ravel())
+                            except Exception as e:
+                                if verbose >= 1:
+                                    logging.warning(f"[CV_INNER_PAD]       Failed to calculate {metric_name}: {e}")
+                                fold_scores[metric_name] = 0.0
+                        
+                        # Primary score for hyperparameter selection (F1)
+                        score = fold_scores.get('f1', 0.0)
+                        
                     else:
                         # For other models, flatten to 2D
                         X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
@@ -2665,19 +2710,44 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         
                         inner_pipeline.fit(X_inner_train_2d, y_inner_train)
                         y_val_pred = inner_pipeline.predict(X_inner_val_2d)
+                        y_val_proba = inner_pipeline.predict_proba(X_inner_val_2d)
                         
-                        from sklearn.metrics import f1_score
-                        score = f1_score(y_inner_val, y_val_pred, average='weighted')
+                        # Multi-metric evaluation for non-LSTM models
+                        fold_scores = {}
+                        for metric_name, scorer in scoring_functions.items():
+                            try:
+                                # Check if scorer needs probabilities by examining metric name or scorer attributes
+                                needs_proba = (
+                                    'auc' in metric_name.lower() or 
+                                    'roc' in metric_name.lower() or 
+                                    hasattr(scorer, '_needs_proba') and scorer._needs_proba or
+                                    hasattr(scorer, '_kwargs') and scorer._kwargs.get('needs_proba', False)
+                                )
+                                
+                                if needs_proba:
+                                    fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_proba[:, 1])
+                                else:
+                                    fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_pred)
+                            except Exception as e:
+                                if verbose >= 1:
+                                    logging.warning(f"[CV_INNER_PAD]       Failed to calculate {metric_name}: {e}")
+                                fold_scores[metric_name] = 0.0
+                        
+                        # Primary score for hyperparameter selection (F1)
+                        score = fold_scores.get('f1', 0.0)
                     
                     inner_scores.append(score)
+                    inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
                     
                     # Store selected features from this inner fold
                     if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
                         selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
                         inner_selected_features.append(selected_features)
                     
+                    # Enhanced logging with multiple metrics
                     if verbose >= 2:
-                        logging.info(f"[CV_INNER_PAD]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                        metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in fold_scores.items()])
+                        logging.info(f"[CV_INNER_PAD]     Scores: {metrics_str}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
                     
                     # Memory cleanup for inner fold
                     if model_type == 'lstm':
@@ -2694,10 +2764,31 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         logging.warning(f"[CV_INNER_PAD]     Inner fold {inner_fold + 1} failed: {e}")
                     inner_scores.append(0.0)  # Penalty for failed folds
                     inner_selected_features.append([])
+                    inner_all_metrics.append({})  # Add empty metrics for failed folds
             
             # Compute average validation score for this parameter combination
             avg_score = np.mean(inner_scores) if inner_scores else 0.0
             param_scores.append(avg_score)
+            
+            # Aggregate multi-metric results across inner folds
+            if inner_all_metrics:
+                aggregated_metrics = {}
+                # Get all unique metric names from successful folds
+                all_metric_names = set()
+                for fold_metrics in inner_all_metrics:
+                    all_metric_names.update(fold_metrics.keys())
+                
+                for metric_name in all_metric_names:
+                    metric_values = [fold_metrics.get(metric_name, 0.0) for fold_metrics in inner_all_metrics if fold_metrics]
+                    if metric_values:  # Only aggregate if we have values
+                        aggregated_metrics[metric_name] = {
+                            'mean': np.mean(metric_values),
+                            'std': np.std(metric_values),
+                            'values': metric_values
+                        }
+                param_all_metrics.append(aggregated_metrics)
+            else:
+                param_all_metrics.append({})
             
             # Aggregate selected features across inner folds
             if inner_selected_features:
@@ -2718,8 +2809,16 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             
             param_features.append(aggregated_features)
             
+            # Enhanced parameter summary with all metrics
             if verbose >= 1:
-                logging.info(f"[CV_INNER_PAD]   Param {param_idx + 1}: avg_score={avg_score:.4f}, features={len(aggregated_features)}")
+                if param_all_metrics and param_all_metrics[-1]:
+                    metrics_summary = []
+                    for metric_name, metric_data in param_all_metrics[-1].items():
+                        metrics_summary.append(f"{metric_name}={metric_data['mean']:.4f}±{metric_data['std']:.4f}")
+                    metrics_str = ", ".join(metrics_summary)
+                    logging.info(f"[CV_INNER_PAD]   Param {param_idx + 1}: {metrics_str}, features={len(aggregated_features)}")
+                else:
+                    logging.info(f"[CV_INNER_PAD]   Param {param_idx + 1}: avg_score={avg_score:.4f}, features={len(aggregated_features)}")
         
         # Step 8: Select best hyperparameter combination
         if param_scores:
@@ -2727,10 +2826,18 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             best_params = param_combinations[best_param_idx]
             best_score = param_scores[best_param_idx]
             best_features = param_features[best_param_idx]
+            best_metrics = param_all_metrics[best_param_idx] if param_all_metrics else {}
             
             if verbose >= 1:
                 logging.info(f"\n[CV_INNER_PAD] Best parameters: {best_params}")
-                logging.info(f"[CV_INNER_PAD] Best CV score: {best_score:.4f}")
+                logging.info(f"[CV_INNER_PAD] Best CV score (F1): {best_score:.4f}")
+                
+                # Log all metrics for best parameter combination
+                if best_metrics:
+                    logging.info("[CV_INNER_PAD] Best parameter metrics:")
+                    for metric_name, metric_data in best_metrics.items():
+                        logging.info(f"[CV_INNER_PAD]   {metric_name}: {metric_data['mean']:.4f} ± {metric_data['std']:.4f}")
+                
                 logging.info(f"[CV_INNER_PAD] Best feature set size: {len(best_features)}")
         else:
             best_params = param_combinations[0] if param_combinations else {}
@@ -2754,7 +2861,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 logging.info(f"[CV_INNER_PAD] Final mask values: {outer_mask_values}")
             
             # Create final pipeline with best parameters and outer-fold mask values
-            final_pipeline, _ = build_pipeline(
+            final_pipeline, final_scoring_functions = build_pipeline(
                 model_type=model_type,
                 mask_values=outer_mask_values,  # Use outer-training specific mask values
                 experiment_dir=experiment_dir,
@@ -2799,17 +2906,28 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 y_test_pred = lstm_classifier.predict(X_test_final)
                 y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
                 
-                # Calculate test metrics for LSTM
-                if outer_mask_values and 'y_mask' in outer_mask_values:
-                    y_mask_val = outer_mask_values['y_mask']
-                    test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
-                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
-                    test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
-                else:
-                    from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
-                    test_f1 = f1_score(y_outer_test.ravel(), y_test_pred.ravel(), average='weighted')
-                    test_auc = roc_auc_score(y_outer_test.ravel(), y_test_pred_proba.ravel()) if len(np.unique(y_outer_test)) > 1 else 0.5
-                    test_accuracy = accuracy_score(y_outer_test.ravel(), y_test_pred.ravel())
+                # Calculate comprehensive test metrics using scoring functions
+                test_metrics = {}
+                for metric_name, scoring_func in final_scoring_functions.items():
+                    try:
+                        # For metrics that need probabilities (like AUC, PR-AUC)
+                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
+                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
+                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba[:, 1])
+                            else:
+                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba.ravel())
+                        else:
+                            # For metrics that need predictions (like F1, precision, recall, accuracy)
+                            score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred.ravel())
+                        test_metrics[metric_name] = score
+                    except Exception as e:
+                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        test_metrics[metric_name] = np.nan
+                
+                # Extract primary metrics for backward compatibility
+                test_f1 = test_metrics.get('f1', np.nan)
+                test_auc = test_metrics.get('roc_auc', np.nan)
+                test_accuracy = test_metrics.get('accuracy', np.nan)
             else:
                 # For other models
                 X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
@@ -2819,13 +2937,31 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 y_test_pred = final_pipeline.predict(X_outer_test_2d)
                 y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
                 
-                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
-                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
-                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
-                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
+                # Calculate comprehensive test metrics using scoring functions
+                test_metrics = {}
+                for metric_name, scoring_func in final_scoring_functions.items():
+                    try:
+                        # For metrics that need probabilities (like AUC, PR-AUC)
+                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
+                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
+                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba[:, 1])
+                            else:
+                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba.ravel())
+                        else:
+                            # For metrics that need predictions (like F1, precision, recall, accuracy)
+                            score = scoring_func._score_func(y_outer_test, y_test_pred)
+                        test_metrics[metric_name] = score
+                    except Exception as e:
+                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        test_metrics[metric_name] = np.nan
+                
+                # Extract primary metrics for backward compatibility
+                test_f1 = test_metrics.get('f1', np.nan)
+                test_auc = test_metrics.get('roc_auc', np.nan)
+                test_accuracy = test_metrics.get('accuracy', np.nan)
             
-            # Store results
-            outer_results.append({
+            # Store results with all test metrics
+            result_dict = {
                 'fold': outer_fold + 1,
                 'test_subject': test_subject_number,
                 'test_subject_name': test_subject_name,
@@ -2838,12 +2974,16 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 'test_accuracy': test_accuracy,
                 'outer_mask_values': outer_mask_values,  # Store outer-training mask values
                 'max_sequence_length': outer_mask_values.get('max_length', None)
-            })
+            }
+            # Add all test metrics to results
+            result_dict.update({f'test_{k}': v for k, v in test_metrics.items()})
+            outer_results.append(result_dict)
             
             all_best_params.append(best_params)
             
             if verbose >= 1:
-                logging.info(f"[CV_INNER_PAD] Test results - F1: {test_f1:.4f}, AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
+                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() if not np.isnan(v)])
+                logging.info(f"[CV_INNER_PAD] Test metrics: {test_metrics_str}")
                 logging.info(f"[CV_INNER_PAD] Final max sequence length: {outer_mask_values.get('max_length', 'N/A')}")
                 logging.info(f"[CV_INNER_PAD] OUTER FOLD {outer_fold + 1} COMPLETED")
         
@@ -2877,15 +3017,35 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
         logging.info(f"[CV_INNER_PAD] {'='*80}")
         
         if outer_results:
+            # Calculate averages for primary metrics
             avg_f1 = np.mean([r['test_f1'] for r in outer_results])
             avg_auc = np.mean([r['test_auc'] for r in outer_results])
             avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
             avg_features = np.mean([r['n_selected_features'] for r in outer_results])
             max_lengths = [r['max_sequence_length'] for r in outer_results if r['max_sequence_length']]
             
+            # Calculate averages for all test metrics
+            all_test_metrics = {}
+            for result in outer_results:
+                for key, value in result.items():
+                    if key.startswith('test_') and not np.isnan(value):
+                        if key not in all_test_metrics:
+                            all_test_metrics[key] = []
+                        all_test_metrics[key].append(value)
+            
+            # Log primary metrics
             logging.info(f"[CV_INNER_PAD] Average F1: {avg_f1:.4f}")
             logging.info(f"[CV_INNER_PAD] Average AUC: {avg_auc:.4f}")
             logging.info(f"[CV_INNER_PAD] Average Accuracy: {avg_accuracy:.4f}")
+            
+            # Log all test metrics
+            for metric_name, values in all_test_metrics.items():
+                if len(values) > 0:
+                    avg_value = np.mean(values)
+                    std_value = np.std(values)
+                    metric_display = metric_name.replace('test_', '')
+                    logging.info(f"[CV_INNER_PAD] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
+            
             logging.info(f"[CV_INNER_PAD] Average selected features: {avg_features:.1f}")
             if max_lengths:
                 logging.info(f"[CV_INNER_PAD] Sequence lengths by fold: {max_lengths}")
@@ -2903,7 +3063,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           verbose: int = 1,
                           hparam_logger=None):
     """
-    Nested cross-validation with feature selection aggregation and final retraining.
+    Nested cross-validation with feature selection aggregation and final retraining. Used in case the data is padded already outside the CV loops.
     
     Implementation follows the specific approach:
     1. For each outer fold: split train/test subjects
@@ -3019,7 +3179,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Calculate masked score for LSTM
                         if mask_values and 'y_mask' in mask_values:
                             y_mask_val = mask_values['y_mask']
-                            score = LSTMClassifier.masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
+                            score = LSTMClassifier.eval_masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
                         else:
                             from sklearn.metrics import f1_score
                             score = f1_score(y_inner_val.ravel(), y_val_pred.ravel(), average='weighted')
@@ -3105,7 +3265,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         try:
             # Create final pipeline with best parameters and subject information
-            final_pipeline, _ = build_pipeline(
+            final_pipeline, final_scoring_functions = build_pipeline(
                 model_type=model_type,
                 mask_values=mask_values,
                 experiment_dir=experiment_dir,
@@ -3124,17 +3284,28 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 y_test_pred = final_pipeline.predict(X_outer_test)
                 y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
                 
-                # Calculate test metrics for LSTM
-                if mask_values and 'y_mask' in mask_values:
-                    y_mask_val = mask_values['y_mask']
-                    test_f1 = LSTMClassifier.masked_f1_score(y_outer_test, y_test_pred, y_mask_val)
-                    test_auc = LSTMClassifier.masked_roc_auc_score(y_outer_test, y_test_pred_proba, y_mask_val)
-                    test_accuracy = LSTMClassifier.masked_accuracy_score(y_outer_test, y_test_pred, y_mask_val)
-                else:
-                    from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
-                    test_f1 = f1_score(y_outer_test.ravel(), y_test_pred.ravel(), average='weighted')
-                    test_auc = roc_auc_score(y_outer_test.ravel(), y_test_pred_proba.ravel()) if len(np.unique(y_outer_test)) > 1 else 0.5
-                    test_accuracy = accuracy_score(y_outer_test.ravel(), y_test_pred.ravel())
+                # Calculate comprehensive test metrics using scoring functions
+                test_metrics = {}
+                for metric_name, scoring_func in final_scoring_functions.items():
+                    try:
+                        # For metrics that need probabilities (like AUC, PR-AUC)
+                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
+                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
+                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba[:, 1])
+                            else:
+                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba.ravel())
+                        else:
+                            # For metrics that need predictions (like F1, precision, recall, accuracy)
+                            score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred.ravel())
+                        test_metrics[metric_name] = score
+                    except Exception as e:
+                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        test_metrics[metric_name] = np.nan
+                
+                # Extract primary metrics for backward compatibility
+                test_f1 = test_metrics.get('f1', np.nan)
+                test_auc = test_metrics.get('roc_auc', np.nan)
+                test_accuracy = test_metrics.get('accuracy', np.nan)
             else:
                 # For other models
                 X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
@@ -3144,13 +3315,31 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 y_test_pred = final_pipeline.predict(X_outer_test_2d)
                 y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
                 
-                from sklearn.metrics import f1_score, roc_auc_score, accuracy_score
-                test_f1 = f1_score(y_outer_test, y_test_pred, average='weighted')
-                test_auc = roc_auc_score(y_outer_test, y_test_pred_proba[:, 1]) if len(np.unique(y_outer_test)) > 1 else 0.5
-                test_accuracy = accuracy_score(y_outer_test, y_test_pred)
+                # Calculate comprehensive test metrics using scoring functions
+                test_metrics = {}
+                for metric_name, scoring_func in final_scoring_functions.items():
+                    try:
+                        # For metrics that need probabilities (like AUC, PR-AUC)
+                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
+                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
+                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba[:, 1])
+                            else:
+                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba.ravel())
+                        else:
+                            # For metrics that need predictions (like F1, precision, recall, accuracy)
+                            score = scoring_func._score_func(y_outer_test, y_test_pred)
+                        test_metrics[metric_name] = score
+                    except Exception as e:
+                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        test_metrics[metric_name] = np.nan
+                
+                # Extract primary metrics for backward compatibility
+                test_f1 = test_metrics.get('f1', np.nan)
+                test_auc = test_metrics.get('roc_auc', np.nan)
+                test_accuracy = test_metrics.get('accuracy', np.nan)
             
-            # Store results
-            outer_results.append({
+            # Store results with all test metrics
+            result_dict = {
                 'fold': outer_fold + 1,
                 'test_subject': test_subject_number,
                 'test_subject_name': test_subject_name,
@@ -3161,12 +3350,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'test_f1': test_f1,
                 'test_auc': test_auc,
                 'test_accuracy': test_accuracy
-            })
+            }
+            # Add all test metrics to results
+            result_dict.update({f'test_{k}': v for k, v in test_metrics.items()})
+            outer_results.append(result_dict)
             
             all_best_params.append(best_params)
             
             if verbose >= 1:
-                logging.info(f"[CV] Test results - F1: {test_f1:.4f}, AUC: {test_auc:.4f}, Accuracy: {test_accuracy:.4f}")
+                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() if not np.isnan(v)])
+                logging.info(f"[CV] Test metrics: {test_metrics_str}")
                 logging.info(f"[CV] OUTER FOLD {outer_fold + 1} COMPLETED")
         
         except Exception as e:
@@ -3196,14 +3389,34 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         logging.info(f"[CV] {'='*80}")
         
         if outer_results:
+            # Calculate averages for primary metrics
             avg_f1 = np.mean([r['test_f1'] for r in outer_results])
             avg_auc = np.mean([r['test_auc'] for r in outer_results])
             avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
             avg_features = np.mean([r['n_selected_features'] for r in outer_results])
             
+            # Calculate averages for all test metrics
+            all_test_metrics = {}
+            for result in outer_results:
+                for key, value in result.items():
+                    if key.startswith('test_') and not np.isnan(value):
+                        if key not in all_test_metrics:
+                            all_test_metrics[key] = []
+                        all_test_metrics[key].append(value)
+            
+            # Log primary metrics
             logging.info(f"[CV] Average F1: {avg_f1:.4f}")
             logging.info(f"[CV] Average AUC: {avg_auc:.4f}")
             logging.info(f"[CV] Average Accuracy: {avg_accuracy:.4f}")
+            
+            # Log all test metrics
+            for metric_name, values in all_test_metrics.items():
+                if len(values) > 0:
+                    avg_value = np.mean(values)
+                    std_value = np.std(values)
+                    metric_display = metric_name.replace('test_', '')
+                    logging.info(f"[CV] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
+            
             logging.info(f"[CV] Average selected features: {avg_features:.1f}")
     
     return outer_results, all_best_params, experiment_dir  
