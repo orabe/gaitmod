@@ -1,33 +1,69 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import os
-import json
-import time
-import logging
-import seaborn as sns
-from io import StringIO
-import pickle
+import argparse
+import gc
 import hashlib
+import json
+import logging
 import multiprocessing
-from itertools import product
-from typing import List, Tuple, Dict, Any, Optional
+import os
+import pickle
 import re
-from pathlib import Path
-import h5py
 import sys
+import time
 import uuid
 import warnings
+from io import StringIO
+from itertools import product
+from pathlib import Path
+from typing import List, Tuple, Dict, Any, Optional
+
+# ===================================================================
+# Color Formatting Utilities
+# ===================================================================
+
+class Colors:
+    """ANSI Color codes for terminal output"""
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m' 
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = '\033[0m'
+
+def red_text(text):
+    """Format text in red color"""
+    return f"{Colors.RED}{text}{Colors.RESET}"
+
+def format_error_message(message):
+    """Format error message in red color"""
+    return red_text(message)
+
+def format_warning_message(message):
+    """Format warning message in red color"""
+    return red_text(message)
+
+import h5py
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    psutil = None
+
 warnings.filterwarnings('ignore')
 
-
 # Add TensorFlow stability fixes
-import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-# Import TensorFlow with error handling
 try:
     import tensorflow as tf
     # Force eager execution and disable mixed precision
@@ -42,7 +78,7 @@ try:
             
 except Exception as e:
     logging.info(f"TensorFlow initialization warning: {e}")
-    import tensorflow as tf
+    # tensorflow already imported above
 
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.models import save_model, load_model, Sequential
@@ -53,19 +89,17 @@ from tensorflow.keras.metrics import Precision, Recall, AUC
 from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
 from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras import backend as K
-import tensorflow as tf
 
-# Import for hyperparameter visualization with TensorBoard
 try:
     from tensorboard.plugins.hparams import api as hp
     HPARAMS_AVAILABLE = True
 except ImportError:
     HPARAMS_AVAILABLE = False
-    logging.warning("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited.")
+    logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
 
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score
-from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score
+from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score, ParameterGrid
+from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score, average_precision_score, balanced_accuracy_score
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
@@ -73,11 +107,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.dummy import DummyClassifier
 from sklearn.utils.class_weight import compute_class_weight
+
+from collections import defaultdict, Counter
+
 from scipy.stats import pearsonr
 from scipy import stats
-import uuid
 
-# Optional imports with fallbacks
 try:
     from xgboost import XGBClassifier
     XGBOOST_AVAILABLE = True
@@ -118,7 +153,7 @@ class HyperparameterTensorBoardLogger:
         This defines what hyperparameters and metrics will be tracked.
         """
         if not HPARAMS_AVAILABLE:
-            logging.warning("TensorBoard HParams not available - skipping setup")
+            logging.warning(format_warning_message("TensorBoard HParams not available - skipping setup"))
             return
             
         try:
@@ -177,7 +212,7 @@ class HyperparameterTensorBoardLogger:
             logging.info(f"[HPARAMS] Initialized experiment '{self.experiment_name}' with {len(hparams)} hyperparameters and {len(metrics)} metrics")
             
         except Exception as e:
-            logging.error(f"Failed to setup hyperparameter experiment: {e}")
+            logging.error(format_error_message(f"Failed to setup hyperparameter experiment: {e}"))
             
     def log_hyperparameter_trial(self, trial_params, trial_results, session_id=None):
         """
@@ -229,7 +264,7 @@ class HyperparameterTensorBoardLogger:
             logging.debug(f"[HPARAMS] Logged trial {session_id} with {len(clean_hparams)} hyperparameters and {len(trial_results)} metrics")
             
         except Exception as e:
-            logging.warning(f"Failed to log hyperparameter trial {session_id}: {e}")
+            logging.warning(format_warning_message(f"Failed to log hyperparameter trial {session_id}: {e}"))
             
     def create_hyperparameter_summary(self, all_trials_results):
         """
@@ -270,7 +305,7 @@ class HyperparameterTensorBoardLogger:
             logging.info(f"[HPARAMS] Created summary for {len(all_trials_results)} trials")
             
         except Exception as e:
-            logging.warning(f"Failed to create hyperparameter summary: {e}")
+            logging.warning(format_warning_message(f"Failed to create hyperparameter summary: {e}"))
 
 
 # ===================================================================
@@ -313,7 +348,7 @@ class HyperparameterAwareTensorBoard(TensorBoard):
                                 tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
                             
             except Exception as e:
-                logging.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
+                logging.warning(format_warning_message(f"Failed to log hyperparameters to TensorBoard: {e}"))
 
 # ==================================================================
 # Streamlined Training Progress Logger
@@ -355,7 +390,6 @@ class ProgressTrainingLogger(Callback):
         
     def on_train_begin(self, logs=None):
         """Initialize training session logging."""
-        import time
         self.start_time = time.time()
         
         fold_info = f"[{self.fold_identifier}]"
@@ -385,7 +419,6 @@ class ProgressTrainingLogger(Callback):
     def on_train_end(self, logs=None):
         """Summarize training completion."""
         if self.start_time:
-            import time
             duration = time.time() - self.start_time
             logging.info(f"Training complete - Duration: {duration:.1f}s")
 
@@ -695,7 +728,7 @@ def log_gridsearch_results(hparam_logger, grid_search, outer_fold=None):
         logging.info(f"[HPARAMS] Logged {len(cv_results['params'])} hyperparameter trials for fold {outer_fold}")
         
     except Exception as e:
-        logging.warning(f"Failed to log GridSearch results: {e}")
+        logging.warning(format_warning_message(f"Failed to log GridSearch results: {e}"))
 
 
 def create_hyperparameter_summary_plots(experiment_dir, all_fold_results):
@@ -754,7 +787,7 @@ def create_hyperparameter_summary_plots(experiment_dir, all_fold_results):
         logging.info(f"[HPARAMS] Created comprehensive summary with {len(all_trials)} trials")
         
     except Exception as e:
-        logging.warning(f"Failed to create hyperparameter summary: {e}")
+        logging.warning(format_warning_message(f"Failed to create hyperparameter summary: {e}"))
 
 
 def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_name=None):
@@ -768,8 +801,6 @@ def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_
         inner_fold: Inner fold number
         subject_name: Subject identifier
     """
-    import pickle
-    import json
     
     # Create filename
     filename_parts = []
@@ -843,9 +874,9 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
     nan_count = np.isnan(TS_DataMat).sum()
     inf_count = np.isinf(TS_DataMat).sum()
     if nan_count > 0:
-        raise ValueError(f"Found {nan_count:,} NaN values in TS_DataMat")
+        raise ValueError(format_error_message(f"Found {nan_count:,} NaN values in TS_DataMat"))
     if inf_count > 0:
-        raise ValueError(f"Found {inf_count:,} infinite values in TS_DataMat")
+        raise ValueError(format_error_message(f"Found {inf_count:,} infinite values in TS_DataMat"))
     
     if verbose >= 1:
         logging.info(f"[LOAD] Data validation passed")
@@ -977,7 +1008,7 @@ def find_unique_mask_value(data_array, max_search=10000, verbose=0):
     
     # If both systematic searches fail, use percentile-based fallback
     if verbose >= 1:
-        logging.warning(f"[MASK SEARCH] Both systematic searches failed, using percentile fallback")
+        logging.warning(format_warning_message(f"[MASK SEARCH] Both systematic searches failed, using percentile fallback"))
     
     # Percentile-based fallback - go far below minimum
     p1 = np.percentile(data_array, 1)
@@ -991,7 +1022,7 @@ def find_unique_mask_value(data_array, max_search=10000, verbose=0):
         iteration += 1
     
     if fallback_value in data_set:
-        raise ValueError(f"Could not find unique mask value even with percentile fallback!")
+        raise ValueError(format_error_message(f"Could not find unique mask value even with percentile fallback!"))
     
     if verbose >= 2:
         logging.info(f"[MASK SEARCH] Using percentile fallback value: {fallback_value}")
@@ -1875,7 +1906,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                     history = self.model.fit(X, y, **fit_kwargs).history
                     logging.info(f"[LSTM FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}")
             except Exception as e:
-                logging.warning(f"[LSTM FIT] GPU training failed (likely MPS validation data shapes): {e}")
+                logging.warning(format_warning_message(f"[LSTM FIT] GPU training failed (likely MPS validation data shapes): {e}"))
                 logging.info("[LSTM FIT] Falling back to CPU training")
                 with tf.device('/CPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
@@ -1999,6 +2030,80 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             self.model.summary()
         else:
             logging.info("Model is not built yet.")
+    
+    def tune_threshold(self, X_val, y_val, metric='f1', threshold_range=(0.1, 0.9), n_thresholds=81, verbose=True):
+        """
+        Tune classification threshold for specified metric using validation data.
+        
+        Args:
+            X_val: Validation features
+            y_val: Validation labels (with masking)
+            metric: Metric to optimize ('accuracy', 'f1', 'precision', 'recall')
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
+            verbose: Whether to print results
+            
+        Returns:
+            float: Optimal threshold for the specified metric
+        """
+        if self.model is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Get probability predictions
+        y_pred_proba = self.predict_proba(X_val)
+        
+        # Handle different probability shapes
+        if y_pred_proba.ndim > 2:
+            y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+        
+        # For binary classification, use positive class probabilities
+        if y_pred_proba.shape[1] == 2:
+            y_pred_proba_pos = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_pos = y_pred_proba.ravel()
+        
+        # Initialize threshold tuner
+        tuner = ThresholdTuner(threshold_range=threshold_range, 
+                              n_thresholds=n_thresholds,
+                              y_mask_val=self.mask_values.get('y_mask', 2))
+        
+        # Tune threshold for specified metric using the main unified method
+        optimal_threshold, optimal_score, _ = tuner.tune_threshold_for_binary_metric(y_val, y_pred_proba_pos, metric)
+        
+        if verbose:
+            logging.info(f"Optimal threshold for {metric}: {optimal_threshold:.3f} (score: {optimal_score:.4f})")
+        
+        # Update the classifier's threshold
+        self.threshold = optimal_threshold
+        
+        return optimal_threshold
+    
+    def evaluate_with_optimal_thresholds(self, X_test, y_test, threshold_range=(0.1, 0.9), 
+                                       n_thresholds=81, plot_curves=False, save_plot_path=None):
+        """
+        Evaluate the model with optimal thresholds for all metrics.
+        
+        Args:
+            X_test: Test features
+            y_test: Test labels (with masking)
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
+            plot_curves: Whether to plot threshold curves
+            save_plot_path: Path to save plots
+            
+        Returns:
+            dict: Comprehensive evaluation results
+        """
+        return evaluate_with_tuned_binary_thresholds(
+            estimator=self,
+            X_test=X_test,
+            y_test=y_test,
+            y_mask_val=self.mask_values.get('y_mask', 2),
+            threshold_range=threshold_range,
+            n_thresholds=n_thresholds,
+            plot_curves=plot_curves,
+            save_plot_path=save_plot_path
+        )
             
     @staticmethod
     def lr_schedule(epoch, lr):
@@ -2130,6 +2235,628 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         else:
             # Binary classification - use positive class probability
             return average_precision_score(y_true_valid, y_pred_proba_valid[:, 1])
+
+
+# ===================================================================
+# Threshold Tuning Functionality
+# ===================================================================
+
+class ThresholdTuner:
+    """
+    Comprehensive threshold tuning for classification metrics.
+    Sweeps through threshold values to find optimal thresholds for each metric.
+    """
+        
+    def _apply_threshold_and_mask(self, y_true, y_pred_proba, threshold):
+        """Apply threshold to probabilities and create mask for valid data."""
+        # Convert probabilities to binary predictions
+        y_pred_binary = (y_pred_proba > threshold)
+        
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred_binary.ravel()
+        
+        # Create mask for non-masked positions
+        mask = y_true_flat != self.y_mask_val
+        
+        # Return valid data only
+        if np.sum(mask) == 0:
+            return None, None
+            
+        return y_true_flat[mask], y_pred_flat[mask]
+    
+    def __init__(self, threshold_range=(0.1, 0.9), n_thresholds=81, y_mask_val=2):
+        """
+        Initialize threshold tuner.
+        
+        Args:
+            threshold_range: (min, max) threshold values to search
+            n_thresholds: Number of threshold values to test
+            y_mask_val: Value representing masked/padded positions
+        """
+        self.threshold_range = threshold_range
+        self.n_thresholds = n_thresholds
+        self.y_mask_val = y_mask_val
+        self.thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
+        
+        # Define supported metrics optimized for binary classification
+        self._metric_functions = {
+            'accuracy': {
+                'func': lambda y_true, y_pred: accuracy_score(y_true, y_pred),
+                'requires_both_classes': False,
+                'description': 'Binary classification accuracy'
+            },
+            'f1': {
+                'func': lambda y_true, y_pred: f1_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'requires_both_classes': True,
+                'description': 'F1 score for positive class'
+            },
+            'precision': {
+                'func': lambda y_true, y_pred: precision_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'requires_both_classes': True,
+                'description': 'Precision for positive class'
+            },
+            'recall': {
+                'func': lambda y_true, y_pred: recall_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'requires_both_classes': True,
+                'description': 'Recall (sensitivity) for positive class'
+            },
+            'specificity': {
+                'func': lambda y_true, y_pred: recall_score(y_true, y_pred, pos_label=0, zero_division=0),
+                'requires_both_classes': True,
+                'description': 'Specificity (recall for negative class)'
+            },
+            'balanced_accuracy': {
+                'func': lambda y_true, y_pred: (recall_score(y_true, y_pred, pos_label=1, zero_division=0) + 
+                                              recall_score(y_true, y_pred, pos_label=0, zero_division=0)) / 2,
+                'requires_both_classes': True,
+                'description': 'Balanced accuracy (mean of sensitivity and specificity)'
+            }
+        }
+    
+    def add_custom_binary_metric(self, metric_name, metric_func, requires_both_classes=True, description=None):
+        """
+        Add a custom binary classification metric to the threshold tuner.
+        
+        Args:
+            metric_name: Name of the metric
+            metric_func: Function that takes (y_true, y_pred) and returns a score for binary classification
+            requires_both_classes: Whether the metric requires both positive and negative classes
+            description: Optional description of the metric
+        """
+        self._metric_functions[metric_name] = {
+            'func': metric_func,
+            'requires_both_classes': requires_both_classes,
+            'description': description or f'Custom binary metric: {metric_name}'
+        }
+        logging.info(f"Added custom binary metric '{metric_name}': {self._metric_functions[metric_name]['description']}")
+    
+    def get_supported_metrics(self):
+        """Get list of supported metrics with their descriptions."""
+        return {name: config['description'] for name, config in self._metric_functions.items()}
+    
+    def _get_metric_function(self, metric_name):
+        """Get the appropriate metric function based on metric name."""
+        if metric_name not in self._metric_functions:
+            supported = list(self._metric_functions.keys())
+            raise ValueError(f"Unsupported metric: {metric_name}. Supported metrics: {supported}")
+        
+        return self._metric_functions[metric_name]['func']
+    
+    def _requires_both_classes(self, metric_name):
+        """Check if metric requires both positive and negative classes to compute."""
+        if metric_name not in self._metric_functions:
+            return True  # Conservative default
+        return self._metric_functions[metric_name]['requires_both_classes']
+    
+    def tune_threshold_for_binary_metric(self, y_true, y_pred_proba, metric_name, store_details=True):
+        """
+        Unified threshold tuning method for binary classification metrics.
+        
+        Args:
+            y_true: True binary labels with masking (values: 0, 1, mask_value)
+            y_pred_proba: Predicted probabilities for positive class (0.0 to 1.0)
+            metric_name: Name of binary metric to optimize
+            store_details: Whether to store detailed evaluation data for each threshold
+            
+        Returns:
+            tuple: (best_threshold, best_score, detailed_results)
+                detailed_results contains all_scores and optionally detailed evaluation data
+        """
+        # Get metric function
+        metric_func = self._get_metric_function(metric_name)
+        requires_both_classes = self._requires_both_classes(metric_name)
+        
+        # Initialize tracking variables
+        best_threshold = 0.5
+        best_score = 0.0
+        all_scores = []
+        
+        # Initialize detailed evaluation storage if requested
+        detailed_evaluations = [] if store_details else None
+        
+        # Sweep through thresholds
+        for i, threshold in enumerate(self.thresholds):
+            y_true_valid, y_pred_valid = self._apply_threshold_and_mask(y_true, y_pred_proba, threshold)
+            
+            if y_true_valid is None:
+                all_scores.append(0.0)
+                if store_details:
+                    detailed_evaluations.append({
+                        'threshold': threshold,
+                        'score': 0.0,
+                        'metric': metric_name,
+                        'n_valid_samples': 0,
+                        'error': 'No valid samples after masking'
+                    })
+                continue
+                
+            try:
+                # For binary classification, check if we have both classes when required
+                if requires_both_classes:
+                    unique_true = np.unique(y_true_valid)
+                    unique_pred = np.unique(y_pred_valid)
+                    
+                    # Skip if we don't have both classes in true labels or predictions
+                    if len(unique_true) < 2 or len(unique_pred) < 2:
+                        all_scores.append(0.0)
+                        if store_details:
+                            detailed_evaluations.append({
+                                'threshold': threshold,
+                                'score': 0.0,
+                                'metric': metric_name,
+                                'n_valid_samples': len(y_true_valid),
+                                'unique_true_classes': unique_true.tolist(),
+                                'unique_pred_classes': unique_pred.tolist(),
+                                'error': 'Insufficient class diversity'
+                            })
+                        continue
+                
+                # Ensure we have valid binary labels (0 and 1 only)
+                if not np.all(np.isin(y_true_valid, [0, 1])) or not np.all(np.isin(y_pred_valid, [0, 1])):
+                    all_scores.append(0.0)
+                    if store_details:
+                        detailed_evaluations.append({
+                            'threshold': threshold,
+                            'score': 0.0,
+                            'metric': metric_name,
+                            'n_valid_samples': len(y_true_valid),
+                            'error': 'Invalid binary labels detected'
+                        })
+                    continue
+                
+                # Compute binary metric score
+                score = metric_func(y_true_valid, y_pred_valid)
+                all_scores.append(score)
+                
+                # Store detailed evaluation data if requested
+                if store_details:
+                    # Calculate additional statistics for detailed analysis
+                    from sklearn.metrics import confusion_matrix
+                    try:
+                        cm = confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
+                        tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+                    except:
+                        tn = fp = fn = tp = 0
+                    
+                    detailed_evaluations.append({
+                        'threshold': threshold,
+                        'score': score,
+                        'metric': metric_name,
+                        'n_valid_samples': len(y_true_valid),
+                        'true_positives': int(tp),
+                        'true_negatives': int(tn),
+                        'false_positives': int(fp),
+                        'false_negatives': int(fn),
+                        'positive_rate': float(np.mean(y_pred_valid)),
+                        'class_distribution': {
+                            'true_positive_rate': float(np.mean(y_true_valid)),
+                            'predicted_positive_rate': float(np.mean(y_pred_valid))
+                        },
+                        'is_optimal': False  # Will be updated below
+                    })
+                
+                # Track best score and threshold
+                if score > best_score:
+                    best_score = score
+                    best_threshold = threshold
+                    
+            except Exception as e:
+                # Handle any computation errors gracefully
+                all_scores.append(0.0)
+                if store_details:
+                    detailed_evaluations.append({
+                        'threshold': threshold,
+                        'score': 0.0,
+                        'metric': metric_name,
+                        'n_valid_samples': len(y_true_valid) if y_true_valid is not None else 0,
+                        'error': str(e)
+                    })
+        
+        # Mark the optimal threshold in detailed evaluations
+        if store_details and detailed_evaluations:
+            for eval_data in detailed_evaluations:
+                if abs(eval_data['threshold'] - best_threshold) < 1e-10:
+                    eval_data['is_optimal'] = True
+        
+        # Prepare results
+        if store_details:
+            detailed_results = {
+                'all_scores': all_scores,
+                'thresholds': self.thresholds.tolist(),
+                'detailed_evaluations': detailed_evaluations,
+                'best_threshold_index': np.argmax(all_scores) if all_scores else 0,
+                'metric_info': self._metric_functions[metric_name]
+            }
+        else:
+            detailed_results = all_scores
+                
+        return best_threshold, best_score, detailed_results
+
+    
+    def tune_all_binary_thresholds(self, y_true, y_pred_proba, metrics=None, verbose=True, store_details=True):
+        """
+        Tune thresholds for all or specified binary classification metrics.
+        
+        Args:
+            y_true: True binary labels with masking (values: 0, 1, mask_value)
+            y_pred_proba: Predicted probabilities for positive class (0.0 to 1.0)
+            metrics: List of binary metrics to tune (default: standard binary metrics)
+            verbose: Whether to print results
+            store_details: Whether to store detailed evaluation data for each threshold
+            
+        Returns:
+            dict: Dictionary containing optimal thresholds, scores, and detailed evaluation data
+        """
+        if metrics is None:
+            metrics = ['accuracy', 'f1', 'precision', 'recall', 'specificity', 'balanced_accuracy']
+        
+        results = {}
+        all_detailed_evaluations = {}  # Store all detailed evaluations for cross-metric analysis
+        
+        if verbose:
+            logging.info("Starting threshold tuning for {} metrics across {} threshold values...".format(
+                len(metrics), self.n_thresholds))
+        
+        # Tune threshold for each metric using the main unified method
+        for metric_name in metrics:
+            try:
+                optimal_threshold, optimal_score, detailed_results = self.tune_threshold_for_binary_metric(
+                    y_true, y_pred_proba, metric_name, store_details=store_details
+                )
+                
+                if store_details and isinstance(detailed_results, dict):
+                    results[metric_name] = {
+                        'optimal_threshold': optimal_threshold,
+                        'optimal_score': optimal_score,
+                        'all_scores': detailed_results['all_scores'],
+                        'detailed_evaluations': detailed_results['detailed_evaluations'],
+                        'best_threshold_index': detailed_results['best_threshold_index'],
+                        'metric_info': detailed_results['metric_info']
+                    }
+                    # Store for cross-metric analysis
+                    all_detailed_evaluations[metric_name] = detailed_results['detailed_evaluations']
+                else:
+                    results[metric_name] = {
+                        'optimal_threshold': optimal_threshold,
+                        'optimal_score': optimal_score,
+                        'all_scores': detailed_results if isinstance(detailed_results, list) else [0.0] * self.n_thresholds
+                    }
+                
+                if verbose:
+                    logging.info(f"  {metric_name.capitalize()}: threshold={optimal_threshold:.3f}, score={optimal_score:.4f}")
+                    
+            except Exception as e:
+                logging.warning(format_warning_message(f"Failed to tune threshold for {metric_name}: {e}"))
+                default_result = {
+                    'optimal_threshold': 0.5,
+                    'optimal_score': 0.0,
+                    'all_scores': [0.0] * self.n_thresholds
+                }
+                if store_details:
+                    default_result['detailed_evaluations'] = []
+                    default_result['error'] = str(e)
+                results[metric_name] = default_result
+        
+        # Add summary statistics if storing details
+        if store_details and all_detailed_evaluations:
+            results['_summary'] = {
+                'total_thresholds_evaluated': self.n_thresholds,
+                'threshold_range': {
+                    'min': float(self.thresholds.min()),
+                    'max': float(self.thresholds.max()),
+                    'step': float(self.thresholds[1] - self.thresholds[0]) if len(self.thresholds) > 1 else 0.0
+                },
+                'evaluation_timestamp': np.datetime64('now').astype(str),
+                'metrics_evaluated': metrics,
+                'cross_metric_analysis': self._compute_cross_metric_analysis(all_detailed_evaluations)
+            }
+        
+        return results
+    
+    def _compute_cross_metric_analysis(self, all_detailed_evaluations):
+        """
+        Compute cross-metric analysis from detailed evaluations.
+        
+        Args:
+            all_detailed_evaluations: Dict of metric_name -> list of detailed evaluations
+            
+        Returns:
+            dict: Cross-metric analysis results
+        """
+        if not all_detailed_evaluations:
+            return {}
+        
+        # Find thresholds where multiple metrics are simultaneously optimized
+        analysis = {
+            'consensus_thresholds': [],
+            'metric_correlations': {},
+            'threshold_stability': {}
+        }
+        
+        try:
+            # Get all metric names and their optimal thresholds
+            metric_names = list(all_detailed_evaluations.keys())
+            optimal_thresholds = {}
+            
+            for metric_name, evaluations in all_detailed_evaluations.items():
+                optimal_eval = next((e for e in evaluations if e.get('is_optimal', False)), None)
+                if optimal_eval:
+                    optimal_thresholds[metric_name] = optimal_eval['threshold']
+            
+            # Find thresholds that are optimal or near-optimal for multiple metrics
+            threshold_metric_scores = {}
+            for metric_name, evaluations in all_detailed_evaluations.items():
+                for eval_data in evaluations:
+                    threshold = eval_data['threshold']
+                    if threshold not in threshold_metric_scores:
+                        threshold_metric_scores[threshold] = {}
+                    threshold_metric_scores[threshold][metric_name] = eval_data['score']
+            
+            # Identify consensus thresholds (within top 10% for multiple metrics)
+            for threshold, metric_scores in threshold_metric_scores.items():
+                high_performing_metrics = 0
+                for metric_name, score in metric_scores.items():
+                    if metric_name in optimal_thresholds:
+                        # Get all scores for this metric
+                        all_scores = [e['score'] for e in all_detailed_evaluations[metric_name]]
+                        if all_scores:
+                            top_10_percent_threshold = np.percentile(all_scores, 90)
+                            if score >= top_10_percent_threshold:
+                                high_performing_metrics += 1
+                
+                if high_performing_metrics >= 2:  # Threshold is good for at least 2 metrics
+                    analysis['consensus_thresholds'].append({
+                        'threshold': threshold,
+                        'high_performing_metrics': high_performing_metrics,
+                        'metric_scores': metric_scores
+                    })
+            
+            # Sort consensus thresholds by number of high-performing metrics
+            analysis['consensus_thresholds'].sort(key=lambda x: x['high_performing_metrics'], reverse=True)
+            
+            # Calculate pairwise correlations between metric scores across thresholds
+            if len(metric_names) >= 2:
+                for i, metric1 in enumerate(metric_names):
+                    for metric2 in metric_names[i+1:]:
+                        scores1 = [e['score'] for e in all_detailed_evaluations[metric1]]
+                        scores2 = [e['score'] for e in all_detailed_evaluations[metric2]]
+                        
+                        if len(scores1) == len(scores2) and len(scores1) > 1:
+                            correlation = np.corrcoef(scores1, scores2)[0, 1]
+                            if not np.isnan(correlation):
+                                analysis['metric_correlations'][f'{metric1}_vs_{metric2}'] = float(correlation)
+            
+        except Exception as e:
+            analysis['error'] = f"Cross-metric analysis failed: {str(e)}"
+        
+        return analysis
+
+    
+    def plot_binary_threshold_curves(self, results, save_path=None, metrics_to_plot=None):
+        """
+        Plot threshold vs metric score curves for binary classification metrics.
+        
+        Args:
+            results: Results from tune_all_binary_thresholds()
+            save_path: Optional path to save the plot
+            metrics_to_plot: List of metrics to plot (default: available metrics in results)
+        """
+        try:
+            
+            if metrics_to_plot is None:
+                # Use all available metrics from results, up to 6 for clean plotting
+                metrics_to_plot = list(results.keys())[:6]
+            
+            n_metrics = len(metrics_to_plot)
+            if n_metrics <= 4:
+                fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                axes = axes.ravel()
+            else:
+                fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+                axes = axes.ravel()
+            
+            colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
+            
+            for i, (metric, color) in enumerate(zip(metrics_to_plot, colors)):
+                ax = axes[i]
+                scores = results[metric]['all_scores']
+                optimal_thresh = results[metric]['optimal_threshold']
+                optimal_score = results[metric]['optimal_score']
+                
+                # Plot threshold curve
+                ax.plot(self.thresholds, scores, color=color, linewidth=2, label=f'{metric.capitalize()}')
+                
+                # Mark optimal point
+                ax.scatter([optimal_thresh], [optimal_score], color='red', s=100, zorder=5)
+                ax.axvline(x=optimal_thresh, color='red', linestyle='--', alpha=0.7)
+                
+                # Formatting
+                ax.set_xlabel('Threshold')
+                ax.set_ylabel(f'{metric.capitalize()} Score')
+                ax.set_title(f'{metric.capitalize()} vs Threshold\nOptimal: {optimal_thresh:.3f} (Score: {optimal_score:.4f})')
+                ax.grid(True, alpha=0.3)
+                ax.set_xlim(self.threshold_range)
+                
+            plt.tight_layout()
+            
+            if save_path:
+                plt.savefig(save_path, dpi=300, bbox_inches='tight')
+                logging.info(f"Saved threshold curves plot to: {save_path}")
+                
+            plt.show()
+            
+        except ImportError:
+            logging.warning(format_warning_message("Matplotlib not available. Cannot plot threshold curves."))
+        except Exception as e:
+            logging.warning(format_warning_message(f"Failed to plot threshold curves: {e}"))
+    
+
+
+
+def evaluate_with_tuned_binary_thresholds(estimator, X_test, y_test, y_mask_val=2, 
+                                        threshold_range=(0.1, 0.9), n_thresholds=81,
+                                        plot_curves=False, save_plot_path=None, store_detailed_thresholds=True):
+    """
+    Evaluate binary classifier with optimal thresholds for each metric.
+    
+    Args:
+        estimator: Fitted binary classifier with predict_proba method
+        X_test: Test features
+        y_test: Test binary labels (0, 1) with masking (mask_val)
+        y_mask_val: Value representing masked positions
+        threshold_range: Range of thresholds to search
+        n_thresholds: Number of thresholds to test
+        plot_curves: Whether to plot threshold curves
+        save_plot_path: Path to save plots
+        store_detailed_thresholds: Whether to store detailed threshold evaluation data
+        
+    Returns:
+        dict: Evaluation results with optimal thresholds and detailed threshold analysis
+    """
+    # Get probability predictions
+    y_pred_proba = estimator.predict_proba(X_test)
+    
+    # Handle different probability shapes
+    if y_pred_proba.ndim > 2:
+        y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+    
+    # For binary classification, use positive class probabilities
+    if y_pred_proba.shape[1] == 2:
+        y_pred_proba_pos = y_pred_proba[:, 1]
+    else:
+        y_pred_proba_pos = y_pred_proba.ravel()
+    
+    # Initialize threshold tuner
+    tuner = ThresholdTuner(threshold_range=threshold_range, 
+                          n_thresholds=n_thresholds,
+                          y_mask_val=y_mask_val)
+    
+    # Tune thresholds for binary classification with detailed storage
+    tuning_results = tuner.tune_all_binary_thresholds(
+        y_test, y_pred_proba_pos, 
+        verbose=True, 
+        store_details=store_detailed_thresholds
+    )
+    
+    # Plot curves if requested
+    if plot_curves:
+        tuner.plot_binary_threshold_curves(tuning_results, save_path=save_plot_path)
+    
+    # Evaluate model with optimal thresholds
+    evaluation_results = {}
+    
+    # Store optimal thresholds and scores for all available metrics
+    binary_metrics = ['accuracy', 'f1', 'precision', 'recall', 'specificity', 'balanced_accuracy']
+    for metric_name in binary_metrics:
+        if metric_name in tuning_results:
+            optimal_threshold = tuning_results[metric_name]['optimal_threshold']
+            optimal_score = tuning_results[metric_name]['optimal_score']
+            
+            evaluation_results[f'{metric_name}_optimal_threshold'] = optimal_threshold
+            evaluation_results[f'{metric_name}_optimal_score'] = optimal_score
+    
+    # Also evaluate with default 0.5 threshold for comparison
+    y_pred_default = (y_pred_proba_pos > 0.5)
+    
+    # Apply masking for default evaluation
+    y_test_flat = y_test.ravel()
+    y_pred_default_flat = y_pred_default.ravel()
+    mask = y_test_flat != y_mask_val
+    
+    if np.sum(mask) > 0:
+        y_test_valid = y_test_flat[mask]
+        y_pred_valid = y_pred_default_flat[mask]
+        
+        # Ensure we have valid binary data
+        if not (np.all(np.isin(y_test_valid, [0, 1])) and np.all(np.isin(y_pred_valid, [0, 1]))):
+            logging.warning(format_warning_message("Invalid binary data detected. Skipping default threshold evaluation."))
+        else:
+            try:
+                evaluation_results['accuracy_default_0.5'] = accuracy_score(y_test_valid, y_pred_valid)
+                
+                # Only compute other metrics if both classes are present
+                if len(np.unique(y_test_valid)) > 1 and len(np.unique(y_pred_valid)) > 1:
+                    evaluation_results['f1_default_0.5'] = f1_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
+                    evaluation_results['precision_default_0.5'] = precision_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
+                    evaluation_results['recall_default_0.5'] = recall_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
+                    evaluation_results['specificity_default_0.5'] = recall_score(y_test_valid, y_pred_valid, pos_label=0, zero_division=0)
+                    evaluation_results['balanced_accuracy_default_0.5'] = (
+                        evaluation_results['recall_default_0.5'] + evaluation_results['specificity_default_0.5']
+                    ) / 2
+            except Exception as e:
+                logging.warning(format_warning_message(f"Failed to compute default threshold metrics: {e}"))
+                evaluation_results['accuracy_default_0.5'] = 0.0
+                evaluation_results['f1_default_0.5'] = 0.0
+                evaluation_results['precision_default_0.5'] = 0.0
+                evaluation_results['recall_default_0.5'] = 0.0
+                evaluation_results['specificity_default_0.5'] = 0.0
+                evaluation_results['balanced_accuracy_default_0.5'] = 0.0
+    
+    # Add AUC scores (threshold-independent)
+    y_pred_proba_flat = y_pred_proba_pos.ravel()
+    mask_proba = y_test_flat != y_mask_val
+    
+    if np.sum(mask_proba) > 0:
+        y_test_valid_proba = y_test_flat[mask_proba]
+        y_pred_proba_valid = y_pred_proba_flat[mask_proba]
+        
+        try:
+            evaluation_results['roc_auc'] = roc_auc_score(y_test_valid_proba, y_pred_proba_valid)
+            evaluation_results['pr_auc'] = average_precision_score(y_test_valid_proba, y_pred_proba_valid)
+        except:
+            evaluation_results['roc_auc'] = 0.5
+            evaluation_results['pr_auc'] = 0.0
+    
+    # Store detailed threshold evaluation data if requested
+    if store_detailed_thresholds:
+        # Store detailed evaluations for each metric
+        for metric_name in binary_metrics:
+            if metric_name in tuning_results and 'detailed_evaluations' in tuning_results[metric_name]:
+                evaluation_results[f'{metric_name}_detailed_evaluations'] = tuning_results[metric_name]['detailed_evaluations']
+        
+        # Store cross-metric analysis if available
+        if 'cross_metric_analysis' in tuning_results:
+            evaluation_results['cross_metric_analysis'] = tuning_results['cross_metric_analysis']
+        
+        # Store summary statistics if available
+        if 'summary_statistics' in tuning_results:
+            evaluation_results['summary_statistics'] = tuning_results['summary_statistics']
+        
+        # Store threshold tuning metadata
+        evaluation_results['threshold_tuning_metadata'] = {
+            'threshold_range': threshold_range,
+            'n_thresholds': n_thresholds,
+            'y_mask_val': y_mask_val,
+            'test_samples': len(y_test),
+            'valid_samples': np.sum(y_test != y_mask_val),
+            'store_detailed_thresholds': store_detailed_thresholds
+        }
+    
+    return evaluation_results
+
+
+
 
 
 # # ======================
@@ -2365,14 +3092,16 @@ def get_default_param_grid(model_type, mask_values=None):
             # Network Architecture - Layer configuration for temporal pattern learning
             'classifier__hidden_dims': [
                 # [64, 32],           # Funnel: Feature extraction → refinement (good for noise reduction)
-                [128, 64],          # Large-to-medium: Max capacity for complex temporal patterns (current)
+                # [128, 64],          # Large-to-medium: Max capacity for complex temporal patterns (current)
                 # [64, 64, 32],       # Deep funnel: Multi-level hierarchical learning (3-layer depth)
                 # [32, 64, 32],       # Hourglass: Compression → expansion → compression (bottleneck learning)
+                [64],
             ],
             
             # Activation Functions - Non-linearity for different learning phases
             'classifier__activations': [
-                ['tanh', 'relu'],       # Smooth-to-sharp: Tanh captures subtle patterns, ReLU for sparse features (current)
+                ["relu"]
+                # ['tanh', 'relu'],       # Smooth-to-sharp: Tanh captures subtle patterns, ReLU for sparse features (current)
                 # ['relu', 'tanh'],       # Sharp-to-smooth: ReLU for early features, tanh for refined output
                 # ['swish', 'relu'],      # Modern combo: Self-gated smooth + standard sharp (EfficientNet style)
                 # ['gelu', 'tanh'],       # BERT-inspired: Gaussian error + hyperbolic tangent (NLP-proven)
@@ -2380,8 +3109,9 @@ def get_default_param_grid(model_type, mask_values=None):
             
             # Recurrent Activations - Gate control mechanisms for memory flow
             'classifier__recurrent_activations': [
+                ['sigmoid'],
                 # ['sigmoid', 'hard_sigmoid'],    # Standard: Smooth gating → fast approximation
-                ['tanh', 'sigmoid'],            # Expressive: Full range gating → standard sigmoid (current)
+                # ['tanh', 'sigmoid'],            # Expressive: Full range gating → standard sigmoid (current)
                 # ['hard_sigmoid', 'sigmoid'],    # Efficient: Fast approximation → standard (speed optimized)
             ],
             
@@ -2427,7 +3157,8 @@ def get_default_param_grid(model_type, mask_values=None):
             'classifier__batch_size': [
                 # 16,     # Small batches: Noisy gradients promote generalization, better for small datasets (current)
                 # 32,     # Medium batches: Balanced approach, good for most scenarios
-                64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
+                # 64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
+                128,
             ],
             
             # Classification Decision Boundary - CRITICAL: Should reflect class balance and costs
@@ -2471,6 +3202,461 @@ def get_default_param_grid(model_type, mask_values=None):
     
     return param_grid
 
+def optimize_thresholds_cv(estimator, X_val, y_val, y_mask_val=2, 
+                          metrics=['f1', 'accuracy', 'precision', 'recall'], 
+                          threshold_range=(0.1, 0.9), n_thresholds=81, verbose=False):
+    """
+    Optimize classification thresholds for validation data within CV context.
+    
+    Args:
+        estimator: Fitted classifier with predict_proba method
+        X_val: Validation features
+        y_val: Validation labels (with masking)
+        y_mask_val: Value representing masked positions
+        metrics: List of metrics to optimize thresholds for
+        threshold_range: Range of thresholds to search
+        n_thresholds: Number of thresholds to test
+        verbose: Whether to print optimization details
+        
+    Returns:
+        dict: Optimized thresholds and scores for each metric
+    """
+    try:
+        from sklearn.metrics import roc_auc_score, average_precision_score
+        
+        # Get probability predictions
+        y_pred_proba = estimator.predict_proba(X_val)
+        
+        # Handle different probability shapes
+        if y_pred_proba.ndim > 2:
+            y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+        
+        # For binary classification, use positive class probabilities
+        if y_pred_proba.shape[1] == 2:
+            y_pred_proba_pos = y_pred_proba[:, 1]
+        else:
+            y_pred_proba_pos = y_pred_proba.ravel()
+        
+        # Initialize threshold tuner
+        tuner = ThresholdTuner(threshold_range=threshold_range, 
+                              n_thresholds=n_thresholds,
+                              y_mask_val=y_mask_val)
+        
+        # Tune thresholds for specified metrics
+        tuning_results = tuner.tune_all_binary_thresholds(y_val, y_pred_proba_pos, 
+                                                         metrics=metrics, verbose=verbose)
+        
+        # Extract optimized scores for each metric
+        optimized_scores = {}
+        optimal_thresholds = {}
+        
+        for metric_name in metrics:
+            if metric_name in tuning_results:
+                optimal_thresholds[metric_name] = tuning_results[metric_name]['optimal_threshold']
+                optimized_scores[metric_name] = tuning_results[metric_name]['optimal_score']
+            else:
+                optimal_thresholds[metric_name] = 0.5
+                optimized_scores[metric_name] = 0.0
+        
+        # Add AUC scores (threshold-independent)
+        y_val_flat = y_val.ravel()
+        y_pred_proba_flat = y_pred_proba_pos.ravel()
+        mask = y_val_flat != y_mask_val
+        
+        if np.sum(mask) > 0:
+            y_val_valid = y_val_flat[mask]
+            y_pred_proba_valid = y_pred_proba_flat[mask]
+            
+            # Ensure binary data for AUC calculation
+            if len(np.unique(y_val_valid)) == 2 and np.all(np.isin(y_val_valid, [0, 1])):
+                try:
+                    optimized_scores['roc_auc'] = roc_auc_score(y_val_valid, y_pred_proba_valid)
+                    optimized_scores['pr_auc'] = average_precision_score(y_val_valid, y_pred_proba_valid)
+                except:
+                    optimized_scores['roc_auc'] = 0.5
+                    optimized_scores['pr_auc'] = 0.0
+            else:
+                optimized_scores['roc_auc'] = 0.5
+                optimized_scores['pr_auc'] = 0.0
+        
+        return {
+            'optimized_scores': optimized_scores,
+            'optimal_thresholds': optimal_thresholds,
+            'tuning_results': tuning_results
+        }
+        
+    except Exception as e:
+        logging.warning(format_warning_message(f"Threshold optimization failed: {e}"))
+        # Return default values
+        default_scores = {metric: 0.0 for metric in metrics}
+        default_thresholds = {metric: 0.5 for metric in metrics}
+        default_scores.update({'roc_auc': 0.5, 'pr_auc': 0.0})
+        
+        return {
+            'optimized_scores': default_scores,
+            'optimal_thresholds': default_thresholds,
+            'tuning_results': {}
+        }
+
+
+# ===================================================================
+# Comprehensive Result Storage Functions
+# ===================================================================
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder for numpy types"""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
+        return super().default(obj)
+
+def convert_numpy_types(obj):
+    """Recursively convert numpy types to native Python types and filter out non-serializable objects"""
+    import types
+    
+    # Filter out functions and other non-serializable objects
+    if callable(obj) or isinstance(obj, (types.FunctionType, types.MethodType, types.LambdaType)):
+        return None
+    
+    if isinstance(obj, dict):
+        return {str(k) if isinstance(k, (np.integer, np.floating)) else k: convert_numpy_types(v) 
+                for k, v in obj.items() if not callable(v)}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj if not callable(item)]
+    elif isinstance(obj, tuple):
+        filtered_items = [convert_numpy_types(item) for item in obj if not callable(item)]
+        return tuple(filtered_items)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    else:
+        return obj
+
+def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold, hyperparams, 
+                           outer_test_subject=None, inner_validation_subject=None, immediate_save=True):
+    """
+    Save comprehensive results for a single inner fold using TensorBoard directory structure.
+    
+    Args:
+        results_dict: Dictionary containing all evaluation results
+        experiment_dir: Base experiment directory
+        outer_fold: Outer fold index
+        inner_fold: Inner fold index
+        hyperparams: Hyperparameters used for this fold
+        outer_test_subject: Test subject name for outer fold
+        inner_validation_subject: Validation subject name for inner fold
+        immediate_save: Whether to save immediately (default: True)
+    """
+    try:
+        # Create TensorBoard-style directory structure
+        # Format: outer_fold_01_test_PW_EM59 > bs128_dasigmoid_du1_do0.2_ep2_hd64_lr0.001_optadam_ct0.85_nf150_vt0.01 > inner_fold_01_val_PW_FH57
+        outer_fold_dir = os.path.join(
+            experiment_dir, 
+            f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+        )
+        
+        # Create hyperparameter string using the same logic as TensorBoard logging
+        if hyperparams and isinstance(hyperparams, dict):
+            exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+            param_name_map = {
+                'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
+                'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
+                'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
+                'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act'
+            }
+            
+            param_parts = []
+            for k, v in hyperparams.items():
+                # Remove known pipeline prefixes for cleaner directory names
+                for prefix in ['classifier__', 'scaler__', 'feature_selector__']:
+                    if k.startswith(prefix):
+                        k = k[len(prefix):]
+                        break
+                if k in exclude_keys:
+                    continue
+                
+                short_k = param_name_map.get(k, k)
+                
+                # Format value more compactly
+                if isinstance(v, list):
+                    if all(isinstance(x, (int, float)) for x in v):
+                        v_str = 'x'.join(map(str, v))
+                    else:
+                        v_str = str(v).replace(' ', '').replace("'", "")
+                elif isinstance(v, float):
+                    if v == int(v):
+                        v_str = str(int(v))
+                    else:
+                        v_str = f"{v:.4f}".rstrip('0').rstrip('.')
+                else:
+                    v_str = str(v)
+                
+                param_parts.append(f"{short_k}{v_str}")
+            
+            param_str = "_".join(param_parts)
+            # Ensure the path isn't too long
+            if len(param_str) > 100:
+                priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
+                priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
+                param_str = "_".join(priority_parts[:6])
+        else:
+            param_str = "default"
+        
+        hyperparams_dir = os.path.join(outer_fold_dir, param_str)
+        inner_fold_dir = os.path.join(
+            hyperparams_dir, 
+            f"inner_fold_{inner_fold + 1:02d}_val_{inner_validation_subject}" if inner_validation_subject 
+            else f"inner_fold_{inner_fold + 1:02d}"
+        )
+        
+        # Create the directory
+        os.makedirs(inner_fold_dir, exist_ok=True)
+        
+        # Create comprehensive result dictionary
+        inner_fold_result = {
+            'metadata': {
+                'outer_fold': outer_fold,
+                'inner_fold': inner_fold,
+                'outer_test_subject': outer_test_subject,
+                'inner_validation_subject': inner_validation_subject,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'hyperparameters': hyperparams.copy() if hyperparams else {},
+            },
+            'evaluation_results': results_dict.copy(),
+            'model_info': {
+                'n_training_samples': results_dict.get('n_train_samples', 0),
+                'n_validation_samples': results_dict.get('n_val_samples', 0),
+                'n_selected_features': results_dict.get('n_selected_features', 0),
+                'selected_features': results_dict.get('selected_features', []),
+            }
+        }
+        
+        # Save as JSON for human readability
+        json_filename = "evaluation_results.json"
+        json_path = os.path.join(inner_fold_dir, json_filename)
+        
+        # Convert numpy types before JSON serialization
+        json_safe_result = convert_numpy_types(inner_fold_result)
+        with open(json_path, 'w') as f:
+            json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
+        
+        # Also save as pickle for complete data preservation
+        pkl_filename = "evaluation_results.pkl"
+        pkl_path = os.path.join(inner_fold_dir, pkl_filename)
+        
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(inner_fold_result, f)
+            
+        return json_path, pkl_path
+        
+    except Exception as e:
+        logging.warning(format_warning_message(f"Failed to save inner fold results: {e}"))
+        return None, None
+
+
+def save_refit_results(results_dict, experiment_dir, outer_fold, hyperparams, 
+                      outer_test_subject=None, immediate_save=True):
+    """
+    Save comprehensive results for refit on full training set using TensorBoard directory structure.
+    
+    Args:
+        results_dict: Dictionary containing all evaluation results
+        experiment_dir: Base experiment directory  
+        outer_fold: Outer fold index
+        hyperparams: Best hyperparameters used for refit
+        outer_test_subject: Test subject name for outer fold
+        immediate_save: Whether to save immediately (default: True)
+    """
+    try:
+        # Create TensorBoard-style directory structure for refit results
+        # Format: outer_fold_01_test_PW_EM59 > default (for refit results)
+        outer_fold_dir = os.path.join(
+            experiment_dir, 
+            f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+        )
+        refit_results_dir = os.path.join(outer_fold_dir, "default")
+        os.makedirs(refit_results_dir, exist_ok=True)
+        
+        # Create comprehensive result dictionary
+        refit_result = {
+            'metadata': {
+                'outer_fold': outer_fold,
+                'outer_test_subject': outer_test_subject,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'best_hyperparameters': hyperparams.copy() if hyperparams else {},
+                'refit_stage': 'full_training_set'
+            },
+            'evaluation_results': results_dict.copy(),
+            'model_info': {
+                'n_training_samples': results_dict.get('n_train_samples', 0),
+                'n_test_samples': results_dict.get('n_test_samples', 0),
+                'n_selected_features': results_dict.get('n_selected_features', 0),
+                'selected_features': results_dict.get('selected_features', []),
+            },
+            'final_performance': {
+                'test_scores': results_dict.get('test_scores', {}),
+                'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
+                'threshold_curves': results_dict.get('threshold_curves', {}),
+            }
+        }
+        
+        # Save as JSON for human readability
+        json_filename = "refit_results.json"
+        json_path = os.path.join(refit_results_dir, json_filename)
+        
+        # Convert numpy types before JSON serialization
+        json_safe_result = convert_numpy_types(refit_result)
+        with open(json_path, 'w') as f:
+            json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
+        
+        # Also save as pickle for complete data preservation
+        pkl_filename = "refit_results.pkl"
+        pkl_path = os.path.join(refit_results_dir, pkl_filename)
+        
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(refit_result, f)
+            
+        return json_path, pkl_path
+        
+    except Exception as e:
+        logging.warning(format_warning_message(f"Failed to save refit results: {e}"))
+        return None, None
+
+
+def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
+                                    selected_features, hyperparams, train_info, val_info):
+    """
+    Create a comprehensive results dictionary for storage.
+    
+    Args:
+        fold_scores: Dictionary of metric scores
+        optimal_thresholds: Dictionary of optimal thresholds
+        threshold_results: Complete threshold optimization results
+        selected_features: List of selected feature indices
+        hyperparams: Hyperparameters used
+        train_info: Training set information
+        val_info: Validation set information
+        
+    Returns:
+        Dictionary with all results organized for storage
+    """
+    return {
+        # Core evaluation metrics
+        'metric_scores': fold_scores.copy() if fold_scores else {},
+        'optimal_thresholds': optimal_thresholds.copy() if optimal_thresholds else {},
+        
+        # Detailed threshold analysis
+        'threshold_optimization': {
+            'tuning_results': threshold_results.get('tuning_results', {}),
+            'optimization_curves': threshold_results.get('optimization_curves', {}),
+            'threshold_ranges': threshold_results.get('threshold_ranges', {}),
+        },
+        
+        # Feature selection results  
+        'feature_selection': {
+            'selected_features': selected_features.copy() if isinstance(selected_features, list) else list(selected_features) if selected_features is not None else [],
+            'n_selected_features': len(selected_features) if selected_features else 0,
+            'selection_scores': getattr(selected_features, 'scores_', None).tolist() if hasattr(selected_features, 'scores_') and getattr(selected_features, 'scores_', None) is not None else None,
+        },
+        
+        # Hyperparameters
+        'hyperparameters': hyperparams.copy() if hyperparams else {},
+        
+        # Data information
+        'data_info': {
+            'train_samples': train_info.get('n_samples', 0),
+            'train_shape': train_info.get('shape', None),
+            'train_class_distribution': train_info.get('class_dist', {}),
+            'val_samples': val_info.get('n_samples', 0),
+            'val_shape': val_info.get('shape', None), 
+            'val_class_distribution': val_info.get('class_dist', {}),
+        },
+        
+        # Training metadata
+        'training_metadata': {
+            'training_time': train_info.get('training_time', 0),
+            'evaluation_time': val_info.get('evaluation_time', 0),
+            'memory_usage': train_info.get('memory_usage', {}),
+        }
+    }
+
+
+def aggregate_inner_fold_results(experiment_dir, outer_fold):
+    """
+    Aggregate all inner fold results for a given outer fold.
+    
+    Args:
+        experiment_dir: Base experiment directory
+        outer_fold: Outer fold index
+        
+    Returns:
+        Dictionary with aggregated results
+    """
+    try:
+        inner_results_dir = os.path.join(experiment_dir, "inner_fold_results", f"outer_fold_{outer_fold:02d}")
+        
+        if not os.path.exists(inner_results_dir):
+            return {}
+            
+        # Load all inner fold results
+        inner_fold_results = []
+        result_files = [f for f in os.listdir(inner_results_dir) if f.endswith('_results.pkl')]
+        
+        for result_file in sorted(result_files):
+            result_path = os.path.join(inner_results_dir, result_file)
+            try:
+                with open(result_path, 'rb') as f:
+                    result = pickle.load(f)
+                    inner_fold_results.append(result)
+            except Exception as e:
+                logging.warning(format_warning_message(f"Failed to load {result_file}: {e}"))
+                continue
+        
+        if not inner_fold_results:
+            return {}
+            
+        # Aggregate results across inner folds
+        aggregated = {
+            'metadata': {
+                'outer_fold': outer_fold,
+                'n_inner_folds': len(inner_fold_results),
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            },
+            'hyperparameter_analysis': {},
+            'metric_summaries': {},
+            'feature_selection_analysis': {},
+        }
+        
+        # Analyze hyperparameter performance
+        hyperparam_performance = defaultdict(list)
+        for result in inner_fold_results:
+            hyperparams = result['metadata']['hyperparameters']
+            scores = result['evaluation_results']['metric_scores']
+            
+            # Create hashable hyperparameter key
+            hyperparam_key = tuple(sorted(hyperparams.items())) if isinstance(hyperparams, dict) else str(hyperparams)
+            hyperparam_performance[hyperparam_key].append(scores)
+        
+        aggregated['hyperparameter_analysis'] = dict(hyperparam_performance)
+        
+        return aggregated
+        
+    except Exception as e:
+        logging.warning(format_warning_message(f"Failed to aggregate inner fold results: {e}"))
+        return {}
+
+
 def run_nested_cv_with_inner_padding(X_list, y_list, groups, 
                                     subject_names=None,
                                     model_type='lstm',
@@ -2505,7 +3691,6 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
     """
     from sklearn.model_selection import ParameterGrid
     from collections import defaultdict, Counter
-    import numpy as np
     
     if verbose >= 1:
         logging.info(f"\n[CV_INNER_PAD] Starting nested cross-validation with inner-fold specific padding")
@@ -2665,42 +3850,34 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
                         y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
                         
-                        # Multi-metric evaluation using scoring functions
-                        fold_scores = {}
-                        for metric_name, scorer in scoring_functions.items():
-                            try:
-                                # Check if scorer needs probabilities by examining metric name or scorer attributes
-                                needs_proba = (
-                                    'auc' in metric_name.lower() or 
-                                    'roc' in metric_name.lower() or 
-                                    hasattr(scorer, '_needs_proba') and scorer._needs_proba or
-                                    hasattr(scorer, '_kwargs') and scorer._kwargs.get('needs_proba', False)
-                                )
-                                
-                                if needs_proba:
-                                    # For metrics that need probabilities (AUC, PR-AUC)
-                                    if len(y_val_proba.shape) == 2 and y_val_proba.shape[1] == 2:
-                                        # Standard binary classification probabilities
-                                        fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_proba[:, 1].ravel())
-                                    else:
-                                        # Sequence-to-sequence case - use direct scoring function
-                                        if hasattr(scorer._score_func, '__name__') and 'masked' in scorer._score_func.__name__:
-                                            fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_proba, inner_mask_values.get('y_mask', -1))
-                                        else:
-                                            # Fallback to flattened approach
-                                            fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_proba.ravel())
-                                else:
-                                    # For metrics that need predictions (F1, precision, recall, accuracy)
-                                    if hasattr(scorer._score_func, '__name__') and 'masked' in scorer._score_func.__name__:
-                                        fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_pred, inner_mask_values.get('y_mask', -1))
-                                    else:
-                                        fold_scores[metric_name] = scorer._score_func(y_inner_val.ravel(), y_val_pred.ravel())
-                            except Exception as e:
-                                if verbose >= 1:
-                                    logging.warning(f"[CV_INNER_PAD]       Failed to calculate {metric_name}: {e}")
-                                fold_scores[metric_name] = 0.0
+                        # Threshold-optimized evaluation for LSTM models
+                        if verbose >= 2:
+                            logging.info(f"[CV_INNER_PAD]       Optimizing thresholds for validation metrics")
                         
-                        # Primary score for hyperparameter selection (F1)
+                        # Define metrics to optimize thresholds for
+                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        
+                        # Optimize thresholds using validation data
+                        threshold_results = optimize_thresholds_cv(
+                            estimator=lstm_classifier,
+                            X_val=X_val_transformed,
+                            y_val=y_inner_val,
+                            y_mask_val=inner_mask_values.get('y_mask', -1),
+                            metrics=threshold_metrics,
+                            verbose=(verbose >= 3)
+                        )
+                        
+                        # Use threshold-optimized scores
+                        fold_scores = threshold_results['optimized_scores']
+                        
+                        # Store optimal thresholds for this fold
+                        optimal_thresholds = threshold_results['optimal_thresholds']
+                        
+                        if verbose >= 2:
+                            primary_threshold = optimal_thresholds.get('f1', 0.5)
+                            logging.info(f"[CV_INNER_PAD]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                        
+                        # Primary score for hyperparameter selection (threshold-optimized F1)
                         score = fold_scores.get('f1', 0.0)
                         
                     else:
@@ -2712,28 +3889,34 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         y_val_pred = inner_pipeline.predict(X_inner_val_2d)
                         y_val_proba = inner_pipeline.predict_proba(X_inner_val_2d)
                         
-                        # Multi-metric evaluation for non-LSTM models
-                        fold_scores = {}
-                        for metric_name, scorer in scoring_functions.items():
-                            try:
-                                # Check if scorer needs probabilities by examining metric name or scorer attributes
-                                needs_proba = (
-                                    'auc' in metric_name.lower() or 
-                                    'roc' in metric_name.lower() or 
-                                    hasattr(scorer, '_needs_proba') and scorer._needs_proba or
-                                    hasattr(scorer, '_kwargs') and scorer._kwargs.get('needs_proba', False)
-                                )
-                                
-                                if needs_proba:
-                                    fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_proba[:, 1])
-                                else:
-                                    fold_scores[metric_name] = scorer._score_func(y_inner_val, y_val_pred)
-                            except Exception as e:
-                                if verbose >= 1:
-                                    logging.warning(f"[CV_INNER_PAD]       Failed to calculate {metric_name}: {e}")
-                                fold_scores[metric_name] = 0.0
+                        # Threshold-optimized evaluation for non-LSTM models
+                        if verbose >= 2:
+                            logging.info(f"[CV_INNER_PAD]       Optimizing thresholds for validation metrics")
                         
-                        # Primary score for hyperparameter selection (F1)
+                        # Define metrics to optimize thresholds for
+                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        
+                        # Optimize thresholds using validation data
+                        threshold_results = optimize_thresholds_cv(
+                            estimator=inner_pipeline,
+                            X_val=X_inner_val_2d,
+                            y_val=y_inner_val,
+                            y_mask_val=inner_mask_values.get('y_mask', -1),
+                            metrics=threshold_metrics,
+                            verbose=(verbose >= 3)
+                        )
+                        
+                        # Use threshold-optimized scores
+                        fold_scores = threshold_results['optimized_scores']
+                        
+                        # Store optimal thresholds for this fold
+                        optimal_thresholds = threshold_results['optimal_thresholds']
+                        
+                        if verbose >= 2:
+                            primary_threshold = optimal_thresholds.get('f1', 0.5)
+                            logging.info(f"[CV_INNER_PAD]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                        
+                        # Primary score for hyperparameter selection (threshold-optimized F1)
                         score = fold_scores.get('f1', 0.0)
                     
                     inner_scores.append(score)
@@ -2743,6 +3926,50 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                     if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
                         selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
                         inner_selected_features.append(selected_features)
+                    
+                    # === COMPREHENSIVE RESULT STORAGE FOR INNER FOLD ===
+                    try:
+                        # Gather comprehensive training and validation information
+                        train_info = {
+                            'n_samples': len(y_inner_train),
+                            'shape': X_inner_train.shape if hasattr(X_inner_train, 'shape') else None,
+                            'class_dist': dict(zip(*np.unique(y_inner_train, return_counts=True))),
+                        }
+                        
+                        val_info = {
+                            'n_samples': len(y_inner_val),
+                            'shape': X_inner_val.shape if hasattr(X_inner_val, 'shape') else None,
+                            'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
+                        }
+                        
+                        # Create comprehensive results dictionary
+                        comprehensive_results = create_comprehensive_results_dict(
+                            fold_scores=fold_scores,
+                            optimal_thresholds=optimal_thresholds,
+                            threshold_results=threshold_results,
+                            selected_features=selected_features if 'selected_features' in locals() else [],
+                            hyperparams=params,
+                            train_info=train_info,
+                            val_info=val_info
+                        )
+                        
+                        # Save results immediately to prevent data loss
+                        json_path, pkl_path = save_inner_fold_results(
+                            results_dict=comprehensive_results,
+                            experiment_dir=experiment_dir,
+                            outer_fold=outer_fold,
+                            inner_fold=inner_fold,
+                            hyperparams=params,
+                            outer_test_subject=test_subject_name,
+                            inner_validation_subject=val_subject_name,
+                            immediate_save=True
+                        )
+                        
+                        if verbose >= 2 and json_path:
+                            logging.info(f"[CV_INNER_PAD]     Saved comprehensive results to: {os.path.basename(json_path)}")
+                            
+                    except Exception as save_error:
+                        logging.warning(format_warning_message(f"[CV_INNER_PAD]     Failed to save inner fold results: {save_error}"))
                     
                     # Enhanced logging with multiple metrics
                     if verbose >= 2:
@@ -2754,14 +3981,12 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         lstm_classifier = inner_pipeline.named_steps['classifier']
                         if hasattr(lstm_classifier, 'model') and lstm_classifier.model is not None:
                             del lstm_classifier.model
-                        import tensorflow as tf
                         tf.keras.backend.clear_session()
-                        import gc
                         gc.collect()
                 
                 except Exception as e:
                     if verbose >= 1:
-                        logging.warning(f"[CV_INNER_PAD]     Inner fold {inner_fold + 1} failed: {e}")
+                        logging.warning(format_warning_message(f"[CV_INNER_PAD]     Inner fold {inner_fold + 1} failed: {e}"))
                     inner_scores.append(0.0)  # Penalty for failed folds
                     inner_selected_features.append([])
                     inner_all_metrics.append({})  # Add empty metrics for failed folds
@@ -2844,7 +4069,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             best_score = 0.0
             best_features = []
             if verbose >= 1:
-                logging.warning(f"[CV_INNER_PAD] No valid scores found, using default parameters")
+                logging.warning(format_warning_message(f"[CV_INNER_PAD] No valid scores found, using default parameters"))
         
         # Step 9: Final retrain using OUTER TRAINING DATA for padding length
         if verbose >= 1:
@@ -2902,32 +4127,97 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 # Fit the LSTM classifier with test set validation monitoring
                 lstm_classifier.fit(X_train_final, y_outer_train)
                 
-                # Get predictions from transformed test data
-                y_test_pred = lstm_classifier.predict(X_test_final)
+                # Threshold-optimized test evaluation for LSTM models
+                if verbose >= 1:
+                    logging.info(f"[CV_INNER_PAD] Computing threshold-optimized test metrics")
+                
+                # First, tune thresholds on the outer training data
+                if verbose >= 2:
+                    logging.info(f"[CV_INNER_PAD] Tuning thresholds on outer training data")
+                
+                # Define metrics to optimize thresholds for
+                threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                
+                # Optimize thresholds using outer training data
+                train_threshold_results = optimize_thresholds_cv(
+                    estimator=lstm_classifier,
+                    X_val=X_train_final,
+                    y_val=y_outer_train,
+                    y_mask_val=outer_mask_values.get('y_mask', -1),
+                    metrics=threshold_metrics,
+                    verbose=(verbose >= 3)
+                )
+                
+                optimal_thresholds = train_threshold_results['optimal_thresholds']
+                
+                # Apply optimized thresholds to test predictions
+                test_metrics = {}
                 y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
                 
-                # Calculate comprehensive test metrics using scoring functions
-                test_metrics = {}
-                for metric_name, scoring_func in final_scoring_functions.items():
+                # Get positive class probabilities
+                if y_test_pred_proba.ndim > 2:
+                    y_test_pred_proba = y_test_pred_proba.reshape(-1, y_test_pred_proba.shape[-1])
+                
+                if y_test_pred_proba.shape[1] == 2:
+                    y_test_proba_pos = y_test_pred_proba[:, 1]
+                else:
+                    y_test_proba_pos = y_test_pred_proba.ravel()
+                
+                # Apply masking to test data
+                y_test_flat = y_outer_test.ravel()
+                y_test_proba_flat = y_test_proba_pos.ravel()
+                mask = y_test_flat != outer_mask_values.get('y_mask', -1)
+                
+                if np.sum(mask) > 0:
+                    y_test_valid = y_test_flat[mask]
+                    y_test_proba_valid = y_test_proba_flat[mask]
+                    
+                    # Calculate threshold-optimized metrics
+                    for metric_name in threshold_metrics:
+                        threshold = optimal_thresholds.get(metric_name, 0.5)
+                        y_test_pred_thresh = (y_test_proba_valid > threshold)
+                        
+                        try:
+                            if metric_name == 'f1':
+                                from sklearn.metrics import f1_score
+                                test_metrics[metric_name] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
+                            elif metric_name == 'accuracy':
+                                from sklearn.metrics import accuracy_score
+                                test_metrics[metric_name] = accuracy_score(y_test_valid, y_test_pred_thresh)
+                            elif metric_name == 'precision':
+                                from sklearn.metrics import precision_score
+                                test_metrics[metric_name] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'recall':
+                                from sklearn.metrics import recall_score
+                                test_metrics[metric_name] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'balanced_accuracy':
+                                from sklearn.metrics import balanced_accuracy_score
+                                test_metrics[metric_name] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
+                        except Exception as e:
+                            logging.warning(format_warning_message(f"[CV] Could not calculate threshold-optimized {metric_name}: {e}"))
+                            test_metrics[metric_name] = np.nan
+                    
+                    # Add AUC scores (threshold-independent)
                     try:
-                        # For metrics that need probabilities (like AUC, PR-AUC)
-                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
-                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
-                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba[:, 1])
-                            else:
-                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba.ravel())
-                        else:
-                            # For metrics that need predictions (like F1, precision, recall, accuracy)
-                            score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred.ravel())
-                        test_metrics[metric_name] = score
+                        from sklearn.metrics import roc_auc_score, average_precision_score
+                        test_metrics['roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
+                        test_metrics['pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
                     except Exception as e:
-                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        logging.warning(format_warning_message(f"[CV] Could not calculate AUC metrics: {e}"))
+                        test_metrics['roc_auc'] = np.nan
+                        test_metrics['pr_auc'] = np.nan
+                else:
+                    # No valid test data
+                    for metric_name in threshold_metrics + ['roc_auc', 'pr_auc']:
                         test_metrics[metric_name] = np.nan
                 
                 # Extract primary metrics for backward compatibility
                 test_f1 = test_metrics.get('f1', np.nan)
                 test_auc = test_metrics.get('roc_auc', np.nan)
                 test_accuracy = test_metrics.get('accuracy', np.nan)
+                
+                if verbose >= 1:
+                    logging.info(f"[CV_INNER_PAD] Test metrics with optimized thresholds: F1={test_f1:.4f}, AUC={test_auc:.4f}, Acc={test_accuracy:.4f}")
             else:
                 # For other models
                 X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
@@ -2952,7 +4242,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                             score = scoring_func._score_func(y_outer_test, y_test_pred)
                         test_metrics[metric_name] = score
                     except Exception as e:
-                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
                         test_metrics[metric_name] = np.nan
                 
                 # Extract primary metrics for backward compatibility
@@ -2960,7 +4250,65 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 test_auc = test_metrics.get('roc_auc', np.nan)
                 test_accuracy = test_metrics.get('accuracy', np.nan)
             
-            # Store results with all test metrics
+            # === COMPREHENSIVE REFIT RESULT STORAGE ===
+            try:
+                # Gather comprehensive training and test information
+                train_info = {
+                    'n_samples': len(y_outer_train),
+                    'shape': X_outer_train.shape if hasattr(X_outer_train, 'shape') else None,
+                    'class_dist': dict(zip(*np.unique(y_outer_train, return_counts=True))),
+                }
+                
+                test_info = {
+                    'n_samples': len(y_outer_test),
+                    'shape': X_outer_test.shape if hasattr(X_outer_test, 'shape') else None,
+                    'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
+                }
+                
+                # Create comprehensive refit results dictionary
+                comprehensive_refit_results = {
+                    # Test performance metrics
+                    'test_scores': test_metrics.copy(),
+                    'optimal_thresholds': optimal_thresholds.copy() if 'optimal_thresholds' in locals() else {},
+                    
+                    # Model and feature information
+                    'best_hyperparameters': best_params.copy() if best_params else {},
+                    'selected_features': best_features.copy() if best_features else [],
+                    'n_selected_features': len(best_features) if best_features else 0,
+                    
+                    # Data information
+                    'n_train_samples': train_info['n_samples'],
+                    'n_test_samples': test_info['n_samples'],
+                    'train_class_distribution': train_info['class_dist'],
+                    'test_class_distribution': test_info['class_dist'],
+                    
+                    # Cross-validation information
+                    'best_inner_cv_score': best_score,
+                    'test_subject_id': test_subject_number,
+                    'test_subject_name': test_subject_name,
+                    
+                    # Technical details
+                    'outer_mask_values': outer_mask_values.copy() if outer_mask_values else {},
+                    'max_sequence_length': outer_mask_values.get('max_length', None) if outer_mask_values else None,
+                }
+                
+                # Save comprehensive refit results immediately
+                json_path, pkl_path = save_refit_results(
+                    results_dict=comprehensive_refit_results,
+                    experiment_dir=experiment_dir,
+                    outer_fold=outer_fold,
+                    hyperparams=best_params,
+                    outer_test_subject=test_subject_name,
+                    immediate_save=True
+                )
+                
+                if verbose >= 1 and json_path:
+                    logging.info(f"[CV_INNER_PAD] Saved comprehensive refit results to: {os.path.basename(json_path)}")
+                    
+            except Exception as save_error:
+                logging.warning(format_warning_message(f"[CV_INNER_PAD] Failed to save refit results: {save_error}"))
+            
+            # Store results with all test metrics (for backward compatibility)
             result_dict = {
                 'fold': outer_fold + 1,
                 'test_subject': test_subject_number,
@@ -2982,14 +4330,15 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             all_best_params.append(best_params)
             
             if verbose >= 1:
-                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() if not np.isnan(v)])
+                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() 
+                                            if isinstance(v, (int, float, np.number)) and not np.isnan(float(v))])
                 logging.info(f"[CV_INNER_PAD] Test metrics: {test_metrics_str}")
                 logging.info(f"[CV_INNER_PAD] Final max sequence length: {outer_mask_values.get('max_length', 'N/A')}")
                 logging.info(f"[CV_INNER_PAD] OUTER FOLD {outer_fold + 1} COMPLETED")
         
         except Exception as e:
             if verbose >= 1:
-                logging.error(f"[CV_INNER_PAD] Final training/testing failed for fold {outer_fold + 1}: {e}")
+                logging.error(format_error_message(f"[CV_INNER_PAD] Final training/testing failed for fold {outer_fold + 1}: {e}"))
             
             # Store failed result
             dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1, 'max_length': None}
@@ -3028,10 +4377,16 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             all_test_metrics = {}
             for result in outer_results:
                 for key, value in result.items():
-                    if key.startswith('test_') and not np.isnan(value):
-                        if key not in all_test_metrics:
-                            all_test_metrics[key] = []
-                        all_test_metrics[key].append(value)
+                    if key.startswith('test_') and value is not None:
+                        # Check if value is numeric and not NaN
+                        try:
+                            if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                                if key not in all_test_metrics:
+                                    all_test_metrics[key] = []
+                                all_test_metrics[key].append(value)
+                        except (TypeError, ValueError):
+                            # Skip non-numeric values
+                            continue
             
             # Log primary metrics
             logging.info(f"[CV_INNER_PAD] Average F1: {avg_f1:.4f}")
@@ -3075,7 +4430,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     """
     from sklearn.model_selection import ParameterGrid
     from collections import defaultdict, Counter
-    import numpy as np
     
     if verbose >= 1:
         logging.info(f"\n[CV] Starting nested cross-validation with feature aggregation")
@@ -3201,12 +4555,65 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
                         inner_selected_features.append(selected_features)
                     
+                    # === COMPREHENSIVE RESULT STORAGE FOR SKLEARN INNER FOLD ===
+                    try:
+                        # Gather comprehensive training and validation information
+                        train_info = {
+                            'n_samples': len(y_inner_train),
+                            'shape': X_inner_train.shape if hasattr(X_inner_train, 'shape') else None,
+                            'class_dist': dict(zip(*np.unique(y_inner_train, return_counts=True))),
+                        }
+                        
+                        val_info = {
+                            'n_samples': len(y_inner_val),
+                            'shape': X_inner_val.shape if hasattr(X_inner_val, 'shape') else None,
+                            'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
+                        }
+                        
+                        # Create simplified results dictionary for sklearn models
+                        sklearn_results = {
+                            'metric_scores': {'f1': score},  # Simple F1 score for sklearn models
+                            'optimal_thresholds': {'f1': 0.5},  # Default threshold
+                            'threshold_optimization': {},  # No threshold optimization for simple sklearn CV
+                            'feature_selection': {
+                                'selected_features': selected_features if 'selected_features' in locals() else [],
+                                'n_selected_features': len(selected_features) if 'selected_features' in locals() else 0,
+                            },
+                            'hyperparameters': params.copy() if params else {},
+                            'data_info': {
+                                'train_samples': train_info['n_samples'],
+                                'train_shape': train_info['shape'],
+                                'train_class_distribution': train_info['class_dist'],
+                                'val_samples': val_info['n_samples'],
+                                'val_shape': val_info['shape'],
+                                'val_class_distribution': val_info['class_dist'],
+                            },
+                        }
+                        
+                        # Save results immediately to prevent data loss
+                        json_path, pkl_path = save_inner_fold_results(
+                            results_dict=sklearn_results,
+                            experiment_dir=experiment_dir,
+                            outer_fold=outer_fold,
+                            inner_fold=inner_fold,
+                            hyperparams=params,
+                            outer_test_subject=test_subject_name,
+                            inner_validation_subject=val_subject_name,
+                            immediate_save=True
+                        )
+                        
+                        if verbose >= 2 and json_path:
+                            logging.info(f"[CV]     Saved sklearn inner fold results to: {os.path.basename(json_path)}")
+                            
+                    except Exception as save_error:
+                        logging.warning(format_warning_message(f"[CV]     Failed to save sklearn inner fold results: {save_error}"))
+                    
                     if verbose >= 2:
                         logging.info(f"[CV]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
                 
                 except Exception as e:
                     if verbose >= 1:
-                        logging.warning(f"[CV]     Inner fold {inner_fold + 1} failed: {e}")
+                        logging.warning(format_warning_message(f"[CV]     Inner fold {inner_fold + 1} failed: {e}"))
                     inner_scores.append(0.0)  # Penalty for failed folds
                     inner_selected_features.append([])
             
@@ -3257,7 +4664,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_score = 0.0
             best_features = []
             if verbose >= 1:
-                logging.warning(f"[CV] No valid scores found, using default parameters")
+                logging.warning(format_warning_message(f"[CV] No valid scores found, using default parameters"))
         
         # Step 4: Final retrain on full training set with best parameters
         if verbose >= 1:
@@ -3299,7 +4706,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred.ravel())
                         test_metrics[metric_name] = score
                     except Exception as e:
-                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
                         test_metrics[metric_name] = np.nan
                 
                 # Extract primary metrics for backward compatibility
@@ -3330,7 +4737,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             score = scoring_func._score_func(y_outer_test, y_test_pred)
                         test_metrics[metric_name] = score
                     except Exception as e:
-                        logging.warning(f"[CV] Could not calculate {metric_name} for test set: {e}")
+                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
                         test_metrics[metric_name] = np.nan
                 
                 # Extract primary metrics for backward compatibility
@@ -3338,7 +4745,61 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 test_auc = test_metrics.get('roc_auc', np.nan)
                 test_accuracy = test_metrics.get('accuracy', np.nan)
             
-            # Store results with all test metrics
+            # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
+            try:
+                # Gather comprehensive training and test information
+                train_info = {
+                    'n_samples': len(y_outer_train),
+                    'shape': X_outer_train.shape if hasattr(X_outer_train, 'shape') else None,
+                    'class_dist': dict(zip(*np.unique(y_outer_train, return_counts=True))),
+                }
+                
+                test_info = {
+                    'n_samples': len(y_outer_test),
+                    'shape': X_outer_test.shape if hasattr(X_outer_test, 'shape') else None,
+                    'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
+                }
+                
+                # Create comprehensive sklearn refit results dictionary
+                comprehensive_sklearn_refit_results = {
+                    # Test performance metrics
+                    'test_scores': test_metrics.copy(),
+                    'optimal_thresholds': {},  # No threshold optimization for sklearn models
+                    
+                    # Model and feature information
+                    'best_hyperparameters': best_params.copy() if best_params else {},
+                    'selected_features': best_features.copy() if best_features else [],
+                    'n_selected_features': len(best_features) if best_features else 0,
+                    
+                    # Data information
+                    'n_train_samples': train_info['n_samples'],
+                    'n_test_samples': test_info['n_samples'],
+                    'train_class_distribution': train_info['class_dist'],
+                    'test_class_distribution': test_info['class_dist'],
+                    
+                    # Cross-validation information
+                    'best_inner_cv_score': best_score,
+                    'test_subject_id': test_subject_number,
+                    'test_subject_name': test_subject_name,
+                }
+                
+                # Save comprehensive sklearn refit results immediately
+                json_path, pkl_path = save_refit_results(
+                    results_dict=comprehensive_sklearn_refit_results,
+                    experiment_dir=experiment_dir,
+                    outer_fold=outer_fold,
+                    hyperparams=best_params,
+                    outer_test_subject=test_subject_name,
+                    immediate_save=True
+                )
+                
+                if verbose >= 1 and json_path:
+                    logging.info(f"[CV] Saved comprehensive sklearn refit results to: {os.path.basename(json_path)}")
+                    
+            except Exception as save_error:
+                logging.warning(format_warning_message(f"[CV] Failed to save sklearn refit results: {save_error}"))
+            
+            # Store results with all test metrics (for backward compatibility)
             result_dict = {
                 'fold': outer_fold + 1,
                 'test_subject': test_subject_number,
@@ -3358,13 +4819,14 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             all_best_params.append(best_params)
             
             if verbose >= 1:
-                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() if not np.isnan(v)])
+                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() 
+                                            if isinstance(v, (int, float, np.number)) and not np.isnan(float(v))])
                 logging.info(f"[CV] Test metrics: {test_metrics_str}")
                 logging.info(f"[CV] OUTER FOLD {outer_fold + 1} COMPLETED")
         
         except Exception as e:
             if verbose >= 1:
-                logging.error(f"[CV] Final training/testing failed for fold {outer_fold + 1}: {e}")
+                logging.error(format_error_message(f"[CV] Final training/testing failed for fold {outer_fold + 1}: {e}"))
             
             # Store failed result
             outer_results.append({
@@ -3399,10 +4861,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             all_test_metrics = {}
             for result in outer_results:
                 for key, value in result.items():
-                    if key.startswith('test_') and not np.isnan(value):
-                        if key not in all_test_metrics:
-                            all_test_metrics[key] = []
-                        all_test_metrics[key].append(value)
+                    if key.startswith('test_') and value is not None:
+                        # Check if value is numeric and not NaN
+                        try:
+                            if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                                if key not in all_test_metrics:
+                                    all_test_metrics[key] = []
+                                all_test_metrics[key].append(value)
+                        except (TypeError, ValueError):
+                            # Skip non-numeric values
+                            continue
             
             # Log primary metrics
             logging.info(f"[CV] Average F1: {avg_f1:.4f}")
@@ -3434,7 +4902,8 @@ def get_optimal_n_jobs(model_type='lstm', conservative=True):
         int: Optimal number of jobs
     """
     try:
-        import psutil
+        if not PSUTIL_AVAILABLE:
+            raise ImportError("psutil not available")
         cpu_count = psutil.cpu_count(logical=True)
         memory_gb = psutil.virtual_memory().total / (1024**3)
         available_memory_gb = psutil.virtual_memory().available / (1024**3)
@@ -3472,10 +4941,10 @@ def get_optimal_n_jobs(model_type='lstm', conservative=True):
         return n_jobs
         
     except ImportError:
-        logging.warning("[SYSTEM] psutil not available, using conservative default")
+        logging.warning(format_warning_message("[SYSTEM] psutil not available, using conservative default"))
         return 1 if model_type.lower() == 'lstm' else 2
     except Exception as e:
-        logging.warning(f"[SYSTEM] Error detecting system resources: {e}")
+        logging.warning(format_warning_message(f"[SYSTEM] Error detecting system resources: {e}"))
         return 1
 
 
@@ -3605,8 +5074,24 @@ def main(verbose: int = 2):
         TS_DataMat, labels, epoch_mapping, verbose=verbose
     ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
     
+    # SLICE DATA TO ONLY 4 SUBJECTS FOR FASTER TESTING
+    unique_subjects = np.unique(groups)
+    selected_subjects = unique_subjects[:3]  # Take first 3 subjects
+    
     if verbose >= 1:
-        logging.info(f"[MAIN] Unpadded trial data prepared:")
+        logging.info(f"[MAIN] SLICING DATA TO 3 SUBJECTS FOR TESTING")
+        logging.info(f"[MAIN] Original subjects: {len(unique_subjects)} ({unique_subjects})")
+        logging.info(f"[MAIN] Selected subjects: {len(selected_subjects)} ({selected_subjects})")
+    
+    # Filter data to only include selected subjects
+    subject_mask = np.isin(groups, selected_subjects)
+    X_list = [X_list[i] for i in range(len(X_list)) if subject_mask[i]]
+    y_list = [y_list[i] for i in range(len(y_list)) if subject_mask[i]]
+    groups = groups[subject_mask]
+    trial_metadata = [trial_metadata[i] for i in range(len(trial_metadata)) if subject_mask[i]]
+    
+    if verbose >= 1:
+        logging.info(f"[MAIN] Unpadded trial data prepared (4 subjects only):")
         logging.info(f"[MAIN] Number of trials: {len(X_list)}")
         logging.info(f"[MAIN] Number of subjects: {len(np.unique(groups))}")
         logging.info(f"[MAIN] Trial lengths: min={min(len(x) for x in X_list)}, max={max(len(x) for x in X_list)}, avg={np.mean([len(x) for x in X_list]):.1f}")
@@ -3721,15 +5206,30 @@ def main(verbose: int = 2):
     # Most common hyperparameters
     param_counts = {}
     for params in all_best_params:
-        param_key = tuple(sorted(params.items()))
+        # Convert lists to tuples to make them hashable
+        hashable_params = {}
+        for key, value in params.items():
+            if isinstance(value, list):
+                hashable_params[key] = tuple(value)
+            else:
+                hashable_params[key] = value
+        param_key = tuple(sorted(hashable_params.items()))
         param_counts[param_key] = param_counts.get(param_key, 0) + 1
     
     if param_counts:
         most_common_params = max(param_counts, key=param_counts.get)
+        # Convert tuples back to lists for display
+        display_params = {}
+        for key, value in dict(most_common_params).items():
+            if isinstance(value, tuple):
+                display_params[key] = list(value)
+            else:
+                display_params[key] = value
         if verbose >= 1:
-            logging.info(f"[MAIN] Most common best parameters: {dict(most_common_params)}")
+            logging.info(f"[MAIN] Most common best parameters: {display_params}")
     else:
         most_common_params = {}
+        display_params = {}
         if verbose >= 1:
             logging.info(f"[MAIN] No best parameters collected (likely due to failed CV folds)")
             logging.info(f"[MAIN] all_best_params length: {len(all_best_params)}")
@@ -3753,35 +5253,6 @@ def main(verbose: int = 2):
             'n_trials': len(X_list)
         }, f, indent=2)
     
-    # Plot results
-    plt.figure(figsize=(15, 5))
-    
-    plt.subplot(1, 3, 1)
-    plt.bar(results_df['test_subject'], results_df['test_f1'])
-    plt.title('F1 Score by Subject')
-    plt.xlabel('Subject')
-    plt.ylabel('F1 Score')
-    plt.xticks(rotation=45)
-    
-    plt.subplot(1, 3, 2)
-    plt.bar(results_df['test_subject'], results_df['test_auc'])
-    plt.title('AUC Score by Subject')
-    plt.xlabel('Subject')
-    plt.ylabel('AUC Score')
-    plt.xticks(rotation=45)
-    
-    plt.subplot(1, 3, 3)
-    plt.bar(results_df['test_subject'], results_df['test_accuracy'])
-    plt.title('Accuracy by Subject')
-    plt.xlabel('Subject')
-    plt.ylabel('Accuracy')
-    plt.xticks(rotation=45)
-    
-    plt.tight_layout()
-    plt.savefig(f"{summary_dir}/results_by_subject.png", dpi=300, bbox_inches='tight')
-    if verbose >= 1:
-        plt.show()
-    
     if verbose >= 1:
         logging.info(f"[MAIN] Nested cross-validation complete!")
     
@@ -3789,7 +5260,6 @@ def main(verbose: int = 2):
 
 
 if __name__ == "__main__":
-    import argparse
     
     parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
     parser.add_argument("--verbose", type=int, default=3, choices=[0, 1, 2, 3],
@@ -3808,15 +5278,13 @@ if __name__ == "__main__":
     
     # Override n_jobs if specified
     if args.force_n_jobs_all:
-        logging.warning("Forcing n_jobs=-1 - this may cause memory issues with LSTM!")
-        import sys
+        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
         # Temporarily modify the get_optimal_n_jobs function
         def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
             return -1
         sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
     elif args.n_jobs is not None:
         logging.info(f"Using manual n_jobs={args.n_jobs}")
-        import sys
         def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
             return args.n_jobs
         sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
