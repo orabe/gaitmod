@@ -1226,10 +1226,16 @@ class MonitoringMaskedAccuracy(tf.keras.metrics.Metric):
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
         
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+        
         # Only compute on valid (non-masked) elements
-        values = tf.cast(tf.equal(y_true_masked, y_pred_rounded), tf.float32) * mask
+        values = tf.cast(tf.equal(y_true_masked, y_pred_rounded), tf.float32) * sample_weight
         self.total.assign_add(tf.reduce_sum(values))
-        self.count.assign_add(tf.reduce_sum(mask))
+        self.count.assign_add(tf.reduce_sum(sample_weight))
 
     def result(self):
         return self.total / (self.count + K.epsilon())
@@ -1256,9 +1262,15 @@ class MonitoringMaskedF1Score(tf.keras.metrics.Metric):
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * mask)
-        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * mask)
-        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * mask)
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+
+        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
+        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * sample_weight)
+        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
 
         # Use assign_add() correctly
         self.tp.assign_add(tp)
@@ -1292,8 +1304,14 @@ class MonitoringMaskedPrecision(tf.keras.metrics.Metric):
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(tf.cast(y_true_masked * y_pred_rounded, tf.float32) * mask)
-        fp = tf.reduce_sum(tf.cast((1 - y_true_masked) * y_pred_rounded, tf.float32) * mask)
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+
+        tp = tf.reduce_sum(tf.cast(y_true_masked * y_pred_rounded, tf.float32) * sample_weight)
+        fp = tf.reduce_sum(tf.cast((1 - y_true_masked) * y_pred_rounded, tf.float32) * sample_weight)
 
         # Assign scalar values directly
         self.tp.assign_add(tp)
@@ -1322,8 +1340,14 @@ class MonitoringMaskedRecall(tf.keras.metrics.Metric):
         y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
         y_pred_rounded = tf.round(y_pred)
 
-        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * mask)
-        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * mask)
+        # Apply mask to sample weight if provided
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask  # Use mask as the sample weight if none is provided
+
+        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
+        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
 
         self.tp.assign_add(tf.cast(tp, tf.float32))
         self.fn.assign_add(tf.cast(fn, tf.float32))
@@ -1717,7 +1741,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': 2}, 
-                 callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
+                 use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
@@ -1745,6 +1769,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Masking parameters
         self.mask_values = mask_values
+        self.use_class_weights = use_class_weights
         
         # Subject and fold tracking parameters
         self.experiment_dir = experiment_dir
@@ -1808,7 +1833,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
         model.compile(optimizer=optimizer,
-                      loss=self.masked_loss_binary_crossentropy,
+                      loss=self.weighted_masked_binary_crossentropy_loss,
                       metrics=[
                           MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
                           MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
@@ -1853,11 +1878,17 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         with strategy.scope():
             self.model = self.build_model(self.input_shape)
         
-        # Calculate class weights using value-based filtering
-        class_weights = self.calculate_class_weights(y)
+        # Calculate and store class weights for the loss function (if enabled)
         self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
         
-        logging.debug(f"[FIT] Class weights: {class_weights}")
+        if self.use_class_weights:
+            class_weights = self.calculate_class_weights(y)
+            self._class_weights = class_weights  # Loss function will access this during training
+            logging.debug(f"[FIT] Class weights calculated: {class_weights}")
+            logging.info(f"[FIT] Class weights will be applied during training via loss function: {class_weights}")
+        else:
+            self._class_weights = None
+            logging.info(f"[FIT] Class weighting disabled - using balanced loss function")
 
         # Setup callbacks - use provided callbacks or create simple defaults
         if callbacks is not None:
@@ -1889,11 +1920,10 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         else:
             logging.info(f"[LSTM FIT] No validation data provided - training only")
         
-        # For sequence-to-sequence tasks (TimeDistributed output), class_weight causes shape conflicts
-        # Class balancing should be handled in the custom loss function instead
-        # TODO: Implement class balancing in the masked loss function if needed
-        logging.info(f"[LSTM FIT] Skipping class_weight for sequence-to-sequence task to avoid shape conflicts")
-        logging.info(f"[LSTM FIT] Class distribution for reference: {class_weights}") #TODO: round the values
+        # For sequence-to-sequence tasks (TimeDistributed output), class_weight parameter causes shape conflicts
+        # Class balancing is now handled in the custom masked loss function instead
+        logging.info(f"[LSTM FIT] Class weighting applied via custom loss function (avoids shape conflicts)")
+        logging.info(f"[LSTM FIT] Class weights: {class_weights}")
         
         # Log training configuration
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
@@ -1933,7 +1963,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         class_weights = compute_class_weight('balanced', classes=np.unique(y_flat), y=y_flat)
         return dict(enumerate(class_weights))
     
-    def masked_loss_binary_crossentropy(self, y_true, y_pred, sample_weight=None):
+    def weighted_masked_binary_crossentropy_loss(self, y_true, y_pred, sample_weight=None):
         # Ensure the inputs are in the correct type for calculations
         y_true = tf.cast(y_true, tf.float32)  # Convert to float32 for consistency
         y_pred = tf.cast(y_pred, tf.float32)  # Convert to float32 for consistency
@@ -1945,15 +1975,30 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         # Use value-based masking
         mask = tf.cast(tf.not_equal(y_true, self.mask_values['y_mask']), tf.float32)
         
-        y_true = tf.clip_by_value(y_true, 0, 1)  # Ensure y_true is between 0 and 1
+        y_true_clipped = tf.clip_by_value(y_true, 0, 1)  # Ensure y_true is between 0 and 1
 
         # Clip y_pred values to avoid log(0) errors and ensure stability
         epsilon = tf.keras.backend.epsilon()  # Small constant to avoid log(0)
         y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
 
         # Calculate the binary cross-entropy loss manually
-        loss = - y_true * tf.math.log(y_pred) - (1 - y_true) * tf.math.log(1 - y_pred)
+        loss = - y_true_clipped * tf.math.log(y_pred) - (1 - y_true_clipped) * tf.math.log(1 - y_pred)
 
+        # Apply class weighting if available
+        if hasattr(self, '_class_weights') and self._class_weights is not None:
+            # Create class weight tensor: [weight_for_class_0, weight_for_class_1]
+            class_weights_tensor = tf.constant([
+                self._class_weights.get(0, 1.0),
+                self._class_weights.get(1, 1.0)
+            ], dtype=tf.float32)
+            
+            # Apply class weights per timestep
+            # y_true_clipped is 0 or 1, so we can use it as indices
+            class_weights_per_sample = tf.gather(class_weights_tensor, tf.cast(y_true_clipped, tf.int32))
+            
+            # Apply class weights to loss
+            loss = loss * class_weights_per_sample
+            
         # Apply the mask to ignore padded values
         loss = loss * mask  # Element-wise multiplication with the mask
 
