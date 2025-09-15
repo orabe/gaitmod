@@ -2327,37 +2327,62 @@ class ThresholdTuner:
         # Define supported metrics optimized for binary classification
         self._metric_functions = {
             'accuracy': {
-                'func': lambda y_true, y_pred: accuracy_score(y_true, y_pred),
+                'func': self._accuracy_metric,
                 'requires_both_classes': False,
                 'description': 'Binary classification accuracy'
             },
             'f1': {
-                'func': lambda y_true, y_pred: f1_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'func': self._f1_metric,
                 'requires_both_classes': True,
                 'description': 'F1 score for positive class'
             },
             'precision': {
-                'func': lambda y_true, y_pred: precision_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'func': self._precision_metric,
                 'requires_both_classes': True,
                 'description': 'Precision for positive class'
             },
             'recall': {
-                'func': lambda y_true, y_pred: recall_score(y_true, y_pred, pos_label=1, zero_division=0),
+                'func': self._recall_metric,
                 'requires_both_classes': True,
                 'description': 'Recall (sensitivity) for positive class'
             },
             'specificity': {
-                'func': lambda y_true, y_pred: recall_score(y_true, y_pred, pos_label=0, zero_division=0),
+                'func': self._specificity_metric,
                 'requires_both_classes': True,
                 'description': 'Specificity (recall for negative class)'
             },
             'balanced_accuracy': {
-                'func': lambda y_true, y_pred: (recall_score(y_true, y_pred, pos_label=1, zero_division=0) + 
-                                              recall_score(y_true, y_pred, pos_label=0, zero_division=0)) / 2,
+                'func': self._balanced_accuracy_metric,
                 'requires_both_classes': True,
                 'description': 'Balanced accuracy (mean of sensitivity and specificity)'
             }
         }
+    
+    def _accuracy_metric(self, y_true, y_pred):
+        """Compute accuracy metric."""
+        return accuracy_score(y_true, y_pred)
+    
+    def _f1_metric(self, y_true, y_pred):
+        """Compute F1 score metric."""
+        return f1_score(y_true, y_pred, pos_label=1, zero_division=0)
+    
+    def _precision_metric(self, y_true, y_pred):
+        """Compute precision metric."""
+        return precision_score(y_true, y_pred, pos_label=1, zero_division=0)
+    
+    def _recall_metric(self, y_true, y_pred):
+        """Compute recall metric."""
+        return recall_score(y_true, y_pred, pos_label=1, zero_division=0)
+    
+    def _specificity_metric(self, y_true, y_pred):
+        """Compute specificity metric."""
+        return recall_score(y_true, y_pred, pos_label=0, zero_division=0)
+    
+    def _balanced_accuracy_metric(self, y_true, y_pred):
+        """Compute balanced accuracy metric."""
+        recall_pos = recall_score(y_true, y_pred, pos_label=1, zero_division=0)
+        recall_neg = recall_score(y_true, y_pred, pos_label=0, zero_division=0)
+        return (recall_pos + recall_neg) / 2
     
     def add_custom_binary_metric(self, metric_name, metric_func, requires_both_classes=True, description=None):
         """
@@ -3133,95 +3158,115 @@ def get_default_param_grid(model_type, mask_values=None):
     # Model-specific parameters
     if model_type == 'lstm':
         logging.info(f"[PARAM_GRID] Creating LSTM parameter grid")
-        lstm_params = {
-            # Network Architecture - Layer configuration for temporal pattern learning
-            'classifier__hidden_dims': [
-                # [64, 32],           # Funnel: Feature extraction → refinement (good for noise reduction)
-                # [128, 64],          # Large-to-medium: Max capacity for complex temporal patterns (current)
-                # [64, 64, 32],       # Deep funnel: Multi-level hierarchical learning (3-layer depth)
-                # [32, 64, 32],       # Hourglass: Compression → expansion → compression (bottleneck learning)
-                [64],
-            ],
+        
+        # HYPERPARAMETER OPTIMIZATION STRATEGY FOR SMALL BIOMEDICAL DATASETS
+        # Dataset characteristics: N~200, 120 timesteps, 100 features, ~40% minority class
+        # Key principles:
+        # 1. Small architectures (32-96 units) to prevent overfitting
+        # 2. High dropout (0.3-0.5) for regularization  
+        # 3. Small batches (8-16) for better generalization
+        # 4. Lower learning rates (0.0005-0.002) for stability
+        # 5. Lower patience (10-15) to prevent overfitting
+        # 6. Threshold adjustment (0.4-0.5) for class imbalance
+        # 7. RMSprop optimizer (better for RNNs than Adam)
+        # 8. Tanh activation (better gradient flow for small data)
+        
+        # Architecture configurations with matched lengths (hidden_dims, activations, recurrent_activations)
+        # Each tuple defines one complete LSTM architecture
+        # OPTIMIZED FOR SMALL BIOMEDICAL DATASET (N~200, high-dim features, imbalanced classes)
+        architecture_configs = [
+            # Config 1: Conservative single-layer LSTM - Best for small datasets
+            # {
+            #     'classifier__hidden_dims': [32],
+            #     'classifier__activations': ['tanh'],  # Better gradient flow for small data
+            #     'classifier__recurrent_activations': ['sigmoid']
+            # },
+            # # Config 2: Medium single-layer LSTM 
+            # {
+            #     'classifier__hidden_dims': [64],
+            #     'classifier__activations': ['tanh'],
+            #     'classifier__recurrent_activations': ['sigmoid']
+            # },
+            # # Config 3: Larger single-layer for comparison
+            # {
+            #     'classifier__hidden_dims': [96],
+            #     'classifier__activations': ['tanh'],
+            #     'classifier__recurrent_activations': ['sigmoid']
+            # },
+            # # Config 4: Very shallow 2-layer (only if single layers don't work)
+            {
+                'classifier__hidden_dims': [32, 64],
+                'classifier__activations': ['tanh', 'tanh'],
+                'classifier__recurrent_activations': ['sigmoid', 'sigmoid']
+            },
+        ]
+        
+        # Other hyperparameters that don't need length matching
+        other_params = {
             
-            # Activation Functions - Non-linearity for different learning phases
-            'classifier__activations': [
-                ["relu"]
-                # ['tanh', 'relu'],       # Smooth-to-sharp: Tanh captures subtle patterns, ReLU for sparse features (current)
-                # ['relu', 'tanh'],       # Sharp-to-smooth: ReLU for early features, tanh for refined output
-                # ['swish', 'relu'],      # Modern combo: Self-gated smooth + standard sharp (EfficientNet style)
-                # ['gelu', 'tanh'],       # BERT-inspired: Gaussian error + hyperbolic tangent (NLP-proven)
-            ],
-            
-            # Recurrent Activations - Gate control mechanisms for memory flow
-            'classifier__recurrent_activations': [
-                ['sigmoid'],
-                # ['sigmoid', 'hard_sigmoid'],    # Standard: Smooth gating → fast approximation
-                # ['tanh', 'sigmoid'],            # Expressive: Full range gating → standard sigmoid (current)
-                # ['hard_sigmoid', 'sigmoid'],    # Efficient: Fast approximation → standard (speed optimized)
-            ],
-            
-            # Dropout Regularization - Overfitting prevention for sequence learning
+            # Dropout Regularization - CRITICAL for small datasets to prevent overfitting
             'classifier__dropout': [
-                # 0.1,    # Light: Minimal regularization for small/clean datasets
-                0.2,    # Moderate: Balanced regularization for most cases (current: good baseline)
-                # 0.3,    # Strong: Heavy regularization for complex models prone to overfitting
-                # 0.4,    # Very strong: Maximum regularization for very complex/noisy data
+                # 0.3,    # Moderate-high: Good for small biomedical datasets
+                0.4,    # High: Strong regularization for overfitting prevention
+                # 0.5,    # Very high: Maximum regularization for tiny datasets
             ],
             # Output Layer Configuration - Final classification head
             'classifier__dense_units': [1],           # Single output for binary classification
             'classifier__dense_activation': ['sigmoid'],  # Sigmoid for probability output [0,1]
             
-            # Optimization Strategy - Gradient-based learning algorithm
+            # Optimization Strategy - RMSprop is often better for RNNs/LSTMs
             'classifier__optimizer': [
-                'adam',         # Adam: Adaptive moments, excellent default for most cases (current choice)
-                # 'adamw',        # AdamW: Adam with weight decay, better generalization, SOTA for transformers
-                # 'rmsprop',      # RMSprop: Root mean square prop, specifically good for RNNs, handles vanishing gradients
+                # 'RMSprop',      # RMSprop: Specifically designed for RNNs, handles vanishing gradients better
+                'adam',         # Adam: Good fallback, adaptive learning rates
+                # 'SGD'           # SGD: Baseline optimizer, may require more tuning
             ],
             
-            # Learning Rate - Step size for gradient updates (critical hyperparameter)
+            # Learning Rate - Lower rates for small datasets and stability
             'classifier__lr': [
-                # 0.0005,     # Conservative: Slower convergence but more stable, good for complex losses
-                0.001,      # Balanced: Standard choice, good convergence vs stability trade-off (current)
-                # 0.002,      # Aggressive: Faster convergence but risk of overshooting minima
-                # 0.0001,     # Very conservative: Fine-tuning rate, good for transfer learning
+                # 0.0005,     # Conservative: Better for small datasets and stability
+                0.001,      # Standard: Good middle ground
+                # 0.002,      # Higher: For RMSprop which can handle higher rates
             ],
             
-            # Early Stopping Configuration - Convergence and overfitting control
+            # Early Stopping Configuration - Lower patience for small datasets
             'classifier__patience': [
-                # 15,     # Moderate patience: Good balance between training time and performance
-                20,     # High patience: Extensive search for optimal performance (current: thorough training)
-                # 10,     # Standard patience: Faster training, may stop too early for complex patterns
+                # 10,     # Lower patience: Prevents overfitting on small datasets
+                15,     # Moderate patience: Good balance for biomedical data
             ],
             'classifier__epochs': [
-                # 150,    # Extended: More learning opportunities for complex patterns
-                2, 3,    # Long training: Maximum learning for intricate temporal dependencies (current)
-                # 120,    # Baseline: Standard training duration for most LSTM tasks
+                100,    # Sufficient for small datasets with early stopping
             ],
             
-            # Batch Size - Memory efficiency vs gradient quality trade-off
+            # Batch Size - Small batches for better generalization on small datasets
             'classifier__batch_size': [
-                # 16,     # Small batches: Noisy gradients promote generalization, better for small datasets (current)
-                # 32,     # Medium batches: Balanced approach, good for most scenarios
-                # 64,     # Large batches: Stable gradients but may overfit, needs larger learning rates
-                128,
+                # 8,      # Very small: Maximum generalization for tiny datasets
+                16,     # Small: Good balance for datasets N~200
+                # 32,     # Medium: If you have more data than expected
+                # 128,
             ],
             
-            # Classification Decision Boundary - CRITICAL: Should reflect class balance and costs
+            # Classification Decision Boundary - Adjusted for observed class imbalance (~40% positive)
             'classifier__threshold': [
-                0.5,    # Standard: Assumes balanced classes (50/50 split)
-                # 0.3,    # Lower: Favor positive class (use when positive class is minority)
-                # 0.7,    # Higher: Favor negative class (use when negative class is minority)
-                # 0.4,    # Slight bias toward positive class
-                # 0.6,    # Slight bias toward negative class
-            ],
-            'classifier__loss': ['binary_crossentropy'],       # BCE: Standard loss for binary classification with sigmoid
+                # 0.4,    # Lower threshold: Compensate for minority positive class (gait modulation)
+                # 0.45,   # Slightly lower: Balance between sensitivity and specificity
+                0.5,    # Standard: Baseline comparison
+            ]
         }
-        param_grid.update(lstm_params)
         
-        # logging.info(f"[PARAM_GRID] LSTM parameters: {list(lstm_params.keys())}")
-        logging.info(f"[PARAM_GRID] Dense units: {lstm_params['classifier__dense_units']}")
-        logging.info(f"[PARAM_GRID] Hidden dims: {lstm_params['classifier__hidden_dims']}")
-        logging.info(f"[PARAM_GRID] Epochs: {lstm_params['classifier__epochs']}")
+        # Create complete parameter grid by combining architecture configs with other params
+        from itertools import product
+        complete_params = []
+        for arch_config in architecture_configs:
+            for other_combo in product(*other_params.values()):
+                param_dict = arch_config.copy()
+                for key, value in zip(other_params.keys(), other_combo):
+                    param_dict[key] = value
+                complete_params.append(param_dict)
+        
+        # Instead of using ParameterGrid, return the pre-computed combinations
+        # This ensures proper length matching for LSTM architecture parameters
+        param_grid = complete_params
+        logging.info(f"[PARAM_GRID] Total combinations: {len(complete_params)}")
     elif model_type == 'rf':
         param_grid.update({
             'classifier__n_estimators': [100, 200],
@@ -3783,7 +3828,14 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
         # Step 2: Get parameter grid (use dummy mask values for initial setup)
         dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}
         param_grid = get_default_param_grid(model_type=model_type, mask_values=dummy_mask_values)
-        param_combinations = list(ParameterGrid(param_grid))
+        
+        # Handle different parameter grid structures
+        if model_type == 'lstm':
+            # For LSTM, param_grid is already a list of parameter combinations
+            param_combinations = param_grid
+        else:
+            # For other models, use ParameterGrid to create combinations
+            param_combinations = list(ParameterGrid(param_grid))
         
         if verbose >= 1:
             logging.info(f"[CV_INNER_PAD] Parameter combinations: {len(param_combinations)}")
@@ -4492,7 +4544,14 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         model_type=model_type, 
         mask_values=mask_values
     )
-    param_combinations = list(ParameterGrid(param_grid))
+    
+    # Handle different parameter grid structures
+    if model_type == 'lstm':
+        # For LSTM, param_grid is already a list of parameter combinations
+        param_combinations = param_grid
+    else:
+        # For other models, use ParameterGrid to create combinations
+        param_combinations = list(ParameterGrid(param_grid))
     
     if verbose >= 1:
         logging.info(f"[CV] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
@@ -5121,7 +5180,7 @@ def main(verbose: int = 2):
     
     # SLICE DATA TO ONLY 4 SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
-    selected_subjects = unique_subjects[:3]  # Take first 3 subjects
+    selected_subjects = unique_subjects#[:3]  # Take first 3 subjects
     
     if verbose >= 1:
         logging.info(f"[MAIN] SLICING DATA TO 3 SUBJECTS FOR TESTING")
@@ -5185,12 +5244,33 @@ def main(verbose: int = 2):
     from sklearn.model_selection import ParameterGrid
     dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}  # Temporary for parameter grid setup
     default_param_grid = get_default_param_grid('lstm', dummy_mask_values)
-    total_param_combinations = len(list(ParameterGrid(default_param_grid)))
+    
+    # Handle different parameter grid structures
+    if isinstance(default_param_grid, list):
+        # For LSTM, param_grid is already a list of parameter combinations
+        total_param_combinations = len(default_param_grid)
+    else:
+        # For other models, use ParameterGrid to count combinations
+        total_param_combinations = len(list(ParameterGrid(default_param_grid)))
     
     logging.info(f"[MAIN] Hyperparameter space: {total_param_combinations} combinations")
     
     # Setup hyperparameter experiment
-    hparam_logger = setup_hyperparameter_experiment(experiment_dir, default_param_grid)
+    try:
+        if isinstance(default_param_grid, list) and len(default_param_grid) > 0:
+            # For LSTM with pre-computed combinations, create a sample dict for hyperparameter setup
+            sample_params = {}
+            for key in default_param_grid[0].keys():
+                # Collect all unique values for each parameter
+                values = list(set(str(combo[key]) for combo in default_param_grid))
+                sample_params[key] = values
+            hparam_logger = setup_hyperparameter_experiment(experiment_dir, sample_params)
+        else:
+            # For other models with dict parameter grid
+            hparam_logger = setup_hyperparameter_experiment(experiment_dir, default_param_grid)
+    except Exception as e:
+        logging.error(f"Failed to setup hyperparameter experiment: {e}")
+        hparam_logger = None
     
     # Run nested CV with inner-fold specific padding
     logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding")
