@@ -6,11 +6,8 @@ from scipy.io import savemat
 from gaitmod.utils.utils import load_pkl, sync_data
 
 
-def load_data():
+def load_data(patient_epochs_path, subjects_event_idx_dict_path):
     """Load the preprocessed data from the pickles."""
-    patient_epochs_path = os.path.join("results", "pickles", "patients_epochs.pickle")
-    subjects_event_idx_dict_path = os.path.join("results", "pickles", "subjects_event_idx_dict.pickle")
-
     patient_epochs = load_pkl(patient_epochs_path)
     subjects_event_idx_dict = load_pkl(subjects_event_idx_dict_path)
 
@@ -179,10 +176,14 @@ def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_tr
 # ---------------------------------------------------
 
 def main():
-    patient_epochs, subjects_event_idx_dict, patient_names = load_data()
+    patient_epochs_path = os.path.join("results", "pickles", "filtered_patients_epochs.pickle")
+    subjects_event_idx_dict_path = os.path.join("results", "pickles", "subjects_event_idx_dict.pickle")
+
+    patient_epochs, subjects_event_idx_dict, patient_names = load_data(patient_epochs_path, subjects_event_idx_dict_path)
 
     channel_to_process = 0 # first channel
-    base_output_dir = '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa/data/hctsa_input_data'
+    # base_output_dir = '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa/data/hctsa_input_data'
+    base_output_dir = '../../../home/orabem/hctsa/'
 
     # patient_to_process = 'PW_EM59'
     # patient_epochs_to_process = {patient_to_process: patient_epochs[patient_to_process]}
@@ -197,14 +198,15 @@ def main():
     )
 
     # Process and save for MAT locally
-    filename = f'INP_gait_hctsa_chs{channel_to_process}_all_patients'
+    filename = f'INP_gait_hctsa_filtered_chs{channel_to_process}_all_patients'
     process_and_save_for_hctsa_mat(
         X_grouped_list, 
         y_grouped_list, 
         groups_per_trial, 
         trial_ids_per_trial,
         channel_to_use=channel_to_process,
-        filename=filename
+        filename=filename,
+        base_output_dir=base_output_dir
     )
     print("\nProcessing and saving for HCTSA completed.")
 
@@ -223,21 +225,25 @@ def main():
         }
     ]
     
-    # Upload the generated .mat file to server
-    success = sync_data(
-        source_configs=sync_configs,
-        target_base_path=None,  # Not used for uploads
-        direction='upload',
-        force_sync=True,  # Overwrite if file exists
-        verbose=True
-    )
-    
-    if success:
-        print(" Data successfully synced to remote server")
-    else:
-        print(" Failed to sync data to remote server")
+    try:
+        # Upload the generated .mat file to server
+        success = sync_data(
+            source_configs=sync_configs,
+            target_base_path=None,  # Not used for uploads
+            direction='upload',
+            force_sync=True,  # Overwrite if file exists
+            verbose=True
+        )
         
-    print("\nProcessing and remote sync completed!")
+        if success:
+            print(" Data successfully synced to remote server")
+        else:
+            print(" Failed to sync data to remote server")
+            
+        print("\nProcessing and remote sync completed!")
+        
+    except Exception as e:
+        print(f"An error occurred during sync: {e}")
 
 
 if __name__ == "__main__":
