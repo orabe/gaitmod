@@ -2,6 +2,9 @@ import numpy as np
 from typing import Dict, Any, Tuple, List, Optional, Union
 import mne
 import pandas as pd
+from scipy import signal as sp_signal
+from scipy import signal as sp_signal
+import numpy as np
 
 class DataProcessor:
     @staticmethod
@@ -284,13 +287,14 @@ class DataProcessor:
                                   data_type: str,
                                   sfreq: float, 
                                   config: dict, 
-                                  verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+                                  verbose: bool = False) -> Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray], Dict[str, Dict[str, List[int]]]]:
         """
         Prepares data and event indices for each subject across multiple sessions.
 
-        This function processes data such as LFP, IMU, EEG, etc by extracting trials from kinematic events and storing them in two dictionaries:
+        This function processes data such as LFP, IMU, EEG, etc by extracting trials from kinematic events and storing them in three dictionaries:
             - subjects_data_dict: A dictionary where each subject's trials (as 2D NumPy arrays) are stored. Each trial array has the shape (n_channels x n_times), where n_channels is the number of channels or sensors.
             - subjects_event_sample_idx_dict: A dictionary where each subject's event indices across trials are stored. The array shape is (n_trials x n_events). Each row corresponds to a specifc trial index and each column to a specific event label's index.
+            - subjects_session_trial_mapping: A dictionary where each subject's trials are mapped to their originating sessions. Format: {patient_id: {session_name: [trial_indices]}}
 
         Args:
             data (Dict[str, Dict[str, dict]]): Nested dictionary where the outer key is the subject name, and the inner dictionary contains session data for each subject.
@@ -300,12 +304,14 @@ class DataProcessor:
             verbose (bool, optional): Whether to print processing details for each subject and session. Defaults to True.
 
         Returns:
-            Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray]]:
+            Tuple[Dict[str, List[np.ndarray]], Dict[str, np.ndarray], Dict[str, Dict[str, List[int]]]]:
                 - subjects_data_dict: Dictionary of subjects with trials as 2D NumPy arrays.
                 - subjects_event_sample_idx_dict: Dictionary of subjects with event indices across trials.
+                - subjects_session_trial_mapping: Dictionary mapping each subject's trials to their originating sessions.
         """        
         subjects_data_dict = {}  # Stores data for each trial
         subjects_event_sample_idx_dict = {}  # Stores event indices per trial
+        subjects_session_trial_mapping = {}  # Stores session-to-trial mapping for each subject
 
         for subject_idx, subject in enumerate(data.keys()):
             if verbose: 
@@ -313,6 +319,9 @@ class DataProcessor:
             
             subjects_data_dict[subject] = []  # List of data for trials
             subjects_event_sample_idx_dict[subject] = []  # Initialize with an empty list
+            subjects_session_trial_mapping[subject] = {}  # Initialize session mapping for this subject
+            
+            current_trial_index = 0  # Track the current trial index across all sessions
 
             for session_idx, session in enumerate(data[subject].keys()):
                 if verbose: 
@@ -324,7 +333,7 @@ class DataProcessor:
                 events_kin_samples_valid = (session_data['events_KIN']['times'] * sfreq).astype(int)
                 
                 # Extract trials based on event kinematic samples
-                data_specific_trials = DataProcessor.create_trials(
+                data_specific_trials, valid_trials_mask = DataProcessor.create_trials(
                     events_kin_samples_valid,
                     session_data[data_type],
                     sfreq,
@@ -333,10 +342,26 @@ class DataProcessor:
                     session_data['session']
                 )
                 
+                # Track which trials belong to this session
+                session_trial_indices = []
+                n_trials_in_session = len(data_specific_trials)
+                
+                for i in range(n_trials_in_session):
+                    session_trial_indices.append(current_trial_index)
+                    current_trial_index += 1
+                
+                # Store the session-to-trial mapping
+                subjects_session_trial_mapping[subject][session] = session_trial_indices
+                
                 subjects_data_dict[subject].extend(data_specific_trials)  # Add trials to the subject's data
 
                 n_trials_per_session = events_kin_samples_valid.shape[1]
                 for session_trial_idx in range(n_trials_per_session):
+                    # CRITICAL BUG FIX: Only process event indices for trials that were not skipped
+                    if not valid_trials_mask[session_trial_idx]:
+                        if verbose:
+                            print(f"      Skipping event processing for trial {session_trial_idx} (was skipped in create_trials)")
+                        continue
                     
                     DataProcessor.check_event_order(
                         events_kin_samples_valid,
@@ -357,7 +382,7 @@ class DataProcessor:
             # Convert the list of event indices to a numpy array
             subjects_event_sample_idx_dict[subject] = np.array(subjects_event_sample_idx_dict[subject], dtype=np.int64)
 
-        return subjects_data_dict, subjects_event_sample_idx_dict
+        return subjects_data_dict, subjects_event_sample_idx_dict, subjects_session_trial_mapping
 
     # TODO: Transpose the shape of events_kin_samples to (n_trials, n_events) before passing it to this method for a more intuitive API.
     @staticmethod
@@ -366,7 +391,7 @@ class DataProcessor:
                       sfreq: float,
                       config: Dict[str, Any],
                       subject_id: str,
-                      session_id: str) -> np.ndarray:
+                      session_id: str) -> Tuple[List[np.ndarray], List[bool]]:
         """
         Extracts trial data based on event kinematic samples.
         Args:
@@ -374,12 +399,17 @@ class DataProcessor:
             data (np.ndarray): A 2D numpy array containing measurement data (LFP, EEG, IMU, etc.) with shape (n_channels, n_times).
             sfreq (float): Sampling frequency of the LFP data (Hz).
             config (Dict[str, Any]): Configuration settings for padding and truncating the data.
+            subject_id (str): Subject identifier for debugging messages.
+            session_id (str): Session identifier for debugging messages.
         Returns:
-            np.ndarray: A 3D numpy array containing LFP trials with shape (n_trials, n_channels, n_times).
+            Tuple[List[np.ndarray], List[bool]]: A tuple containing:
+                - trials_data: List of 2D numpy arrays containing trial data with shape (n_channels, n_times).
+                - valid_trials_mask: List of booleans indicating which trials were successfully processed (True) vs skipped (False).
         """
         n_events = events_kin_samples.shape[0]
         n_trials = events_kin_samples.shape[1]
         trials_data = []
+        valid_trials_mask = []
         
         for trial in range(n_trials):
             # Get trial start and stop times for this trial
@@ -389,6 +419,7 @@ class DataProcessor:
             #  # or trial_start_idx >= trial_stop_idx
             if trial_start_idx > data.shape[1] or trial_stop_idx > data.shape[1]:
                 print(f"\033[93mSkipping trial {trial}: [{trial_start_idx}, {trial_stop_idx}] is outside LFP data range (0, {data.shape[1]}) -- Subject {subject_id}, session {session_id}.\033[0m")
+                valid_trials_mask.append(False)
                 continue
             
             # Extract data for this trial
@@ -396,8 +427,9 @@ class DataProcessor:
             
             # Append trial data to the list
             trials_data.append(trial_data)
+            valid_trials_mask.append(True)
                 
-        return trials_data
+        return trials_data, valid_trials_mask
 
     @staticmethod
     def check_event_order(
@@ -560,7 +592,8 @@ class DataProcessor:
         expand_transition: float = 0.0, 
         discard_ambiguous: bool = False,
         mod_start_idx: int = 2,
-        mod_end_idx: int = 6) -> mne.epochs.EpochsArray:
+        mod_end_idx: int = 6,
+        event_dict: dict[str, int] = None) -> mne.epochs.EpochsArray:
         """
         Segments LFP trials into overlapping windows, assigns labels (0: normal, 1: modulation),
         and stores the results in an MNE Epochs object.
@@ -568,12 +601,16 @@ class DataProcessor:
         Args:
             trials (list of np.ndarray): List of LFP trials, each with shape (n_channels, n_samples).
             subjects_event_idx_dict (list of np.ndarray): List of event indices for each trial.
+            ch_names (list of str): List of channel names.
             sfreq (int): Sampling frequency of the signals.
             window_size (float): Size of each segment in seconds.
             overlap (float): Overlap fraction between consecutive windows.
             expand_transition (float): Amount of time (seconds) to expand mod_start/mod_end.
-            handle_short_trials (str): "truncate" to remove short trials, "pad" to zero-pad them.
             discard_ambiguous (bool): Whether to remove windows that overlap both states.
+            mod_start_idx (int): Index for modulation start event.
+            mod_end_idx (int): Index for modulation end event.
+            event_dict (dict[str, int]): Dictionary mapping class names to labels. 
+                Must contain exactly 2 classes for normal walking and modulation phases.
 
         Returns:
             mne.epochs.EpochsArray: MNE Epochs object containing the segmented data.
@@ -588,9 +625,19 @@ class DataProcessor:
 
         new_ch_names = DataProcessor.rename_lfp_channels(ch_names)
         info = mne.create_info(ch_names=new_ch_names, sfreq=sfreq, ch_types="dbs")
-        event_dict = {"normal_walking": 0, "modulation": 1}
+        
+        # Validate event_dict
+        if event_dict is None:
+            raise ValueError("event_dict must be provided. Example: {'normal_walking': 0, 'modulation': 1}")
+        
+        if len(event_dict) != 2:
+            raise ValueError(f"event_dict must contain exactly 2 classes, but got {len(event_dict)} classes")
+        
+        # Extract the two class labels (assuming lower value is normal, higher is modulation)
+        sorted_items = sorted(event_dict.items(), key=lambda x: x[1])
+        normal_label = sorted_items[0][1]
+        modulation_label = sorted_items[1][1]
 
-        # epochs_list = []
         for trial_idx, trial_data in enumerate(trials):
             n_channels, n_samples = trial_data.shape
 
@@ -614,9 +661,9 @@ class DataProcessor:
                 mod_ratio = mod_overlap / window_samples
 
                 if mod_ratio > 0.5:
-                    label = 1  # Modulation
+                    label = modulation_label  # Modulation
                 else:
-                    label = 0  # Normal walking
+                    label = normal_label  # Normal walking
 
                 if discard_ambiguous and 0 < mod_ratio < 0.5:
                     window_start += step_size
@@ -641,7 +688,7 @@ class DataProcessor:
             epochs_data,
             info,
             events=events_array,
-            event_id={"normal": 0, "modulation": 1},
+            event_id=event_dict,
             on_missing='raise',
         )
 
@@ -812,6 +859,171 @@ class DataProcessor:
             converted_labels.append(unique_label)
 
         return converted_labels
+
+    @staticmethod
+    def remove_trials_with_short_labels(
+        patients_epochs: Dict[str, mne.EpochsArray],
+        subjects_lfp_data_dict: Dict[str, List[np.ndarray]] = None,
+        subjects_event_idx_dict: Dict[str, List[np.ndarray]] = None,
+        min_epochs_per_class: int = 1,
+        verbose: bool = True
+    ) -> Tuple[Dict[str, mne.EpochsArray], Optional[Dict[str, List[np.ndarray]]], Optional[Dict[str, List[np.ndarray]]]]:
+        """
+        Removes trials that contain epochs from only one class (unbalanced trials) from ALL related data structures.
+        
+        This method ensures consistency across patients_epochs, subjects_lfp_data_dict, and subjects_event_idx_dict
+        by removing the same trials from all data structures simultaneously.
+        
+        Parameters:
+        -----------
+        patients_epochs : Dict[str, mne.EpochsArray]
+            Dictionary of patient EpochsArray objects containing segmented trials
+        subjects_lfp_data_dict : Dict[str, List[np.ndarray]], optional
+            Dictionary of raw LFP trial data per subject (will be filtered if provided)
+        subjects_event_idx_dict : Dict[str, List[np.ndarray]], optional
+            Dictionary of event indices per trial per subject (will be filtered if provided)
+        min_epochs_per_class : int, optional
+            Minimum number of epochs required for each class within a trial (default: 1)
+        verbose : bool, optional
+            Whether to print filtering details (default: True)
+            
+        Returns:
+        --------
+        Tuple containing:
+            - Dict[str, mne.EpochsArray]: Filtered patients_epochs
+            - Dict[str, List[np.ndarray]]: Filtered subjects_lfp_data_dict (or original if None provided)
+            - Dict[str, List[np.ndarray]]: Filtered subjects_event_idx_dict (or original if None provided)
+        """
+        filtered_patients_epochs = {}
+        filtered_subjects_lfp_data_dict = subjects_lfp_data_dict.copy() if subjects_lfp_data_dict else None
+        filtered_subjects_event_idx_dict = subjects_event_idx_dict.copy() if subjects_event_idx_dict else None
+        
+        overall_stats = {
+            'total_patients': len(patients_epochs),
+            'total_trials_removed': 0,
+            'total_epochs_removed': 0,
+            'patients_affected': 0
+        }
+        
+        for patient_name, epochs in patients_epochs.items():
+            if verbose:
+                print(f"\nProcessing patient: {patient_name}")
+                print("=" * 50)
+            
+            events = epochs.events.copy()  # Shape: (n_epochs, 3) - [onset, trial_id, class_label]
+            
+            # Get unique trial IDs 
+            trial_ids = np.unique(events[:, 1])
+            
+            # Find trials to keep and track filtered trials
+            trials_to_keep = []
+            filtered_trials = []
+            total_epochs_removed = 0
+            
+            for trial_id in trial_ids:
+                # Get events for this trial
+                trial_events = events[events[:, 1] == trial_id]
+                trial_labels = trial_events[:, 2]  # Extract class labels
+                
+                # Count epochs per class in this trial
+                normal_count = np.sum(trial_labels == 0)
+                modulation_count = np.sum(trial_labels == 1)
+                total_epochs_in_trial = len(trial_events)
+                
+                # Keep trial if it has minimum epochs for both classes
+                if (normal_count >= min_epochs_per_class and 
+                    modulation_count >= min_epochs_per_class):
+                    trials_to_keep.append(trial_id)
+                else:
+                    filtered_trials.append((trial_id, normal_count, modulation_count))
+                    total_epochs_removed += total_epochs_in_trial
+                    if verbose:
+                        print(f"\033[91mFiltered out trial {trial_id}: normal_walking={normal_count}, modulation={modulation_count} epochs (total {total_epochs_in_trial} epochs removed)\033[0m")
+            
+            if len(trials_to_keep) == 0:
+                raise ValueError(f"No balanced trials found for patient {patient_name} with the current criteria")
+            
+            # Print summary of filtering for this patient
+            if filtered_trials and verbose:
+                print(f"\033[91mPatient {patient_name}: {len(filtered_trials)} trials filtered out of {len(trial_ids)}\033[0m")
+                print(f"\033[91mPatient {patient_name}: {total_epochs_removed} epochs removed\033[0m")
+                overall_stats['patients_affected'] += 1
+            elif verbose:
+                print(f"Patient {patient_name}: All {len(trial_ids)} trials kept (no filtering needed)")
+            
+            # Update overall statistics
+            overall_stats['total_trials_removed'] += len(filtered_trials)
+            overall_stats['total_epochs_removed'] += total_epochs_removed
+            
+            # Filter epochs to keep only those from balanced trials
+            epochs_to_keep = np.isin(events[:, 1], trials_to_keep)
+            
+            # Create new EpochsArray with filtered data
+            filtered_data = epochs.get_data()[epochs_to_keep]
+            filtered_events = events[epochs_to_keep]
+            
+            # Re-map trial IDs to be sequential starting from 0
+            unique_kept_trials = np.unique(filtered_events[:, 1])
+            trial_mapping = {old_id: new_id for new_id, old_id in enumerate(unique_kept_trials)}
+            
+            for i, old_trial_id in enumerate(filtered_events[:, 1]):
+                filtered_events[i, 1] = trial_mapping[old_trial_id]
+            
+            # Create new EpochsArray
+            filtered_epochs = mne.EpochsArray(
+                filtered_data,
+                epochs.info.copy(),
+                events=filtered_events,
+                event_id=epochs.event_id.copy(),
+                verbose=False
+            )
+            
+            # Copy metadata if it exists
+            if hasattr(epochs, 'metadata') and epochs.metadata is not None:
+                filtered_epochs.metadata = epochs.metadata.iloc[epochs_to_keep].reset_index(drop=True)
+            
+            filtered_patients_epochs[patient_name] = filtered_epochs
+            
+            # Filter corresponding raw data structures if provided
+            if filtered_subjects_lfp_data_dict and patient_name in filtered_subjects_lfp_data_dict:
+                # Filter trials from subjects_lfp_data_dict
+                original_trials = filtered_subjects_lfp_data_dict[patient_name]
+                if len(original_trials) >= len(trial_ids):  # Safety check
+                    # Keep only trials that correspond to trials_to_keep
+                    # Map back from new trial IDs to original indices
+                    kept_trial_indices = [trial_id for trial_id in trials_to_keep]
+                    filtered_trials_data = [original_trials[i] for i in kept_trial_indices if i < len(original_trials)]
+                    filtered_subjects_lfp_data_dict[patient_name] = filtered_trials_data
+                    if verbose and len(filtered_trials) > 0:
+                        print(f"Updated subjects_lfp_data_dict for {patient_name}: {len(original_trials)} -> {len(filtered_trials_data)} trials")
+            
+            if filtered_subjects_event_idx_dict and patient_name in filtered_subjects_event_idx_dict:
+                # Filter trials from subjects_event_idx_dict  
+                original_events = filtered_subjects_event_idx_dict[patient_name]
+                if len(original_events) >= len(trial_ids):  # Safety check
+                    # Keep only events that correspond to trials_to_keep
+                    kept_trial_indices = [trial_id for trial_id in trials_to_keep]
+                    filtered_events_data = [original_events[i] for i in kept_trial_indices if i < len(original_events)]
+                    filtered_subjects_event_idx_dict[patient_name] = filtered_events_data
+                    if verbose and len(filtered_trials) > 0:
+                        print(f"Updated subjects_event_idx_dict for {patient_name}: {len(original_events)} -> {len(filtered_events_data)} trials")
+        
+        # Print overall summary
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"OVERALL FILTERING SUMMARY")
+            print(f"{'='*60}")
+            print(f"Total patients processed: {overall_stats['total_patients']}")
+            print(f"Patients affected by filtering: {overall_stats['patients_affected']}")
+            print(f"Total trials removed across all patients: {overall_stats['total_trials_removed']}")
+            print(f"Total epochs removed across all patients: {overall_stats['total_epochs_removed']}")
+            
+            if overall_stats['total_trials_removed'] == 0:
+                print(f"\033[92mNo trials needed to be removed - all data is already balanced!\033[0m")
+            else:
+                print(f"\033[93mData structures have been synchronized - epochs, raw trials, and event indices are consistent\033[0m")
+        
+        return filtered_patients_epochs, filtered_subjects_lfp_data_dict, filtered_subjects_event_idx_dict
     
     
     # Vectorized version of create_events_array
@@ -1142,3 +1354,424 @@ class DataProcessor:
                 position=config['data_preprocessing']['truncation']['truncation_position']
             )
         return trials
+
+    @staticmethod
+    def determine_adaptive_filter_params(patients_epochs: Dict[str, mne.EpochsArray], 
+                                    notch_freq: float = 50.0,
+                                    verbose: bool = True) -> Dict[str, any]:
+        """
+        Determine optimal filtering parameters based on epoch characteristics.
+        
+        This function analyzes the first patient's epochs to determine optimal filter
+        parameters that will be applied consistently across all patients.
+        
+        Parameters:
+        -----------
+        patients_epochs : Dict[str, mne.EpochsArray]
+            Dictionary of patient EpochsArray objects to analyze
+        notch_freq : float, optional
+            Notch filter center frequency in Hz (default: 50.0)
+        verbose : bool, optional
+            Whether to print parameter determination details (default: True)
+            
+        Returns:
+        --------
+        Dict[str, any]
+            Dictionary containing determined filter parameters:
+            - 'filter_order': int
+            - 'highpass_freq': float
+            - 'notch_width': float
+            - 'epoch_duration': float
+            - 'freq_resolution': float 
+            - 'sfreq': float
+            - 'nyquist': float
+            - 'warnings': List[str]
+        """                
+        # Get parameters from first patient (should be same for all)
+        first_patient = next(iter(patients_epochs.values()))
+        data = first_patient.get_data()
+        sfreq = first_patient.info['sfreq']
+        n_epochs, n_channels, n_samples = data.shape
+        
+        # Calculate epoch characteristics
+        epoch_duration = n_samples / sfreq
+        freq_resolution = sfreq / n_samples
+        nyquist = sfreq / 2
+        
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"DETERMINING ADAPTIVE FILTER PARAMETERS")
+            print(f"{'='*60}")
+            print(f"EPOCH CHARACTERISTICS (consistent across all patients):")
+            print(f"  - Duration: {epoch_duration:.2f} s ({n_samples} samples)")
+            print(f"  - Sampling rate: {sfreq} Hz")
+            print(f"  - Frequency resolution: {freq_resolution:.2f} Hz") 
+            print(f"  - Nyquist frequency: {nyquist} Hz")
+        
+        # Determine filter order based on epoch duration
+        if epoch_duration >= 2.0:
+            filter_order = 4  # Standard order for long epochs
+            duration_category = "long"
+        elif epoch_duration >= 1.0:
+            filter_order = 3  # Reduced order for medium epochs
+            duration_category = "medium"
+        else:
+            filter_order = 2  # Minimal order for short epochs
+            duration_category = "short"
+        
+        # Determine high-pass frequency based on epoch duration
+        if epoch_duration >= 2.0:
+            highpass_freq = 0.5  # Conservative for long epochs
+        elif epoch_duration >= 1.0:
+            highpass_freq = 1.0  # Moderate for medium epochs
+        else:
+            highpass_freq = 2.0  # Higher for short epochs to avoid instability
+        
+        # Determine notch width based on frequency resolution
+        if freq_resolution <= 1.0:
+            notch_width = 2.0  # Narrow notch for good resolution
+            resolution_category = "high"
+        elif freq_resolution <= 2.0:
+            notch_width = 4.0  # Moderate notch for adequate resolution
+            resolution_category = "moderate"
+        else:
+            notch_width = 6.0  # Wide notch for poor resolution
+            resolution_category = "low"
+        
+        # Check for potential issues and generate warnings
+        warnings = []
+        if epoch_duration < 1.0:
+            warnings.append(f"Short epochs ({epoch_duration:.2f}s) may cause edge artifacts")
+        if freq_resolution > 2.0:
+            warnings.append(f"Poor frequency resolution ({freq_resolution:.2f} Hz) for precise notch filtering")
+        if highpass_freq * 2 > freq_resolution * 3:
+            warnings.append(f"High-pass frequency ({highpass_freq} Hz) may be too high for epoch length")
+        
+        if verbose:
+            if warnings:
+                print(f"\nANALYSIS WARNINGS:")
+                for warning in warnings:
+                    print(f"  - {warning}")
+            
+            print(f"\nDETERMINED FILTER PARAMETERS:")
+            print(f"  - Filter order: {filter_order} (optimized for {duration_category} epochs)")
+            print(f"  - High-pass frequency: {highpass_freq} Hz")
+            print(f"  - Notch width: {notch_width} Hz (optimized for {resolution_category} resolution)")
+            print(f"  - Notch range: {notch_freq-notch_width/2:.1f}-{notch_freq+notch_width/2:.1f} Hz")
+            
+            reasoning = f"""
+    PARAMETER SELECTION REASONING:
+    - Epoch duration ({epoch_duration:.2f}s) → filter_order={filter_order}
+    - Frequency resolution ({freq_resolution:.2f} Hz) → notch_width={notch_width} Hz
+    - Stability considerations → highpass_freq={highpass_freq} Hz
+    """
+            print(reasoning)
+        
+        return {
+            'filter_order': filter_order,
+            'highpass_freq': highpass_freq,
+            'notch_width': notch_width,
+            'epoch_duration': epoch_duration,
+            'freq_resolution': freq_resolution,
+            'sfreq': sfreq,
+            'nyquist': nyquist,
+            'warnings': warnings,
+            'duration_category': duration_category,
+            'resolution_category': resolution_category
+        }
+
+    @staticmethod
+    def _apply_single_filter(signal: np.ndarray, 
+                           sos: np.ndarray, 
+                           zero_phase: bool = True,
+                           filter_name: str = "filter") -> np.ndarray:
+        """
+        Apply a single filter to a signal with explicit phase control.
+        
+        Parameters:
+        -----------
+        signal : np.ndarray
+            Input signal to filter
+        sos : np.ndarray
+            Second-order sections filter coefficients
+        zero_phase : bool, optional
+            Whether to apply zero-phase filtering (default: True)
+        filter_name : str, optional
+            Name of filter for error reporting (default: "filter")
+            
+        Returns:
+        --------
+        np.ndarray
+            Filtered signal
+            
+        Raises:
+        -------
+        Exception
+            If filtering fails, returns original signal and prints warning
+        """
+        try:
+            if zero_phase:
+                # Forward-backward filtering: no phase distortion, double filter order
+                filtered_signal = sp_signal.sosfiltfilt(sos, signal)
+            else:
+                # Standard filtering: faster but introduces phase delays
+                filtered_signal = sp_signal.sosfilt(sos, signal)
+            return filtered_signal
+        except Exception as e:
+            print(f"Warning: {filter_name} failed - {str(e)}")
+            return signal  # Return original signal if filtering fails
+
+    @staticmethod
+    def _apply_notch_filter(signal: np.ndarray, 
+                          notch_freq: float, 
+                          notch_width: float, 
+                          filter_order: int, 
+                          nyquist: float, 
+                          zero_phase: bool = True,
+                          verbose: bool = False) -> np.ndarray:
+        """
+        Apply notch filter for power line noise removal.
+        
+        Frequency Domain: Removes narrow band around notch_freq
+        Phase Domain: Controlled by zero_phase parameter
+        """
+        # Check if notch frequency is reasonable
+        low_cutoff = max((notch_freq - notch_width/2) / nyquist, 0.01)
+        high_cutoff = min((notch_freq + notch_width/2) / nyquist, 0.99)
+        
+        if low_cutoff < high_cutoff and notch_freq < nyquist:
+            # Design bandstop filter (removes frequencies between low_cutoff and high_cutoff)
+            sos = sp_signal.butter(filter_order, [low_cutoff, high_cutoff], 
+                                btype='bandstop', output='sos')
+            return DataProcessor._apply_single_filter(signal, sos, zero_phase, "Notch filter")
+        else:
+            if verbose:
+                print(f"\nWarning: Notch filter skipped (invalid frequency range)")
+            return signal
+
+    @staticmethod
+    def _apply_highpass_filter(signal: np.ndarray, 
+                             highpass_freq: float, 
+                             filter_order: int, 
+                             nyquist: float, 
+                             zero_phase: bool = True,
+                             verbose: bool = False) -> np.ndarray:
+        """
+        Apply high-pass filter for drift and DC removal.
+        
+        Frequency Domain: Removes frequencies below highpass_freq
+        Phase Domain: Controlled by zero_phase parameter
+        """
+        highpass_freq_norm = highpass_freq / nyquist
+        
+        if highpass_freq_norm < 0.99:
+            # Design high-pass filter (removes frequencies below cutoff)
+            sos = sp_signal.butter(filter_order, highpass_freq_norm, 
+                                btype='highpass', output='sos')
+            return DataProcessor._apply_single_filter(signal, sos, zero_phase, "High-pass filter")
+        else:
+            if verbose:
+                print(f"\nWarning: High-pass filter skipped (frequency too high)")
+            return signal
+
+    @staticmethod
+    def _apply_lowpass_filter(signal: np.ndarray, 
+                            lowpass_freq: float, 
+                            filter_order: int, 
+                            nyquist: float, 
+                            zero_phase: bool = True,
+                            verbose: bool = False) -> np.ndarray:
+        """
+        Apply low-pass filter for high-frequency noise removal.
+        
+        Frequency Domain: Removes frequencies above lowpass_freq
+        Phase Domain: Controlled by zero_phase parameter
+        """
+        lowpass_freq_norm = lowpass_freq / nyquist
+        
+        if lowpass_freq_norm < 0.99:
+            # Design low-pass filter (removes frequencies above cutoff)
+            sos = sp_signal.butter(filter_order, lowpass_freq_norm, 
+                                btype='lowpass', output='sos')
+            return DataProcessor._apply_single_filter(signal, sos, zero_phase, "Low-pass filter")
+        else:
+            if verbose:
+                print(f"\nWarning: Low-pass filter skipped (frequency too high)")
+            return signal
+
+
+    @staticmethod
+    def apply_adaptive_filtering_to_epochs(patients_epochs: Dict[str, mne.EpochsArray], 
+                                        apply_notch: bool = True,
+                                        apply_highpass: bool = True,
+                                        apply_lowpass: bool = False,
+                                        zero_phase: bool = True,
+                                        notch_freq: float = 50.0,
+                                        notch_width: float = None,
+                                        highpass_freq: float = None,
+                                        lowpass_freq: float = 100.0,
+                                        filter_order: int = None,
+                                        padding_method: str = 'reflect',
+                                        verbose: bool = True) -> Dict[str, mne.EpochsArray]:
+        """
+        Apply filtering to STN LFP epochs with explicit separation of frequency and phase filtering.
+        
+        Now accepts pre-determined parameters or determines them automatically if None.
+        Use determine_adaptive_filter_params() to get optimal parameters first.
+        
+        Parameters:
+        -----------
+        patients_epochs : Dict[str, mne.EpochsArray]
+            Dictionary of patient EpochsArray objects to be filtered
+        apply_notch : bool, optional
+            Whether to apply notch filter for power line noise (default: True)
+        apply_highpass : bool, optional
+            Whether to apply high-pass filter for drift removal (default: True)
+        apply_lowpass : bool, optional
+            Whether to apply low-pass filter (default: False, not recommended for HCTSA)
+        zero_phase : bool, optional
+            Whether to apply zero-phase filtering (forward-backward) vs standard filtering.
+            True: Uses sosfiltfilt() - preserves timing, no phase distortion (default: True)
+            False: Uses sosfilt() - faster but introduces phase delays
+        notch_freq : float, optional  
+            Notch filter center frequency in Hz (default: 50.0)
+        notch_width : float, optional
+            Notch filter width in Hz. If None, will be determined automatically
+        highpass_freq : float, optional
+            High-pass filter frequency in Hz. If None, will be determined automatically
+        lowpass_freq : float, optional
+            Low-pass filter frequency in Hz (default: 100.0)
+        filter_order : int, optional
+            Filter order. If None, will be determined automatically
+        padding_method : str, optional
+            Method for edge padding ('reflect', 'zero', 'constant') (default: 'reflect')
+        verbose : bool, optional
+            Whether to print filtering information (default: True)
+            
+        Returns:
+        --------
+        Dict[str, mne.EpochsArray]
+            Dictionary of filtered EpochsArray objects
+        """        
+        # Determine parameters if not provided
+        auto_params_needed = any(param is None for param in [filter_order, highpass_freq, notch_width])
+        
+        if auto_params_needed:
+            params = DataProcessor.determine_adaptive_filter_params(patients_epochs, notch_freq, verbose=False)
+            
+            # Use determined parameters for any None values
+            if filter_order is None:
+                filter_order = params['filter_order']
+            if highpass_freq is None:
+                highpass_freq = params['highpass_freq']
+            if notch_width is None:
+                notch_width = params['notch_width']
+                
+            sfreq = params['sfreq']
+            nyquist = params['nyquist']
+        else:
+            # Use provided parameters
+            first_patient = next(iter(patients_epochs.values()))
+            sfreq = first_patient.info['sfreq']
+            nyquist = sfreq / 2
+        
+        filtered_epochs = {}
+        
+        if verbose:
+            print(f"Filtering {len(patients_epochs)} patients...")
+            print(f"FILTERING CONFIGURATION:")
+            print(f"  FREQUENCY DOMAIN FILTERS:")
+            if apply_notch:
+                print(f"    - Notch filter: {notch_freq-notch_width/2:.1f}-{notch_freq+notch_width/2:.1f} Hz (removes power line noise)")
+            if apply_highpass:
+                print(f"    - High-pass filter: >{highpass_freq} Hz (removes DC/drift/movement artifacts)")
+            if apply_lowpass:
+                print(f"    - Low-pass filter: <{lowpass_freq} Hz (removes high-frequency noise)")
+            print(f"  TIME DOMAIN PROCESSING:")
+            print(f"    - Phase filtering: {'Zero-phase (sosfiltfilt)' if zero_phase else 'Standard (sosfilt)'}")
+            print(f"    - Filter order: {filter_order}")
+            print(f"    - Edge padding: {padding_method}")
+            print()
+        
+        for i, (patient_name, epochs) in enumerate(patients_epochs.items()):
+            # Get epoch parameters
+            data = epochs.get_data()  # Shape: (n_epochs, n_channels, n_samples)
+            info = epochs.info.copy()
+            n_epochs, n_channels, n_samples = data.shape
+            
+            # Show progress for each patient
+            if verbose:
+                print(f"  {patient_name}: {n_epochs} epochs", end=" ")
+            
+            # Apply filtering to each epoch and channel
+            filtered_data = data.copy()
+            
+            # Calculate padding length (typically 3-5 times the filter order)
+            if padding_method != 'zero':
+                pad_length = min(filter_order * 5, n_samples // 4)
+            else:
+                pad_length = 0
+            
+            for epoch_idx in range(n_epochs):
+                for ch_idx in range(n_channels):
+                    signal_data = data[epoch_idx, ch_idx, :]
+                    
+                    # Apply padding if requested
+                    if pad_length > 0:
+                        if padding_method == 'reflect':
+                            # Reflect signal at boundaries
+                            padded_signal = np.pad(signal_data, pad_length, mode='reflect')
+                        elif padding_method == 'constant':
+                            # Pad with edge values
+                            padded_signal = np.pad(signal_data, pad_length, mode='edge')
+                    else:
+                        padded_signal = signal_data
+                    
+                    # STEP 1: Apply notch filter for power line noise (FREQUENCY DOMAIN)
+                    # Removes narrow frequency band around notch_freq (e.g., 50 Hz power line)
+                    if apply_notch:
+                        padded_signal = DataProcessor._apply_notch_filter(
+                            padded_signal, notch_freq, notch_width, filter_order, 
+                            nyquist, zero_phase, verbose and i == 0
+                        )
+                    
+                    # STEP 2: Apply high-pass filter for drift removal (FREQUENCY DOMAIN)  
+                    # Removes frequencies below highpass_freq (DC offset, slow drifts, movement artifacts)
+                    if apply_highpass:
+                        padded_signal = DataProcessor._apply_highpass_filter(
+                            padded_signal, highpass_freq, filter_order, 
+                            nyquist, zero_phase, verbose and i == 0
+                        )
+                    
+                    # STEP 3: Apply low-pass filter for noise removal (FREQUENCY DOMAIN, optional)
+                    # Removes frequencies above lowpass_freq (high-frequency noise, aliasing)
+                    if apply_lowpass:
+                        padded_signal = DataProcessor._apply_lowpass_filter(
+                            padded_signal, lowpass_freq, filter_order, 
+                            nyquist, zero_phase, verbose and i == 0
+                        )
+                    
+                    # Remove padding
+                    if pad_length > 0:
+                        filtered_signal = padded_signal[pad_length:-pad_length]
+                    else:
+                        filtered_signal = padded_signal
+                    
+                    filtered_data[epoch_idx, ch_idx, :] = filtered_signal
+            
+            # Create new EpochsArray with filtered data
+            filtered_epochs_obj = mne.EpochsArray(
+                filtered_data, 
+                info, 
+                events=epochs.events.copy() if hasattr(epochs, 'events') else None,
+                event_id=epochs.event_id.copy() if hasattr(epochs, 'event_id') else None,
+                verbose=False
+            )
+            
+            filtered_epochs[patient_name] = filtered_epochs_obj
+        
+        if verbose:
+            total_epochs = sum(len(epochs) for epochs in filtered_epochs.values())
+            print(f"Filtering complete: {total_epochs:,} epochs processed")
+        
+        return filtered_epochs
