@@ -3176,11 +3176,11 @@ def get_default_param_grid(model_type, mask_values=None):
         # OPTIMIZED FOR SMALL BIOMEDICAL DATASET (N~200, high-dim features, imbalanced classes)
         architecture_configs = [
             # Config 1: Conservative single-layer LSTM - Best for small datasets
-            # {
-            #     'classifier__hidden_dims': [32],
-            #     'classifier__activations': ['tanh'],  # Better gradient flow for small data
-            #     'classifier__recurrent_activations': ['sigmoid']
-            # },
+            {
+                'classifier__hidden_dims': [32],
+                'classifier__activations': ['tanh'],  # Better gradient flow for small data
+                'classifier__recurrent_activations': ['sigmoid']
+            },
             # # Config 2: Medium single-layer LSTM 
             # {
             #     'classifier__hidden_dims': [64],
@@ -5157,7 +5157,8 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    base_path = "/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa"
+    channel_name = 'channel_0'
+    base_path = os.path.join("../hctsa", channel_name)
     
     # Load HCTSA data
     TS_DataMat, timeseries, operations, labels = load_hctsa_data(

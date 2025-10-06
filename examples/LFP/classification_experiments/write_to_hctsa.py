@@ -181,7 +181,8 @@ def main():
 
     patient_epochs, subjects_event_idx_dict, patient_names = load_data(patient_epochs_path, subjects_event_idx_dict_path)
 
-    channel_to_process = 0 # first channel
+    channel_to_process = 5
+    
     # base_output_dir = '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa/data/hctsa_input_data'
     base_output_dir = '../../../home/orabem/hctsa/'
 
