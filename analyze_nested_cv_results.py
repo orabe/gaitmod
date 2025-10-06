@@ -15,7 +15,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import sys
+import argparse
 import os
 import glob
 from pathlib import Path
@@ -37,8 +37,8 @@ def load_results(csv_path):
     """Load nested CV results from CSV file."""
     try:
         df = pd.read_csv(csv_path)
-        print(f"Loaded results from: {csv_path}")
-        print(f"Dataset: {len(df)} outer folds")
+        print(f"✅ Loaded results from: {csv_path}")
+        print(f"📊 Dataset: {len(df)} outer folds")
         return df
     except Exception as e:
         raise Exception(f"Failed to load results: {e}")
@@ -80,11 +80,11 @@ def analyze_performance(df):
 def analyze_hyperparameters(df):
     """Analyze hyperparameter selection across folds."""
     print("\n" + "="*60)
-    print("HYPERPARAMETER ANALYSIS")
+    print("⚙️  HYPERPARAMETER ANALYSIS")
     print("="*60)
     
     if 'best_params' not in df.columns:
-        print("No hyperparameter information found")
+        print("❌ No hyperparameter information found")
         return
     
     # Parse best parameters (assuming they're stored as strings)
@@ -105,7 +105,7 @@ def analyze_hyperparameters(df):
                 value_str = str(value)
                 param_counts[key][value_str] = param_counts[key].get(value_str, 0) + 1
         except Exception as e:
-            print(f"Warning: Could not parse parameters for fold {idx+1}: {e}")
+            print(f"⚠️  Warning: Could not parse parameters for fold {idx+1}: {e}")
     
     print("\n🔧 PARAMETER SELECTION FREQUENCY:")
     print("-" * 50)
@@ -126,7 +126,7 @@ def analyze_subjects(df):
         print("❌ No subject information found")
         return
     
-    print("\nINDIVIDUAL SUBJECT PERFORMANCE:")
+    print("\n🧑 INDIVIDUAL SUBJECT PERFORMANCE:")
     print("-" * 55)
     print(f"{'Subject':<12} {'F1 Score':<10} {'ROC AUC':<10} {'Accuracy':<10}")
     print("-" * 55)
@@ -223,31 +223,33 @@ def create_visualizations(df, output_dir=None):
     if output_dir:
         output_path = os.path.join(output_dir, 'nested_cv_analysis.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"Visualization saved: {output_path}")
+        print(f"📁 Visualization saved: {output_path}")
     
     plt.show()
 
 def main():
-    # Default values
-    csv_path = "logs/nested_cv_20250916_003814/summary/nested_cv_results.csv"
-    no_plot = False
-    save_plots = "logs/nested_cv_20250916_003814/summary/fig"
+    parser = argparse.ArgumentParser(description="Analyze nested cross-validation results")
+    parser.add_argument("csv_path", nargs='?', help="Path to nested_cv_results.csv file")
+    parser.add_argument("--no-plot", action="store_true", help="Skip visualization")
+    parser.add_argument("--save-plots", help="Directory to save plots")
     
-    # Use the hardcoded path or try to find latest results
-    if not os.path.exists(csv_path):
+    args = parser.parse_args()
+    
+    # Determine CSV file path
+    if args.csv_path:
+        csv_path = args.csv_path
+    else:
         try:
             csv_path = find_latest_results()
-            print(f"Auto-detected latest results: {csv_path}")
+            print(f"🔍 Auto-detected latest results: {csv_path}")
         except FileNotFoundError as e:
-            print(f"{e}")
-            print("Please specify the path to nested_cv_results.csv")
+            print(f"❌ {e}")
+            print("💡 Please specify the path to nested_cv_results.csv")
             return
-    else:
-        print(f"Using specified path: {csv_path}")
     
     # Check if file exists
     if not os.path.exists(csv_path):
-        print(f"File not found: {csv_path}")
+        print(f"❌ File not found: {csv_path}")
         return
     
     try:
@@ -255,7 +257,7 @@ def main():
         df = load_results(csv_path)
         
         # Print basic info about the dataset
-        print(f"Columns: {list(df.columns)}")
+        print(f"📋 Columns: {list(df.columns)}")
         
         # Perform analyses
         analyze_performance(df)
@@ -263,23 +265,17 @@ def main():
         analyze_subjects(df)
         
         # Create visualizations
-        if not no_plot:
+        if not args.no_plot:
             try:
-                output_dir = save_plots if save_plots else os.path.dirname(csv_path)
-                
-                # Create output directory if it doesn't exist
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                    print(f"📁 Created output directory: {output_dir}")
-                
+                output_dir = args.save_plots if args.save_plots else os.path.dirname(csv_path)
                 create_visualizations(df, output_dir)
             except Exception as e:
-                print(f"Warning: Could not create visualizations: {e}")
+                print(f"⚠️  Warning: Could not create visualizations: {e}")
         
-        print(f"\nAnalysis complete!")
+        print(f"\n✅ Analysis complete!")
         
     except Exception as e:
-        print(f"Error during analysis: {e}")
+        print(f"❌ Error during analysis: {e}")
 
 if __name__ == "__main__":
     main()
