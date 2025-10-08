@@ -4024,7 +4024,8 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
         groups_outer_train = groups[outer_train_idx]
         
         test_subject_number = groups[outer_test_idx][0]
-        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
+        test_subject_name = (subject_names[test_subject_number] if subject_names and test_subject_number < len(subject_names) 
+                            else f"Subject_{test_subject_number}")
         
         if verbose >= 1:
             logging.info(f"[CV_INNER_PAD] Test subject: {test_subject_name} ({test_subject_number})")
@@ -4072,7 +4073,8 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
             # Inner CV loop for this parameter combination
             for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
                 val_subject_number = groups_outer_train[inner_val_idx][0]
-                val_subject_name = subject_names[val_subject_number] if subject_names else f"Subject_{val_subject_number}"
+                val_subject_name = (subject_names[val_subject_number] if subject_names and val_subject_number < len(subject_names) 
+                                   else f"Subject_{val_subject_number}")
                 
                 if verbose >= 2:
                     logging.info(f"[CV_INNER_PAD]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
@@ -4792,7 +4794,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         groups_outer_train = groups[outer_train_idx]
         
         test_subject_number = groups[outer_test_idx][0]
-        test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
+        test_subject_name = (subject_names[test_subject_number] if subject_names and test_subject_number < len(subject_names) 
+                            else f"Subject_{test_subject_number}")
         
         if verbose >= 1:
             logging.info(f"[CV_SKLEARN] Test subject: {test_subject_name} ({test_subject_number})")
@@ -4844,7 +4847,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 y_inner_val = y_outer_train[inner_val_idx]
                 
                 val_subject_number = groups_outer_train[inner_val_idx][0]
-                val_subject_name = subject_names[val_subject_number] if subject_names else f"Subject_{val_subject_number}"
+                val_subject_name = (subject_names[val_subject_number] if subject_names and val_subject_number < len(subject_names) 
+                                   else f"Subject_{val_subject_number}")
                 
                 if verbose >= 2:
                     logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
@@ -5728,6 +5732,10 @@ def main(verbose: int = 2):
         y_list = [y_list[i] for i in range(len(y_list)) if subject_mask[i]]
         groups = groups[subject_mask]
         trial_metadata = [trial_metadata[i] for i in range(len(trial_metadata)) if subject_mask[i]]
+        
+        # Update subject_names to match the selected subjects
+        if subject_names:
+            subject_names = [subject_names[i] for i in selected_subjects if i < len(subject_names)]
         
         subject_info_msg = f"({MAX_SUBJECTS} subjects only)"
     else:
