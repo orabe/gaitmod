@@ -4732,7 +4732,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Define metrics to optimize thresholds for
                         threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                         
-                        # Optimize thresholds using validation data
                         threshold_results = optimize_thresholds_cv(
                             estimator=lstm_classifier,
                             X_val=X_val_transformed,
@@ -4771,7 +4770,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Define metrics to optimize thresholds for
                         threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                         
-                        # Optimize thresholds using validation data
                         threshold_results = optimize_thresholds_cv(
                             estimator=inner_pipeline,
                             X_val=X_inner_val_2d,
@@ -5016,7 +5014,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Define metrics to optimize thresholds for
                 threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                 
-                # Optimize thresholds using outer training data
                 train_threshold_results = optimize_thresholds_cv(
                     estimator=lstm_classifier,
                     X_val=X_train_final,
@@ -5106,7 +5103,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Define metrics to optimize thresholds for
                 threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                 
-                # Optimize thresholds using training data
                 train_threshold_results = optimize_thresholds_cv(
                     estimator=final_pipeline,
                     X_val=X_outer_train_2d,
@@ -5475,7 +5471,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    channel_name = 'channel_0'
+    channel_name = 'channel_4'
     base_path = os.path.join("../hctsa", channel_name)
     
     # Load HCTSA data
@@ -5499,7 +5495,7 @@ def main(verbose: int = 2):
     
     # SLICE DATA TO ONLY 4 SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
-    selected_subjects = unique_subjects[:3]  # Take first 3 subjects
+    selected_subjects = unique_subjects[:]  # Take first 3 subjects
     
     if verbose >= 1:
         logging.info(f"[MAIN] SLICING DATA TO 3 SUBJECTS FOR TESTING")
