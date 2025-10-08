@@ -963,9 +963,20 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
 
 
 
-def find_unique_mask_value(data_array, max_search=10000, verbose=0):
+def find_unique_mask_value(data_array, max_search=10000, global_mask_value=1e6, verbose=0):
     """
-    Simple systematic search for unique mask value with bidirectional search and percentile fallback.
+    Find a unique mask value using a large constant approach with fallback.
+    
+    This implementation:
+    1. First tries a configurable large constant (default 1e6) that sits safely outside typical scaled data ranges
+    2. Falls back to systematic search if the constant conflicts with existing data
+    3. Provides percentile-based final fallback
+    
+    The large constant approach works because:
+    - Scaled data typically stays within [-10, 10] range
+    - Mask value at 1e6 is safely outside this range
+    - Masked entries are never transformed by scalers (filtered out first)
+    - This makes collisions virtually impossible even with data drift
     
     Parameters:
     -----------
@@ -973,6 +984,8 @@ def find_unique_mask_value(data_array, max_search=10000, verbose=0):
         Array of data values
     max_search : int
         Maximum range to search (default: 10000)
+    global_mask_value : float
+        Preferred mask value to try first (default: 1e6)
     verbose : int
         Verbosity level
         
@@ -984,7 +997,21 @@ def find_unique_mask_value(data_array, max_search=10000, verbose=0):
     # Convert to set for fast lookup
     data_set = set(data_array.flatten())
     
-    # First attempt: Search upward from 0 (0, 1, 2, 3, ...)
+    # Global constant approach: Try configurable constant first
+    GLOBAL_X_MASK = np.float32(global_mask_value)
+    
+    if verbose >= 2:
+        logging.debug(f"[MASK SEARCH] Trying global mask value: {GLOBAL_X_MASK}")
+    
+    if GLOBAL_X_MASK not in data_set:
+        if verbose >= 1:
+            logging.info(f"[MASK SEARCH] Using global mask value: {GLOBAL_X_MASK}")
+        return GLOBAL_X_MASK
+    
+    if verbose >= 1:
+        logging.warning(f"[MASK SEARCH] Global mask value {GLOBAL_X_MASK} conflicts with data, falling back to systematic search")
+    
+    # Fallback: First attempt - Search upward from 0 (0, 1, 2, 3, ...)
     if verbose >= 2:
         logging.debug(f"[MASK SEARCH] Starting upward search from 0...")
     
@@ -1063,7 +1090,7 @@ def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
     # Find unique X mask value starting from 0 and going upward
     if verbose >= 1:
         logging.info(f"[PAD] Searching for unique X mask value (starting from 0, upward)...")
-    X_mask = find_unique_mask_value(all_X, verbose=verbose)
+    X_mask = find_unique_mask_value(all_X, global_mask_value=1e6, verbose=verbose)
     
     # Set Y mask value to always be -1 (simple and reliable for binary labels)
     y_mask = -1
@@ -1167,7 +1194,7 @@ def pad_fold_data(X_train_list, y_train_list, X_test_list, y_test_list, verbose:
         logging.info(f"[PAD_FOLD] All Y unique: {np.unique(all_y)}")
     
     # Step 2: Find unique mask values considering ALL data (train + test/validation)
-    X_mask = find_unique_mask_value(all_X, verbose=verbose)
+    X_mask = find_unique_mask_value(all_X, global_mask_value=1e6, verbose=verbose)
     y_mask = -1
     
     if verbose >= 1:
@@ -4011,7 +4038,6 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         # Define metrics to optimize thresholds for
                         threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                         
-                        # Optimize thresholds using validation data
                         threshold_results = optimize_thresholds_cv(
                             estimator=inner_pipeline,
                             X_val=X_inner_val_2d,
@@ -4253,7 +4279,6 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                 # Define metrics to optimize thresholds for
                 threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                 
-                # Optimize thresholds using outer training data
                 train_threshold_results = optimize_thresholds_cv(
                     estimator=lstm_classifier,
                     X_val=X_train_final,
@@ -5437,6 +5462,12 @@ def setup_logging(verbose_level=2, log_dir=None):
 def main(verbose: int = 2):
     """Main nested cross-validation pipeline."""
     
+    # ===================================================================
+    # CONFIGURATION: Number of subjects to use for testing/development
+    # ===================================================================
+    # Set to None to use all subjects, or specify a number for faster testing
+    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
+    
     # Initialize TensorFlow
     initialize_tf()
     
@@ -5493,24 +5524,32 @@ def main(verbose: int = 2):
         TS_DataMat, labels, epoch_mapping, verbose=verbose
     ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
     
-    # SLICE DATA TO ONLY 4 SUBJECTS FOR FASTER TESTING
+    # SLICE DATA TO SPECIFIED NUMBER OF SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
-    selected_subjects = unique_subjects[:]  # Take first 3 subjects
+    
+    if MAX_SUBJECTS is not None and MAX_SUBJECTS < len(unique_subjects):
+        selected_subjects = unique_subjects[:MAX_SUBJECTS]  # Take first N subjects
+        
+        if verbose >= 1:
+            logging.info(f"[MAIN] SLICING DATA TO {MAX_SUBJECTS} SUBJECTS FOR TESTING")
+            logging.info(f"[MAIN] Original subjects: {len(unique_subjects)} ({unique_subjects})")
+            logging.info(f"[MAIN] Selected subjects: {len(selected_subjects)} ({selected_subjects})")
+        
+        # Filter data to only include selected subjects
+        subject_mask = np.isin(groups, selected_subjects)
+        X_list = [X_list[i] for i in range(len(X_list)) if subject_mask[i]]
+        y_list = [y_list[i] for i in range(len(y_list)) if subject_mask[i]]
+        groups = groups[subject_mask]
+        trial_metadata = [trial_metadata[i] for i in range(len(trial_metadata)) if subject_mask[i]]
+        
+        subject_info_msg = f"({MAX_SUBJECTS} subjects only)"
+    else:
+        if verbose >= 1:
+            logging.info(f"[MAIN] USING ALL {len(unique_subjects)} SUBJECTS")
+        subject_info_msg = f"(all {len(unique_subjects)} subjects)"
     
     if verbose >= 1:
-        logging.info(f"[MAIN] SLICING DATA TO 3 SUBJECTS FOR TESTING")
-        logging.info(f"[MAIN] Original subjects: {len(unique_subjects)} ({unique_subjects})")
-        logging.info(f"[MAIN] Selected subjects: {len(selected_subjects)} ({selected_subjects})")
-    
-    # Filter data to only include selected subjects
-    subject_mask = np.isin(groups, selected_subjects)
-    X_list = [X_list[i] for i in range(len(X_list)) if subject_mask[i]]
-    y_list = [y_list[i] for i in range(len(y_list)) if subject_mask[i]]
-    groups = groups[subject_mask]
-    trial_metadata = [trial_metadata[i] for i in range(len(trial_metadata)) if subject_mask[i]]
-    
-    if verbose >= 1:
-        logging.info(f"[MAIN] Unpadded trial data prepared (4 subjects only):")
+        logging.info(f"[MAIN] Unpadded trial data prepared {subject_info_msg}:")
         logging.info(f"[MAIN] Number of trials: {len(X_list)}")
         logging.info(f"[MAIN] Number of subjects: {len(np.unique(groups))}")
         logging.info(f"[MAIN] Trial lengths: min={min(len(x) for x in X_list)}, max={max(len(x) for x in X_list)}, avg={np.mean([len(x) for x in X_list]):.1f}")
