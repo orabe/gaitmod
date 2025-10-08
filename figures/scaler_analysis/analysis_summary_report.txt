@@ -1,0 +1,29 @@
+HCTSA SCALER ANALYSIS SUMMARY REPORT
+==================================================
+Generated: 2025-10-08 00:27:19
+Analysis timestamp: 20251008_002532
+Data shape: [6296, 7770]
+Number of trials: 222
+Number of features: 7770
+
+SCALER RECOMMENDATION:
+  Primary: StandardScaler
+  Alternatives: RobustScaler, QuantileTransformer, MinMaxScaler
+
+RATIONALE:
+  1. Different feature scales → StandardScaler normalizes to mean=0, std=1
+
+DISTRIBUTION METRICS COMPARISON:
+----------------------------------------------------------------------
+Scaler               Balance Score Skewness   Kurtosis   Outliers% 
+----------------------------------------------------------------------
+QuantileTransformer  0.234        0.305      2.165      1.9       
+Original             0.628        3.874      196.232    3.4       
+MinMaxScaler         0.628        3.878      196.055    3.4       
+RobustScaler         0.628        3.878      196.055    3.4       
+StandardScaler       0.628        3.878      196.055    3.4       
+
+ANALYSIS CONCLUSION:
+  Best performing scaler (distribution balance): QuantileTransformer
+  Analytical recommendation: StandardScaler
+  → DISAGREEMENT: Consider both analytical reasoning and empirical results

@@ -870,19 +870,180 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
         logging.info(f"[LOAD] Data loaded - Shapes: Features={TS_DataMat.shape}, TimeSeries={timeseries.shape}, Operations={operations.shape}")
         logging.info(f"[LOAD] Labels: {labels.shape}, distribution={dict(zip(['negative', 'positive'], np.bincount(labels)))}, positive_class={positive_class}")
     
-    # NaN/Inf validation
-    nan_count = np.isnan(TS_DataMat).sum()
-    inf_count = np.isinf(TS_DataMat).sum()
-    if nan_count > 0:
-        raise ValueError(format_error_message(f"Found {nan_count:,} NaN values in TS_DataMat"))
-    if inf_count > 0:
-        raise ValueError(format_error_message(f"Found {inf_count:,} infinite values in TS_DataMat"))
+    return TS_DataMat, timeseries, operations, labels
+
+
+def feature_filter(X, operations_df=None, variance_threshold=1e-8, 
+                   missing_threshold=0.0, outlier_iqr_factor=3.0, 
+                   outlier_contamination_threshold=0.1, verbose: int = 1):
+    """
+    Filter out invalid features from HCTSA feature matrix using univariate criteria only.
+    
+    This function removes features that are:
+    1. Contain too many NaN/infinite values
+    2. Have excessive outliers that could destabilize training  
+    3. Are constant or near-constant after outlier removal (low variance)
+    
+    Note: Multivariate filtering (correlation analysis) is NOT performed here as it will
+    be handled by the feature selection pipeline within LOSO CV to prevent data leakage.
+    
+    The order is important: outliers are removed before variance assessment to get
+    accurate variance estimates on cleaned data.
+    
+    Parameters:
+    -----------
+    X : np.ndarray
+        Feature matrix of shape (n_samples, n_features)
+    operations_df : pd.DataFrame, optional
+        Operations dataframe with feature metadata (for logging feature names)
+    variance_threshold : float
+        Minimum variance threshold for feature retention (default: 1e-8)
+    missing_threshold : float
+        Maximum fraction of missing/invalid values allowed (default: 0.0)
+        0.0 = only features with all valid values, 0.05 = allow up to 5% missing/NaN/Inf
+    outlier_iqr_factor : float
+        IQR multiplier for outlier detection (default: 3.0, use 0 to disable)
+        Common values: 1.5 (strict, Tukey's rule), 3.0 (moderate), 4.5 (lenient)
+    outlier_contamination_threshold : float
+        Maximum fraction of outliers allowed per feature (default: 0.1)
+        Common values: 0.05 (5%, strict), 0.1 (10%, moderate), 0.2 (20%, lenient)
+    verbose : int
+        Verbosity level
+        
+    Returns:
+    --------
+    X_filtered : np.ndarray
+        Filtered feature matrix
+    valid_features : np.ndarray
+        Boolean mask of valid features
+    filter_report : dict
+        Dictionary with filtering statistics
+    """
     
     if verbose >= 1:
-        logging.info(f"[LOAD] Data validation passed")
+        logging.info(f"[FILTER] Starting univariate feature filtering for {X.shape[1]} features")
     
+    n_samples, n_features = X.shape
+    valid_features = np.ones(n_features, dtype=bool)
+    filter_stats = {
+        'original_features': n_features,
+        'nan_inf_removed': 0,
+        'low_variance_removed': 0,
+        'outlier_removed': 0,
+        'final_features': 0
+    }
     
-    return TS_DataMat, timeseries, operations, labels
+    # Step 1: Remove features with too many NaN/Inf values
+    if verbose >= 2:
+        logging.info(f"[FILTER] Step 1: Checking for NaN/Inf values...")
+    
+    nan_inf_mask = np.isnan(X) | np.isinf(X)
+    nan_inf_fraction = nan_inf_mask.sum(axis=0) / n_samples
+    nan_inf_invalid = nan_inf_fraction > missing_threshold
+    
+    valid_features &= ~nan_inf_invalid
+    filter_stats['nan_inf_removed'] = np.sum(nan_inf_invalid)
+    
+    if verbose >= 1 and filter_stats['nan_inf_removed'] > 0:
+        logging.info(f"[FILTER] Removed {filter_stats['nan_inf_removed']} features with >{missing_threshold*100:.1f}% NaN/Inf values")
+    
+    # Step 2: Remove features with excessive outliers (IQR-based detection)
+    if outlier_iqr_factor > 0:
+        if verbose >= 2:
+            logging.info(f"[FILTER] Step 2: Checking for outlier contamination...")
+        
+        valid_indices = np.where(valid_features)[0]
+        outlier_invalid = np.zeros(n_features, dtype=bool)
+        
+        for feat_idx in valid_indices:
+            feat_data = X[:, feat_idx]
+            finite_mask = np.isfinite(feat_data)
+            
+            if np.sum(finite_mask) < 10:  # Need sufficient data for robust outlier detection
+                continue
+                
+            finite_data = feat_data[finite_mask]
+            
+            # IQR-based outlier detection
+            q1 = np.percentile(finite_data, 25)
+            q3 = np.percentile(finite_data, 75)
+            iqr = q3 - q1
+            
+            if iqr > 0:  # Avoid division by zero
+                lower_bound = q1 - outlier_iqr_factor * iqr
+                upper_bound = q3 + outlier_iqr_factor * iqr
+                
+                outlier_mask = (finite_data < lower_bound) | (finite_data > upper_bound)
+                outlier_fraction = np.sum(outlier_mask) / len(finite_data)
+                
+                if outlier_fraction > outlier_contamination_threshold:
+                    outlier_invalid[feat_idx] = True
+        
+        valid_features &= ~outlier_invalid
+        filter_stats['outlier_removed'] = np.sum(outlier_invalid)
+        
+        if verbose >= 1 and filter_stats['outlier_removed'] > 0:
+            logging.info(f"[FILTER] Removed {filter_stats['outlier_removed']} features with >{outlier_contamination_threshold*100:.1f}% outliers (IQR factor={outlier_iqr_factor})")
+    
+    # Step 3: Remove constant or near-constant features (low variance on cleaned data)
+    if verbose >= 2:
+        logging.info(f"[FILTER] Step 3: Checking feature variance after outlier removal...")
+    
+    # Calculate variance only for currently valid features with finite values
+    valid_indices = np.where(valid_features)[0]
+    variances = np.zeros(n_features)
+    
+    for i, feat_idx in enumerate(valid_indices):
+        feat_data = X[:, feat_idx]
+        finite_mask = np.isfinite(feat_data)
+        if np.sum(finite_mask) > 1:  # Need at least 2 finite values to compute variance
+            variances[feat_idx] = np.var(feat_data[finite_mask])
+        else:
+            variances[feat_idx] = 0.0  # Mark as zero variance if insufficient data
+    
+    low_variance_mask = variances <= variance_threshold
+    valid_features &= ~low_variance_mask
+    filter_stats['low_variance_removed'] = np.sum(low_variance_mask & np.ones(n_features, dtype=bool))
+    
+    if verbose >= 1 and filter_stats['low_variance_removed'] > 0:
+        logging.info(f"[FILTER] Removed {filter_stats['low_variance_removed']} features with variance <= {variance_threshold} (after outlier removal)")
+    
+    # Final statistics
+    filter_stats['final_features'] = np.sum(valid_features)
+    removal_rate = (filter_stats['original_features'] - filter_stats['final_features']) / filter_stats['original_features']
+    
+    # Create filtered feature matrix
+    X_filtered = X[:, valid_features]
+    
+    # Create detailed report
+    filter_report = {
+        'statistics': filter_stats,
+        'removal_rate': removal_rate,
+        'valid_feature_indices': np.where(valid_features)[0],
+        'removed_feature_indices': np.where(~valid_features)[0]
+    }
+    
+    if verbose >= 1:
+        logging.info(f"[FILTER] Univariate feature filtering completed:")
+        logging.info(f"[FILTER]   Original features: {filter_stats['original_features']}")
+        logging.info(f"[FILTER]   NaN/Inf removed: {filter_stats['nan_inf_removed']}")
+        logging.info(f"[FILTER]   Low variance removed: {filter_stats['low_variance_removed']}")
+        logging.info(f"[FILTER]   Outlier contaminated removed: {filter_stats['outlier_removed']}")
+        logging.info(f"[FILTER]   Final features: {filter_stats['final_features']}")
+        logging.info(f"[FILTER]   Removal rate: {removal_rate:.2%}")
+        logging.info(f"[FILTER] Note: Correlation filtering will be handled by feature selection pipeline")
+    
+    # Log removed feature names if operations_df is provided
+    if operations_df is not None and verbose >= 2:
+        removed_indices = np.where(~valid_features)[0]
+        if len(removed_indices) > 0 and len(removed_indices) <= 20:  # Only show if not too many
+            removed_names = operations_df.iloc[removed_indices]['Name'].tolist()
+            logging.info(f"[FILTER] Removed features: {removed_names}")
+        elif len(removed_indices) > 20:
+            logging.info(f"[FILTER] {len(removed_indices)} features removed (too many to list)")
+    
+    return X_filtered, valid_features, filter_report
+
 
 def parse_epoch_metadata(timeseries_df: pd.DataFrame, verbose: int = 0):
     """Parse epoch metadata from timeseries names."""
@@ -1526,7 +1687,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
     
     def __init__(self, 
                  n_features=100,
-                 variance_threshold=0.01,
+                 variance_threshold=1e-8,
                  correlation_threshold=0.95,
                  x_mask_value=None,
                  selection_method='composite'):
@@ -5511,6 +5672,32 @@ def main(verbose: int = 2):
         normalized=False,
         verbose=verbose
     )
+    
+    # Filter invalid features
+    if verbose >= 1:
+        logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING")
+        logging.info("[MAIN] " + "-" * 40)
+    
+    TS_DataMat_filtered, valid_features_mask, filter_report = feature_filter(
+        TS_DataMat,
+        operations_df=operations,
+        variance_threshold=1e-8,
+        missing_threshold=0.0,  # Only keep features with all valid values
+        outlier_iqr_factor=3.0,  # IQR multiplier for outlier detection
+        outlier_contamination_threshold=0.1,  # Max 10% outliers per feature
+        verbose=verbose
+    )
+    
+    # Update operations dataframe to only include valid features
+    operations_filtered = operations.iloc[valid_features_mask].reset_index(drop=True)
+    
+    if verbose >= 1:
+        logging.info(f"[MAIN] Feature filtering completed: {TS_DataMat.shape[1]} -> {TS_DataMat_filtered.shape[1]} features")
+        logging.info(f"[MAIN] Updated operations dataframe: {len(operations_filtered)} entries")
+    
+    # Use filtered data for downstream processing
+    TS_DataMat = TS_DataMat_filtered
+    operations = operations_filtered
     
     # Parse metadata and group by trials
     if verbose >= 1:
