@@ -1030,7 +1030,7 @@ def find_unique_mask_value(data_array, max_search=10000, verbose=0):
     return fallback_value
 
 
-def pad_trials(X_list, y_list, verbose: int = 0):
+def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
     """
     Systematic padding with unique mask values found by searching from zero.
     
@@ -1040,6 +1040,13 @@ def pad_trials(X_list, y_list, verbose: int = 0):
     - Uses exact integer representation in float32/64
     - Is safe for tf.keras.layers.Masking
     - Provides comprehensive validation
+    - Allows custom max_length specification
+    
+    Args:
+        X_list: List of trial arrays for features
+        y_list: List of trial arrays for labels
+        max_length: Optional maximum sequence length. If None, uses max length from data
+        verbose: Verbosity level
     """
     if verbose >= 1:
         logging.info(f"[PAD] Padding {len(X_list)} trials using systematic mask value search")
@@ -1077,8 +1084,16 @@ def pad_trials(X_list, y_list, verbose: int = 0):
         logging.info(f"[PAD] Mask validation: X_mask_valid={X_mask_valid}, y_mask_valid={y_mask_valid}")
     
     # Pad sequences with validated mask values
-    X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
-    y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
+    if max_length is None:
+        # Use maximum length from the data
+        X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
+        y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
+        effective_max_length = X_padded.shape[1]
+    else:
+        # Use specified max_length
+        X_padded = pad_sequences(X_list, maxlen=max_length, dtype='float32', padding='post', value=X_mask)
+        y_padded = pad_sequences(y_list, maxlen=max_length, dtype='int32', padding='post', value=y_mask)
+        effective_max_length = max_length
     
     # Final validation after padding
     X_data_mask = X_padded != X_mask
@@ -1099,13 +1114,15 @@ def pad_trials(X_list, y_list, verbose: int = 0):
     mask_values = {
         'X_mask': X_mask,
         'y_mask': y_mask,
+        'max_length': effective_max_length,
         'X_padded_count': n_X_padded,
         'y_padded_count': n_y_padded,
         'validation_passed': True
     }
     
     if verbose >= 1:
-        logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, mask_values: X_mask={X_mask:.2e}, y_mask={y_mask}")
+        logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, max_length={effective_max_length}")
+        logging.info(f"[PAD] Mask values: X_mask={X_mask:.2e}, y_mask={y_mask}")
     
     return X_padded, y_padded, mask_values
 
@@ -3786,6 +3803,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
         logging.info(f"\n[CV_INNER_PAD] Starting nested cross-validation with inner-fold specific padding")
         logging.info(f"[CV_INNER_PAD] Model type: {model_type}")
         logging.info(f"[CV_INNER_PAD] Refit metric: {refit_scoring_metric}")
+        logging.info(f"[CV_INNER_PAD] Experiment directory: {experiment_dir}")
         logging.info(f"[CV_INNER_PAD] Input data: {len(X_list)} trials (unpadded)")
         logging.info(f"[CV_INNER_PAD] Padding strategy: Inner training data → Inner CV, Outer training data → Final retraining")
         logging.info(f"[CV_INNER_PAD] {'-'*80}")
@@ -3881,7 +3899,8 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                     if verbose >= 2:
                         logging.info(f"[CV_INNER_PAD]     Inner train trials: {len(X_inner_train_list)}, val trials: {len(X_inner_val_list)}")
                     
-                    # Step 5: Apply INNER-FOLD SPECIFIC PADDING (critical for preventing leakage)
+                    # Step 5: Apply INNER-FOLD SPECIFIC PADDING (critical for preventing leakage) 
+                    
                     X_inner_train, y_inner_train, X_inner_val, y_inner_val, inner_mask_values = pad_fold_data(
                         X_inner_train_list, y_inner_train_list, X_inner_val_list, y_inner_val_list, 
                         verbose=verbose
@@ -3954,7 +3973,6 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         # Define metrics to optimize thresholds for
                         threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                         
-                        # Optimize thresholds using validation data
                         threshold_results = optimize_thresholds_cv(
                             estimator=lstm_classifier,
                             X_val=X_val_transformed,
@@ -4291,7 +4309,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                                 from sklearn.metrics import balanced_accuracy_score
                                 test_metrics[metric_name] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
                         except Exception as e:
-                            logging.warning(format_warning_message(f"[CV] Could not calculate threshold-optimized {metric_name}: {e}"))
+                            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
                             test_metrics[metric_name] = np.nan
                     
                     # Add AUC scores (threshold-independent)
@@ -4300,7 +4318,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                         test_metrics['roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
                         test_metrics['pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
                     except Exception as e:
-                        logging.warning(format_warning_message(f"[CV] Could not calculate AUC metrics: {e}"))
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
                         test_metrics['roc_auc'] = np.nan
                         test_metrics['pr_auc'] = np.nan
                 else:
@@ -4339,7 +4357,7 @@ def run_nested_cv_with_inner_padding(X_list, y_list, groups,
                             score = scoring_func._score_func(y_outer_test, y_test_pred)
                         test_metrics[metric_name] = score
                     except Exception as e:
-                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate {metric_name} for test set: {e}"))
                         test_metrics[metric_name] = np.nan
                 
                 # Extract primary metrics for backward compatibility
@@ -4515,25 +4533,39 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           verbose: int = 1,
                           hparam_logger=None):
     """
-    Nested cross-validation with feature selection aggregation and final retraining. Used in case the data is padded already outside the CV loops.
+    Nested cross-validation with pre-computed padding to optimize efficiency.
     
-    Implementation follows the specific approach:
-    1. For each outer fold: split train/test subjects
-    2. Inner CV with GridSearchCV: test hyperparameter combinations
-    3. For each hyperparameter combo: aggregate feature selection across inner folds
-    4. Select best hyperparameters based on average validation score
-    5. Final retrain on full training set with best hyperparameters
-    6. Test on held-out subject
+    This implementation ensures computational efficiency by:
+    1. Computing padding length from ALL training data before CV begins
+    2. Computing mask values from ALL training data before CV begins  
+    3. No per-fold padding computation overhead during inner CV
+    4. Uses pre-padded data throughout all cross-validation operations
+    
+    Args:
+        X: Pre-padded trial arrays (n_trials, max_seq_len, n_features) - PADDED
+        y: Pre-padded trial label arrays (n_trials, max_seq_len) - PADDED
+        groups: Array indicating which subject each trial belongs to
+        mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length)
+        subject_names: List of subject names
+        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
+        refit_scoring_metric: Primary scoring metric
+        experiment_dir: Directory for logging
+        n_jobs: Number of parallel jobs
+        verbose: Verbosity level
+        hparam_logger: Hyperparameter logger
+        
+    Returns:
+        tuple: (outer_results, all_best_params, experiment_dir)
     """
     from sklearn.model_selection import ParameterGrid
     from collections import defaultdict, Counter
     
     if verbose >= 1:
-        logging.info(f"\n[CV] Starting nested cross-validation with feature aggregation")
-        logging.info(f"[CV] Model type: {model_type}")
-        logging.info(f"[CV] Refit metric: {refit_scoring_metric}")
-        logging.info(f"[CV] Experiment directory: {experiment_dir}")
-        logging.info(f"[CV] {'-'*80}")
+        logging.info(f"\n[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
+        logging.info(f"[CV_SKLEARN] Model type: {model_type}")
+        logging.info(f"[CV_SKLEARN] Refit metric: {refit_scoring_metric}")
+        logging.info(f"[CV_SKLEARN] Experiment directory: {experiment_dir}")
+        logging.info(f"[CV_SKLEARN] {'-'*80}")
     
     # Setup outer CV (Leave-One-Subject-Out)
     outer_cv = LeaveOneGroupOut()
@@ -4554,8 +4586,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         param_combinations = list(ParameterGrid(param_grid))
     
     if verbose >= 1:
-        logging.info(f"[CV] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
-        logging.info(f"[CV] Total estimated fits: {n_outer_folds * (len(param_combinations) * (n_outer_folds-1) + 1)}")
+        logging.info(f"[CV_SKLEARN] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
+        logging.info(f"[CV_SKLEARN] Total estimated fits: {n_outer_folds * (len(param_combinations) * (n_outer_folds-1) + 1)}")
     
     # Results storage
     outer_results = []
@@ -4564,11 +4596,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     # Outer loop: Leave-One-Subject-Out
     for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
         if verbose >= 1:
-            logging.info(f"\n[CV] {'='*70}")
-            logging.info(f"[CV] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
-            logging.info(f"[CV] {'='*70}")
+            logging.info(f"\n[CV_SKLEARN] {'='*70}")
+            logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
+            logging.info(f"[CV_SKLEARN] {'='*70}")
         
-        # Step 1: Split train subjects vs test subject
+        # Step 1: Split trials into train/test (pre-padded)
         X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
         y_outer_train, y_outer_test = y[outer_train_idx], y[outer_test_idx]
         groups_outer_train = groups[outer_train_idx]
@@ -4577,28 +4609,46 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         test_subject_name = subject_names[test_subject_number] if subject_names else f"Subject_{test_subject_number}"
         
         if verbose >= 1:
-            logging.info(f"[CV] Test subject: {test_subject_name} ({test_subject_number})")
-            logging.info(f"[CV] Training subjects: {len(np.unique(groups_outer_train))}")
-            logging.info(f"[CV] Training samples: {len(outer_train_idx)}, Test samples: {len(outer_test_idx)}")
+            logging.info(f"[CV_SKLEARN] Test subject: {test_subject_name} ({test_subject_number})")
+            logging.info(f"[CV_SKLEARN] Training subjects: {len(np.unique(groups_outer_train))}")
+            logging.info(f"[CV_SKLEARN] Training trials: {len(outer_train_idx)}, Test trials: {len(outer_test_idx)}")
         
-        # Step 2: Inner CV with hyperparameter testing and feature aggregation
+        # Step 2: Get parameter grid (use pre-computed mask values)
+        param_grid = get_default_param_grid(model_type=model_type, mask_values=mask_values)
+        
+        # Handle different parameter grid structures
+        if model_type == 'lstm':
+            # For LSTM, param_grid is already a list of parameter combinations
+            param_combinations = param_grid
+        else:
+            # For other models, use ParameterGrid to create combinations
+            param_combinations = list(ParameterGrid(param_grid))
+        
+        if verbose >= 1:
+            logging.info(f"[CV_SKLEARN] Parameter combinations: {len(param_combinations)}")
+        
+        # Step 3: Inner CV with hyperparameter testing and pre-computed padding
         inner_cv = LeaveOneGroupOut()
         inner_splits = list(inner_cv.split(X_outer_train, y_outer_train, groups_outer_train))
         n_inner_folds = len(inner_splits)
         
         if verbose >= 1:
-            logging.info(f"[CV] Inner CV: {n_inner_folds} folds")
+            logging.info(f"[CV_SKLEARN] Inner CV: {n_inner_folds} folds with pre-computed padding")
         
         # Storage for hyperparameter evaluation
         param_scores = []
-        param_features = []  # Store feature selections for each param combo
+        param_features = []
+        param_all_metrics = []  # Storage for all metrics across parameter combinations
         
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
+            if verbose >= 2:
+                logging.info(f"[CV_SKLEARN] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
                         
             # Storage for this parameter combination
             inner_scores = []
             inner_selected_features = []  # Features selected in each inner fold
+            inner_all_metrics = []  # Storage for all metrics across inner folds
             
             # Inner CV loop for this parameter combination
             for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
@@ -4611,36 +4661,100 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 val_subject_name = subject_names[val_subject_number] if subject_names else f"Subject_{val_subject_number}"
                 
                 if verbose >= 2:
-                    logging.info(f"[CV]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
-                
-                # Create pipeline with current parameters and subject information
-                inner_pipeline, _ = build_pipeline(
-                    model_type=model_type,
-                    mask_values=mask_values,
-                    experiment_dir=experiment_dir,  
-                    outer_fold=outer_fold + 1,
-                    inner_fold=inner_fold + 1,
-                    outer_test_subject=test_subject_name,
-                    inner_validation_subject=val_subject_name,
-                    params=params # used for callbacks
-                )
-                inner_pipeline.set_params(**params)
+                    logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 try:
-
-                    # Fit pipeline (includes feature selection and model training)
+                    # Step 4: Create pre-padded inner training and validation data
+                    if verbose >= 2:
+                        logging.info(f"[CV_SKLEARN]     Inner train trials: {len(inner_train_idx)}, val trials: {len(inner_val_idx)}")
+                    
+                    # Step 5: Use pre-computed mask values (no per-fold padding needed)
+                    if verbose >= 2:
+                        logging.info(f"[CV_SKLEARN]     Pre-computed padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={mask_values['max_length']}")
+                    
+                    # Step 6: Create pipeline with pre-computed mask values
+                    inner_pipeline, scoring_functions = build_pipeline(
+                        model_type=model_type,
+                        mask_values=mask_values,  # Use pre-computed mask values
+                        experiment_dir=experiment_dir,  
+                        outer_fold=outer_fold + 1,
+                        inner_fold=inner_fold + 1,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        params=params,
+                        has_validation_data=True  # Enable validation data monitoring
+                    )
+                    inner_pipeline.set_params(**params)
+                    
+                    # Step 7: Fit and evaluate pipeline with proper validation data handling
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
-                        # For LSTM, use 3D data
-                        inner_pipeline.fit(X_inner_train, y_inner_train)
-                        y_val_pred = inner_pipeline.predict(X_inner_val)
+                        # Implement proper pipeline-aware validation data handling
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]     Training with pipeline-aware validation data")
                         
-                        # Calculate masked score for LSTM
-                        if mask_values and 'y_mask' in mask_values:
-                            y_mask_val = mask_values['y_mask']
-                            score = LSTMClassifier.eval_masked_f1_score(y_inner_val, y_val_pred, y_mask_val)
-                        else:
-                            from sklearn.metrics import f1_score
-                            score = f1_score(y_inner_val.ravel(), y_val_pred.ravel(), average='weighted')
+                        # Step 7a: Fit pipeline preprocessing steps (feature selection + scaling) on training data only
+                        # This ensures no data leakage from validation data into preprocessing
+                        preprocessing_steps = inner_pipeline.steps[:-1]  # All steps except classifier
+                        
+                        # Apply preprocessing pipeline to training data
+                        X_train_transformed = X_inner_train
+                        for step_name, transformer in preprocessing_steps:
+                            if verbose >= 2:
+                                logging.info(f"[CV_SKLEARN]       Fitting {step_name} on training data: {X_train_transformed.shape}")
+                            transformer.fit(X_train_transformed, y_inner_train)
+                            X_train_transformed = transformer.transform(X_train_transformed)
+                        
+                        # Step 7b: Transform validation data using fitted preprocessing pipeline
+                        X_val_transformed = X_inner_val
+                        for step_name, transformer in preprocessing_steps:
+                            X_val_transformed = transformer.transform(X_val_transformed)
+                        
+                        # Step 7c: Fit LSTM classifier with validation data
+                        lstm_classifier = inner_pipeline.steps[-1][1]  # Get the classifier
+                        
+                        # Set validation data for the LSTM classifier
+                        lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
+                        
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Training LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                        
+                        # Fit the LSTM classifier with validation monitoring
+                        lstm_classifier.fit(X_train_transformed, y_inner_train)
+                        
+                        # Step 7d: Evaluate on validation data using threshold optimization
+                        y_val_pred = lstm_classifier.predict(X_val_transformed)
+                        y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
+                        
+                        # Threshold-optimized evaluation for LSTM models
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
+                        
+                        # Define metrics to optimize thresholds for
+                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        
+                        # Optimize thresholds using validation data
+                        threshold_results = optimize_thresholds_cv(
+                            estimator=lstm_classifier,
+                            X_val=X_val_transformed,
+                            y_val=y_inner_val,
+                            y_mask_val=mask_values.get('y_mask', -1),
+                            metrics=threshold_metrics,
+                            verbose=(verbose >= 3)
+                        )
+                        
+                        # Use threshold-optimized scores
+                        fold_scores = threshold_results['optimized_scores']
+                        
+                        # Store optimal thresholds for this fold
+                        optimal_thresholds = threshold_results['optimal_thresholds']
+                        
+                        if verbose >= 2:
+                            primary_threshold = optimal_thresholds.get('f1', 0.5)
+                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                        
+                        # Primary score for hyperparameter selection (threshold-optimized F1)
+                        score = fold_scores.get('f1', 0.0)
+                        
                     else:
                         # For other models, flatten to 2D
                         X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
@@ -4648,11 +4762,40 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                         inner_pipeline.fit(X_inner_train_2d, y_inner_train)
                         y_val_pred = inner_pipeline.predict(X_inner_val_2d)
+                        y_val_proba = inner_pipeline.predict_proba(X_inner_val_2d)
                         
-                        from sklearn.metrics import f1_score
-                        score = f1_score(y_inner_val, y_val_pred, average='weighted')
+                        # Threshold-optimized evaluation for non-LSTM models
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
+                        
+                        # Define metrics to optimize thresholds for
+                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        
+                        # Optimize thresholds using validation data
+                        threshold_results = optimize_thresholds_cv(
+                            estimator=inner_pipeline,
+                            X_val=X_inner_val_2d,
+                            y_val=y_inner_val,
+                            y_mask_val=mask_values.get('y_mask', -1),
+                            metrics=threshold_metrics,
+                            verbose=(verbose >= 3)
+                        )
+                        
+                        # Use threshold-optimized scores
+                        fold_scores = threshold_results['optimized_scores']
+                        
+                        # Store optimal thresholds for this fold
+                        optimal_thresholds = threshold_results['optimal_thresholds']
+                        
+                        if verbose >= 2:
+                            primary_threshold = optimal_thresholds.get('f1', 0.5)
+                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                        
+                        # Primary score for hyperparameter selection (threshold-optimized F1)
+                        score = fold_scores.get('f1', 0.0)
                     
                     inner_scores.append(score)
+                    inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
                     
                     # Store selected features from this inner fold
                     if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
@@ -4674,29 +4817,20 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
                         }
                         
-                        # Create simplified results dictionary for sklearn models
-                        sklearn_results = {
-                            'metric_scores': {'f1': score},  # Simple F1 score for sklearn models
-                            'optimal_thresholds': {'f1': 0.5},  # Default threshold
-                            'threshold_optimization': {},  # No threshold optimization for simple sklearn CV
-                            'feature_selection': {
-                                'selected_features': selected_features if 'selected_features' in locals() else [],
-                                'n_selected_features': len(selected_features) if 'selected_features' in locals() else 0,
-                            },
-                            'hyperparameters': params.copy() if params else {},
-                            'data_info': {
-                                'train_samples': train_info['n_samples'],
-                                'train_shape': train_info['shape'],
-                                'train_class_distribution': train_info['class_dist'],
-                                'val_samples': val_info['n_samples'],
-                                'val_shape': val_info['shape'],
-                                'val_class_distribution': val_info['class_dist'],
-                            },
-                        }
+                        # Create comprehensive results dictionary
+                        comprehensive_results = create_comprehensive_results_dict(
+                            fold_scores=fold_scores,
+                            optimal_thresholds=optimal_thresholds,
+                            threshold_results=threshold_results,
+                            selected_features=selected_features if 'selected_features' in locals() else [],
+                            hyperparams=params,
+                            train_info=train_info,
+                            val_info=val_info
+                        )
                         
                         # Save results immediately to prevent data loss
                         json_path, pkl_path = save_inner_fold_results(
-                            results_dict=sklearn_results,
+                            results_dict=comprehensive_results,
                             experiment_dir=experiment_dir,
                             outer_fold=outer_fold,
                             inner_fold=inner_fold,
@@ -4707,19 +4841,61 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         )
                         
                         if verbose >= 2 and json_path:
-                            logging.info(f"[CV]     Saved sklearn inner fold results to: {os.path.basename(json_path)}")
+                            logging.info(f"[CV_SKLEARN]     Saved comprehensive results to: {os.path.basename(json_path)}")
                             
                     except Exception as save_error:
-                        logging.warning(format_warning_message(f"[CV]     Failed to save sklearn inner fold results: {save_error}"))
+                        logging.warning(format_warning_message(f"[CV_SKLEARN]     Failed to save comprehensive inner fold results: {save_error}"))
                     
+                    # Enhanced logging with multiple metrics
                     if verbose >= 2:
-                        logging.info(f"[CV]     Score: {score:.4f}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                        metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in fold_scores.items()])
+                        logging.info(f"[CV_SKLEARN]     Scores: {metrics_str}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                    
+                    # Memory cleanup for inner fold
+                    if model_type == 'lstm':
+                        lstm_classifier = inner_pipeline.named_steps['classifier']
+                        if hasattr(lstm_classifier, 'model') and lstm_classifier.model is not None:
+                            del lstm_classifier.model
+                        import tensorflow as tf
+                        tf.keras.backend.clear_session()
+                        import gc
+                        gc.collect()
                 
                 except Exception as e:
                     if verbose >= 1:
-                        logging.warning(format_warning_message(f"[CV]     Inner fold {inner_fold + 1} failed: {e}"))
+                        logging.warning(format_warning_message(f"[CV_SKLEARN]     Inner fold {inner_fold + 1} failed: {e}"))
                     inner_scores.append(0.0)  # Penalty for failed folds
                     inner_selected_features.append([])
+                    inner_all_metrics.append({})  # Add empty metrics for failed folds
+            
+            # Compute average validation score for this parameter combination
+            avg_score = np.mean(inner_scores) if inner_scores else 0.0
+            param_scores.append(avg_score)
+            
+            # Aggregate multi-metric results across inner folds
+            if inner_all_metrics:
+                aggregated_metrics = {}
+                # Get all unique metric names from successful folds
+                all_metric_names = set()
+                for fold_metrics in inner_all_metrics:
+                    if isinstance(fold_metrics, dict):
+                        all_metric_names.update(fold_metrics.keys())
+                
+                # Calculate average for each metric
+                for metric_name in all_metric_names:
+                    metric_values = []
+                    for fold_metrics in inner_all_metrics:
+                        if isinstance(fold_metrics, dict) and metric_name in fold_metrics:
+                            metric_values.append(fold_metrics[metric_name])
+                    
+                    if metric_values:
+                        aggregated_metrics[metric_name] = np.mean(metric_values)
+                    else:
+                        aggregated_metrics[metric_name] = 0.0
+            else:
+                aggregated_metrics = {'f1': avg_score}
+            
+            param_all_metrics.append(aggregated_metrics)
             
             # Compute average validation score for this parameter combination
             avg_score = np.mean(inner_scores) if inner_scores else 0.0
@@ -4748,31 +4924,39 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             param_features.append(aggregated_features)
             
             if verbose >= 1:
-                logging.info(f"[CV]   Average score: {avg_score:.4f}")
-                logging.info(f"[CV]   Aggregated features: {len(aggregated_features)}")
+                logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
+                logging.info(f"[CV_SKLEARN]   Aggregated features: {len(aggregated_features)}")
+                if aggregated_metrics:
+                    metrics_summary = ", ".join([f"{k}={v:.4f}" for k, v in aggregated_metrics.items() if isinstance(v, (int, float))])
+                    logging.info(f"[CV_SKLEARN]   Average metrics: {metrics_summary}")
         
-        # Step 3: Select best hyperparameter combination
+        # Step 8: Select best hyperparameter combination
         if param_scores:
             best_param_idx = np.argmax(param_scores)
             best_params = param_combinations[best_param_idx]
             best_score = param_scores[best_param_idx]
             best_features = param_features[best_param_idx]
+            best_metrics = param_all_metrics[best_param_idx] if param_all_metrics else {}
             
             if verbose >= 1:
-                logging.info(f"\n[CV] Best parameters: {best_params}")
-                logging.info(f"[CV] Best CV score: {best_score:.4f}")
-                logging.info(f"[CV] Best feature set size: {len(best_features)}")
+                logging.info(f"\n[CV_SKLEARN] Best parameters: {best_params}")
+                logging.info(f"[CV_SKLEARN] Best CV score: {best_score:.4f}")
+                logging.info(f"[CV_SKLEARN] Best feature set size: {len(best_features)}")
+                if best_metrics:
+                    best_metrics_summary = ", ".join([f"{k}={v:.4f}" for k, v in best_metrics.items() if isinstance(v, (int, float))])
+                    logging.info(f"[CV_SKLEARN] Best average metrics: {best_metrics_summary}")
         else:
             # Fallback to default parameters
             best_params = param_combinations[0] if param_combinations else {}
             best_score = 0.0
             best_features = []
+            best_metrics = {}
             if verbose >= 1:
-                logging.warning(format_warning_message(f"[CV] No valid scores found, using default parameters"))
+                logging.warning(format_warning_message(f"[CV_SKLEARN] No valid scores found, using default parameters"))
         
-        # Step 4: Final retrain on full training set with best parameters
+        # Step 9: Final retrain using PRE-COMPUTED PADDING for efficiency
         if verbose >= 1:
-            logging.info(f"\n[CV] Final retraining on full training set...")
+            logging.info(f"\n[CV_SKLEARN] Final retraining on full training set...")
         
         try:
             # Create final pipeline with best parameters and subject information
@@ -4787,36 +4971,125 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             )
             final_pipeline.set_params(**best_params)
             
+            # Step 10: Use PRE-COMPUTED PADDING for final retraining (no additional padding needed)
+            if verbose >= 1:
+                logging.info(f"[CV_SKLEARN] Using pre-computed padding: outer train={X_outer_train.shape}, test={X_outer_test.shape}")
+                logging.info(f"[CV_SKLEARN] Pre-computed mask values: {mask_values}")
+            
             # Train on full outer training set
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
-                final_pipeline.fit(X_outer_train, y_outer_train)
+                # Apply pipeline-aware validation data handling for final training
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Final training with test set as validation data for early stopping")
                 
-                # Step 5: Test on held-out subject
-                y_test_pred = final_pipeline.predict(X_outer_test)
-                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test)
+                # Fit preprocessing steps on training data only
+                preprocessing_steps = final_pipeline.steps[:-1]
                 
-                # Calculate comprehensive test metrics using scoring functions
+                X_train_final = X_outer_train
+                for step_name, transformer in preprocessing_steps:
+                    transformer.fit(X_train_final, y_outer_train)
+                    X_train_final = transformer.transform(X_train_final)
+                
+                # Transform test data using fitted preprocessing pipeline  
+                X_test_final = X_outer_test
+                for step_name, transformer in preprocessing_steps:
+                    X_test_final = transformer.transform(X_test_final)
+                
+                # Set validation data for LSTM classifier (test set for early stopping)
+                lstm_classifier = final_pipeline.steps[-1][1]
+                lstm_classifier._validation_data = (X_test_final, y_outer_test)
+                
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Final training: train={X_train_final.shape}, test_as_val={X_test_final.shape}")
+                
+                # Fit the LSTM classifier with test set validation monitoring
+                lstm_classifier.fit(X_train_final, y_outer_train)
+                
+                # Threshold-optimized test evaluation for LSTM models
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Computing threshold-optimized test metrics")
+                
+                # First, tune thresholds on the outer training data
+                if verbose >= 2:
+                    logging.info(f"[CV_SKLEARN] Tuning thresholds on outer training data")
+                
+                # Define metrics to optimize thresholds for
+                threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                
+                # Optimize thresholds using outer training data
+                train_threshold_results = optimize_thresholds_cv(
+                    estimator=lstm_classifier,
+                    X_val=X_train_final,
+                    y_val=y_outer_train,
+                    y_mask_val=mask_values.get('y_mask', -1),
+                    metrics=threshold_metrics,
+                    verbose=(verbose >= 3)
+                )
+                
+                optimal_thresholds = train_threshold_results['optimal_thresholds']
+                
+                # Apply optimized thresholds to test predictions
                 test_metrics = {}
-                for metric_name, scoring_func in final_scoring_functions.items():
+                y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
+                
+                # Get positive class probabilities
+                if y_test_pred_proba.ndim > 2:
+                    y_test_pred_proba = y_test_pred_proba.reshape(-1, y_test_pred_proba.shape[-1])
+                
+                if y_test_pred_proba.shape[1] == 2:
+                    y_test_proba_pos = y_test_pred_proba[:, 1]
+                else:
+                    y_test_proba_pos = y_test_pred_proba.ravel()
+                
+                # Apply masking to test data
+                y_test_flat = y_outer_test.ravel()
+                y_test_proba_flat = y_test_proba_pos.ravel()
+                mask = y_test_flat != mask_values.get('y_mask', -1)
+                
+                if np.sum(mask) > 0:
+                    y_test_valid = y_test_flat[mask]
+                    y_test_proba_valid = y_test_proba_flat[mask]
+                    
+                    # Calculate threshold-optimized metrics
+                    for metric_name in threshold_metrics:
+                        threshold = optimal_thresholds.get(metric_name, 0.5)
+                        y_test_pred_thresh = (y_test_proba_valid > threshold)
+                        
+                        try:
+                            if metric_name == 'f1':
+                                from sklearn.metrics import f1_score
+                                test_metrics[metric_name] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
+                            elif metric_name == 'accuracy':
+                                from sklearn.metrics import accuracy_score
+                                test_metrics[metric_name] = accuracy_score(y_test_valid, y_test_pred_thresh)
+                            elif metric_name == 'precision':
+                                from sklearn.metrics import precision_score
+                                test_metrics[metric_name] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'recall':
+                                from sklearn.metrics import recall_score
+                                test_metrics[metric_name] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'balanced_accuracy':
+                                from sklearn.metrics import balanced_accuracy_score
+                                test_metrics[metric_name] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
+                        except Exception as e:
+                            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
+                            test_metrics[metric_name] = np.nan
+                    
+                    # Add AUC scores (threshold-independent)
                     try:
-                        # For metrics that need probabilities (like AUC, PR-AUC)
-                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
-                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
-                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba[:, 1])
-                            else:
-                                score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred_proba.ravel())
-                        else:
-                            # For metrics that need predictions (like F1, precision, recall, accuracy)
-                            score = scoring_func._score_func(y_outer_test.ravel(), y_test_pred.ravel())
-                        test_metrics[metric_name] = score
+                        from sklearn.metrics import roc_auc_score, average_precision_score
+                        test_metrics['roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
+                        test_metrics['pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
                     except Exception as e:
-                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
-                        test_metrics[metric_name] = np.nan
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
+                        test_metrics['roc_auc'] = np.nan
+                        test_metrics['pr_auc'] = np.nan
                 
                 # Extract primary metrics for backward compatibility
                 test_f1 = test_metrics.get('f1', np.nan)
                 test_auc = test_metrics.get('roc_auc', np.nan)
                 test_accuracy = test_metrics.get('accuracy', np.nan)
+                
             else:
                 # For other models
                 X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
@@ -4826,23 +5099,68 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 y_test_pred = final_pipeline.predict(X_outer_test_2d)
                 y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
                 
-                # Calculate comprehensive test metrics using scoring functions
+                # Threshold-optimized evaluation for non-LSTM models
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Computing threshold-optimized test metrics")
+                
+                # Define metrics to optimize thresholds for
+                threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                
+                # Optimize thresholds using training data
+                train_threshold_results = optimize_thresholds_cv(
+                    estimator=final_pipeline,
+                    X_val=X_outer_train_2d,
+                    y_val=y_outer_train,
+                    y_mask_val=mask_values.get('y_mask', -1),
+                    metrics=threshold_metrics,
+                    verbose=(verbose >= 3)
+                )
+                
+                optimal_thresholds = train_threshold_results['optimal_thresholds']
+                
+                # Apply optimized thresholds to test predictions
                 test_metrics = {}
-                for metric_name, scoring_func in final_scoring_functions.items():
+                
+                # Get positive class probabilities
+                if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
+                    y_test_proba_pos = y_test_pred_proba[:, 1]
+                else:
+                    y_test_proba_pos = y_test_pred_proba.ravel()
+                
+                # Calculate threshold-optimized metrics
+                for metric_name in threshold_metrics:
+                    threshold = optimal_thresholds.get(metric_name, 0.5)
+                    y_test_pred_thresh = (y_test_proba_pos > threshold)
+                    
                     try:
-                        # For metrics that need probabilities (like AUC, PR-AUC)
-                        if 'auc' in metric_name.lower() or 'roc' in metric_name.lower():
-                            if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
-                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba[:, 1])
-                            else:
-                                score = scoring_func._score_func(y_outer_test, y_test_pred_proba.ravel())
-                        else:
-                            # For metrics that need predictions (like F1, precision, recall, accuracy)
-                            score = scoring_func._score_func(y_outer_test, y_test_pred)
-                        test_metrics[metric_name] = score
+                        if metric_name == 'f1':
+                            from sklearn.metrics import f1_score
+                            test_metrics[metric_name] = f1_score(y_outer_test, y_test_pred_thresh, pos_label=1)
+                        elif metric_name == 'accuracy':
+                            from sklearn.metrics import accuracy_score
+                            test_metrics[metric_name] = accuracy_score(y_outer_test, y_test_pred_thresh)
+                        elif metric_name == 'precision':
+                            from sklearn.metrics import precision_score
+                            test_metrics[metric_name] = precision_score(y_outer_test, y_test_pred_thresh, pos_label=1, zero_division=0)
+                        elif metric_name == 'recall':
+                            from sklearn.metrics import recall_score
+                            test_metrics[metric_name] = recall_score(y_outer_test, y_test_pred_thresh, pos_label=1, zero_division=0)
+                        elif metric_name == 'balanced_accuracy':
+                            from sklearn.metrics import balanced_accuracy_score
+                            test_metrics[metric_name] = balanced_accuracy_score(y_outer_test, y_test_pred_thresh)
                     except Exception as e:
-                        logging.warning(format_warning_message(f"[CV] Could not calculate {metric_name} for test set: {e}"))
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
                         test_metrics[metric_name] = np.nan
+                
+                # Add AUC scores (threshold-independent)
+                try:
+                    from sklearn.metrics import roc_auc_score, average_precision_score
+                    test_metrics['roc_auc'] = roc_auc_score(y_outer_test, y_test_proba_pos)
+                    test_metrics['pr_auc'] = average_precision_score(y_outer_test, y_test_proba_pos)
+                except Exception as e:
+                    logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
+                    test_metrics['roc_auc'] = np.nan
+                    test_metrics['pr_auc'] = np.nan
                 
                 # Extract primary metrics for backward compatibility
                 test_f1 = test_metrics.get('f1', np.nan)
@@ -4898,10 +5216,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 )
                 
                 if verbose >= 1 and json_path:
-                    logging.info(f"[CV] Saved comprehensive sklearn refit results to: {os.path.basename(json_path)}")
+                    logging.info(f"[CV_SKLEARN] Saved comprehensive sklearn refit results to: {os.path.basename(json_path)}")
                     
             except Exception as save_error:
-                logging.warning(format_warning_message(f"[CV] Failed to save sklearn refit results: {save_error}"))
+                logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to save sklearn refit results: {save_error}"))
             
             # Store results with all test metrics (for backward compatibility)
             result_dict = {
@@ -4925,12 +5243,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             if verbose >= 1:
                 test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() 
                                             if isinstance(v, (int, float, np.number)) and not np.isnan(float(v))])
-                logging.info(f"[CV] Test metrics: {test_metrics_str}")
-                logging.info(f"[CV] OUTER FOLD {outer_fold + 1} COMPLETED")
+                logging.info(f"[CV_SKLEARN] Test metrics: {test_metrics_str}")
+                logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1} COMPLETED")
         
         except Exception as e:
             if verbose >= 1:
-                logging.error(format_error_message(f"[CV] Final training/testing failed for fold {outer_fold + 1}: {e}"))
+                logging.error(format_error_message(f"[CV_SKLEARN] Final training/testing failed for fold {outer_fold + 1}: {e}"))
             
             # Store failed result
             outer_results.append({
@@ -4950,9 +5268,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     
     # Summary
     if verbose >= 1:
-        logging.info(f"\n[CV] {'='*80}")
-        logging.info(f"[CV] NESTED CROSS-VALIDATION COMPLETED")
-        logging.info(f"[CV] {'='*80}")
+        logging.info(f"\n[CV_SKLEARN] {'='*80}")
+        logging.info(f"[CV_SKLEARN] NESTED CROSS-VALIDATION COMPLETED")
+        logging.info(f"[CV_SKLEARN] {'='*80}")
         
         if outer_results:
             # Calculate averages for primary metrics
@@ -4977,9 +5295,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             continue
             
             # Log primary metrics
-            logging.info(f"[CV] Average F1: {avg_f1:.4f}")
-            logging.info(f"[CV] Average AUC: {avg_auc:.4f}")
-            logging.info(f"[CV] Average Accuracy: {avg_accuracy:.4f}")
+            logging.info(f"[CV_SKLEARN] Average F1: {avg_f1:.4f}")
+            logging.info(f"[CV_SKLEARN] Average AUC: {avg_auc:.4f}")
+            logging.info(f"[CV_SKLEARN] Average Accuracy: {avg_accuracy:.4f}")
             
             # Log all test metrics
             for metric_name, values in all_test_metrics.items():
@@ -4987,9 +5305,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     avg_value = np.mean(values)
                     std_value = np.std(values)
                     metric_display = metric_name.replace('test_', '')
-                    logging.info(f"[CV] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
+                    logging.info(f"[CV_SKLEARN] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
             
-            logging.info(f"[CV] Average selected features: {avg_features:.1f}")
+            logging.info(f"[CV_SKLEARN] Average selected features: {avg_features:.1f}")
     
     return outer_results, all_best_params, experiment_dir  
 
@@ -5181,7 +5499,7 @@ def main(verbose: int = 2):
     
     # SLICE DATA TO ONLY 4 SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
-    selected_subjects = unique_subjects#[:3]  # Take first 3 subjects
+    selected_subjects = unique_subjects[:3]  # Take first 3 subjects
     
     if verbose >= 1:
         logging.info(f"[MAIN] SLICING DATA TO 3 SUBJECTS FOR TESTING")
@@ -5212,34 +5530,6 @@ def main(verbose: int = 2):
             logging.info(f"[MAIN] Sample labels: {np.unique(all_labels_sample)}")
     
     # Step 7-19: Nested Cross-Validation with Fold-Specific Padding
-    # 
-    # IMPORTANT: This implementation prevents data leakage by moving padding INSIDE the CV loops:
-    # 
-    # Traditional Approach (PROBLEMATIC):
-    #   1. Pad all data globally using information from all subjects
-    #   2. Split into train/test folds 
-    #   3. Train and evaluate models
-    #   → LEAKAGE: Test subject sequence lengths influence padding of training data
-    #
-    # New Fold-Specific Approach (CORRECT):
-    #   1. Split data into train/test folds (unpadded)
-    #   2. For each fold:
-    #      a. Compute padding parameters from TRAINING data only
-    #      b. Apply same padding to both training and test data
-    #      c. Train and evaluate models
-    #   → NO LEAKAGE: Test data characteristics never influence training decisions
-    #
-    if verbose >= 1:
-        logging.info("\n[MAIN] 3. NESTED CROSS-VALIDATION WITH FOLD-SPECIFIC PADDING")
-        logging.info("[MAIN] " + "-" * 40)
-        logging.info("[MAIN] Using fold-specific padding to prevent data leakage:")
-        logging.info("[MAIN]   • Padding length determined from training data only")
-        logging.info("[MAIN]   • Mask values computed from all fold data to ensure no conflicts")
-        logging.info("[MAIN]   • No test/validation length information used in padding decisions")
-        logging.info("[MAIN]   • Ensures valid nested cross-validation methodology")
-    
-    # Setup hyperparameter experiment logging for TensorBoard visualization
-    logging.info("[MAIN] Setting up TensorBoard hyperparameter visualization...")
     
     # Get parameter grid for hyperparameter logging setup (using dummy mask values for initial setup)
     from sklearn.model_selection import ParameterGrid
@@ -5277,31 +5567,29 @@ def main(verbose: int = 2):
     logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding")
     logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
 
-    # X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
-    # outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
-    #     X_padded, y_padded, groups,
-    #     subject_names=subject_names,
-    #     mask_values=mask_values,
-    #     model_type='lstm',
-    #     refit_scoring_metric='f1',
-    #     experiment_dir=experiment_dir,
-    #     n_jobs=n_jobs,
-    #     verbose=verbose,
-    #     hparam_logger=hparam_logger
-    # )
-
-    outer_results, all_best_params, experiment_dir = run_nested_cv_with_inner_padding(
-        X_list, y_list, groups,  # Pass UNPADDED data
+    X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
+    outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
+        X_padded, y_padded, groups,
         subject_names=subject_names,
-        model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
+        mask_values=mask_values,
+        model_type='lstm',
         refit_scoring_metric='f1',
         experiment_dir=experiment_dir,
         n_jobs=n_jobs,
         verbose=verbose,
-        hparam_logger=hparam_logger  # Pass the hyperparameter logger
+        hparam_logger=hparam_logger
     )
 
-
+    # outer_results, all_best_params, experiment_dir = run_nested_cv_with_inner_padding(
+    #     X_list, y_list, groups,  # Pass UNPADDED data
+    #     subject_names=subject_names,
+    #     model_type='lstm',  # Change to 'svm', 'rf', 'xgb'
+    #     refit_scoring_metric='f1',
+    #     experiment_dir=experiment_dir,
+    #     n_jobs=n_jobs,
+    #     verbose=verbose,
+    #     hparam_logger=hparam_logger  # Pass the hyperparameter logger
+    # )
 
     # Step 19: Final Evaluation
     if verbose >= 1:
