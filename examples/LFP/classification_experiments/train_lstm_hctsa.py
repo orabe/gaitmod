@@ -1324,101 +1324,6 @@ def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
     return X_padded, y_padded, mask_values
 
 
-def pad_fold_data(X_train_list, y_train_list, X_test_list, y_test_list, verbose: int = 0):
-    """
-    Pad data for a specific fold with proper mask value computation and training-only length determination.
-    
-    This function:
-    - Computes mask values considering ALL data (train + test/validation) to ensure no conflicts
-    - Determines max length from TRAINING data only to prevent data leakage
-    - Applies consistent padding to both training and test data
-    - Balances methodological rigor with practical mask value safety
-    
-    Args:
-        X_train_list: List of training trial arrays (n_epochs, n_features)
-        y_train_list: List of training label arrays (n_epochs,)
-        X_test_list: List of test trial arrays (n_epochs, n_features)
-        y_test_list: List of test label arrays (n_epochs,)
-        verbose: Verbosity level
-        
-    Returns:
-        tuple: (X_train_padded, y_train_padded, X_test_padded, y_test_padded, mask_values)
-    """
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Padding fold data - Train: {len(X_train_list)} trials, Test: {len(X_test_list)} trials")
-    
-    # Step 1: Combine all data for mask value computation (but padding length from training only)
-    train_X = np.concatenate(X_train_list, axis=0)
-    train_y = np.concatenate(y_train_list, axis=0)
-    
-    # Combine ALL data (train + test/validation) for mask value search to ensure no conflicts
-    all_X = np.concatenate([train_X] + [np.concatenate(X_test_list, axis=0)] if X_test_list else [train_X], axis=0)
-    all_y = np.concatenate([train_y] + [np.concatenate(y_test_list, axis=0)] if y_test_list else [train_y], axis=0)
-    
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Training data analysis: X_shape={train_X.shape}, y_shape={train_y.shape}")
-        logging.info(f"[PAD_FOLD] All data analysis: X_shape={all_X.shape}, y_shape={all_y.shape}")
-        logging.info(f"[PAD_FOLD] Training X range: [{np.min(train_X):.6e}, {np.max(train_X):.6e}]")
-        logging.info(f"[PAD_FOLD] All X range: [{np.min(all_X):.6e}, {np.max(all_X):.6e}]")
-        logging.info(f"[PAD_FOLD] Training Y unique: {np.unique(train_y)}")
-        logging.info(f"[PAD_FOLD] All Y unique: {np.unique(all_y)}")
-    
-    # Step 2: Find unique mask values considering ALL data (train + test/validation)
-    X_mask = find_unique_mask_value(all_X, global_mask_value=1e6, verbose=verbose)
-    y_mask = -1
-    
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Computed mask values from ALL data: X_mask={X_mask}, y_mask={y_mask}")
-    
-    # Step 3: Determine maximum sequence length from TRAINING data only (prevent leakage)
-    max_train_length = max(len(trial) for trial in X_train_list)
-    
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Maximum training sequence length: {max_train_length}")
-    
-    # Step 4: Final validation that mask values don't conflict with any data (should be guaranteed now)
-    X_mask_valid = not np.any(all_X == X_mask)
-    y_mask_valid = not np.any(all_y == y_mask)
-    
-    if not X_mask_valid:
-        raise ValueError(f"X_mask validation failed! {X_mask} found in data. This should not happen with the updated logic.")
-    if not y_mask_valid:
-        raise ValueError(f"y_mask validation failed! {y_mask} found in data.")
-    
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Mask validation passed: X_mask_valid={X_mask_valid}, y_mask_valid={y_mask_valid}")
-    
-    # Step 5: Pad training data using training-derived parameters
-    X_train_padded = pad_sequences(X_train_list, maxlen=max_train_length, dtype='float32', padding='post', value=X_mask)
-    y_train_padded = pad_sequences(y_train_list, maxlen=max_train_length, dtype='int32', padding='post', value=y_mask)
-    
-    # Step 6: Pad test data using the SAME parameters (no data leakage)
-    if X_test_list and y_test_list:
-        X_test_padded = pad_sequences(X_test_list, maxlen=max_train_length, dtype='float32', padding='post', value=X_mask)
-        y_test_padded = pad_sequences(y_test_list, maxlen=max_train_length, dtype='int32', padding='post', value=y_mask)
-    else:
-        X_test_padded = None
-        y_test_padded = None
-    
-    # Step 7: Create mask values dictionary
-    mask_values = {
-        'X_mask': X_mask,
-        'y_mask': y_mask,
-        'max_length': max_train_length,
-        'validation_passed': True,
-        'computed_from_training_only': True
-    }
-    
-    if verbose >= 1:
-        logging.info(f"[PAD_FOLD] Padding complete:")
-        logging.info(f"[PAD_FOLD]   Train: X={X_train_padded.shape}, y={y_train_padded.shape}")
-        if X_test_padded is not None:
-            logging.info(f"[PAD_FOLD]   Test:  X={X_test_padded.shape}, y={y_test_padded.shape}")
-        logging.info(f"[PAD_FOLD]   Mask values: X_mask={X_mask:.2e}, y_mask={y_mask}, max_len={max_train_length}")
-    
-    return X_train_padded, y_train_padded, X_test_padded, y_test_padded, mask_values
-
-
 # ===================================================================
 # LSTM CLASSIFIER AND RELATED CLASSES
 # ===================================================================
@@ -3469,7 +3374,7 @@ def get_default_param_grid(model_type, mask_values=None):
                 15,     # Moderate patience: Good balance for biomedical data
             ],
             'classifier__epochs': [
-                100,    # Sufficient for small datasets with early stopping
+                10,    # Sufficient for small datasets with early stopping
             ],
             
             # Batch Size - Small batches for better generalization on small datasets
@@ -3772,8 +3677,11 @@ def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold
                 # Core metrics (remove duplicates from results_dict)
                 'metric_scores': results_dict.get('metric_scores', {}),
                 'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
-                'threshold_optimization': results_dict.get('threshold_optimization', {}),
-                'feature_selection': results_dict.get('feature_selection', {}),
+                # Apply same cleanup for feature selection
+                'feature_selection': {
+                    k: v for k, v in results_dict.get('feature_selection', {}).items()
+                    if k != 'selection_scores'
+                },
                 'data_info': results_dict.get('data_info', {}),
             }
         }
@@ -3829,15 +3737,18 @@ def save_refit_results(results_dict, experiment_dir, outer_fold, hyperparams,
             'metadata': {
                 'outer_fold': outer_fold,
                 'outer_test_subject': outer_test_subject,
-                'hyperparameters': hyperparams.copy() if hyperparams else {},
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'hyperparameters': hyperparams.copy() if hyperparams else {},
                 'refit': True  # This is the final refit on all training data
             },
             'evaluation_results': {
                 'metric_scores': results_dict.get('test_scores', {}),  # Use test_scores for refit
                 'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
-                'threshold_optimization': results_dict.get('threshold_optimization', {}),
-                'feature_selection': results_dict.get('feature_selection', {}),
+                # Apply same cleanup for feature selection
+                'feature_selection': {
+                    k: v for k, v in results_dict.get('feature_selection', {}).items()
+                    if k != 'selection_scores'
+                },
                 'data_info': {
                     # Construct data_info from individual fields in results_dict
                     'train_shape': [
@@ -3913,33 +3824,12 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
             if isinstance(metric_data, dict):
                 essential_metric = {
                     'optimal_threshold': metric_data.get('optimal_threshold'),
-                    'optimal_score': metric_data.get('optimal_score'),
-                    'best_threshold_index': metric_data.get('best_threshold_index'),
-                    'metric_info': metric_data.get('metric_info', {})
+                    'optimal_score': metric_data.get('optimal_score')
                 }
-                
-                # Add summary statistics if available, but only high-level ones
-                if 'summary_statistics' in metric_data:
-                    summary = metric_data['summary_statistics']
-                    essential_metric['summary'] = {
-                        'total_thresholds_evaluated': summary.get('total_thresholds_evaluated'),
-                        'threshold_range': summary.get('threshold_range'),
-                        'evaluation_timestamp': summary.get('evaluation_timestamp'),
-                        'metrics_evaluated': summary.get('metrics_evaluated')
-                    }
-                
                 essential_threshold_results[metric_name] = essential_metric
         
-        # Add high-level summary if available in the original results
-        if '_summary' in tuning_results:
-            summary_data = tuning_results['_summary']
-            essential_threshold_results['_summary'] = {
-                'total_thresholds_evaluated': summary_data.get('total_thresholds_evaluated'),
-                'threshold_range': summary_data.get('threshold_range'),
-                'evaluation_timestamp': summary_data.get('evaluation_timestamp'),
-                'metrics_evaluated': summary_data.get('metrics_evaluated')
-            }
-    
+        # Skip verbose summary data 
+        
     return {
         # Core evaluation metrics
         'metric_scores': fold_scores.copy() if fold_scores else {},
@@ -3954,7 +3844,6 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         'feature_selection': {
             'selected_features': selected_features.copy() if isinstance(selected_features, list) else list(selected_features) if selected_features is not None else [],
             'n_selected_features': len(selected_features) if selected_features else 0,
-            'selection_scores': getattr(selected_features, 'scores_', None).tolist() if hasattr(selected_features, 'scores_') and getattr(selected_features, 'scores_', None) is not None else None,
         },
         
         # Data information (only shapes and class distributions)
@@ -4149,6 +4038,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         param_features = []
         param_all_metrics = []  # Storage for all metrics across parameter combinations
         param_aggregated_thresholds = []  # Storage for stable thresholds computed on aggregated validation data
+        param_aggregated_threshold_results = []  # Storage for full threshold optimization results
         
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
@@ -4447,6 +4337,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             # Compute stable thresholds using aggregated validation predictions
             # This avoids optimism bias from refitting thresholds on training data
             aggregated_optimal_thresholds = {}
+            aggregated_threshold_results = {}
             if inner_val_predictions and inner_val_labels:
                 try:
                     # Aggregate validation predictions and labels across all inner folds
@@ -4476,9 +4367,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     if verbose >= 1:
                         logging.warning(f"[CV_SKLEARN]   Failed to compute aggregated thresholds: {e}")
                     aggregated_optimal_thresholds = {}
+                    aggregated_threshold_results = {}
             
             param_features.append(aggregated_features)
             param_aggregated_thresholds.append(aggregated_optimal_thresholds)
+            param_aggregated_threshold_results.append(aggregated_threshold_results)
             
             if verbose >= 1:
                 logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
@@ -4495,6 +4388,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_features = param_features[best_param_idx]
             best_metrics = param_all_metrics[best_param_idx] if param_all_metrics else {}
             best_aggregated_thresholds = param_aggregated_thresholds[best_param_idx] if param_aggregated_thresholds else {}
+            best_aggregated_threshold_results = param_aggregated_threshold_results[best_param_idx] if param_aggregated_threshold_results else {}
             
             if verbose >= 1:
                 logging.info(f"\n[CV_SKLEARN] Best parameters: {best_params}")
@@ -4513,6 +4407,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_features = []
             best_metrics = {}
             best_aggregated_thresholds = {}
+            best_aggregated_threshold_results = {}
             if verbose >= 1:
                 logging.warning(format_warning_message(f"[CV_SKLEARN] No valid scores found, using default parameters"))
         
@@ -4749,6 +4644,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Test performance metrics
                     'test_scores': test_metrics.copy(),
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
+                    'threshold_optimization': best_aggregated_threshold_results.copy() if best_aggregated_threshold_results else {},
+                    'feature_selection': {
+                        'selected_features': best_features.copy() if best_features else [],
+                        'n_selected_features': len(best_features) if best_features else 0,
+                    },
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
