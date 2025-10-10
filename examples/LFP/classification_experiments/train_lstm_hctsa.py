@@ -3582,10 +3582,327 @@ def convert_numpy_types(obj):
     else:
         return obj
 
+def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
+                         outer_test_subject, inner_validation_subject, hyperparams):
+    """
+    Private function to handle inner fold specific data processing and saving.
+    
+    Args:
+        results_dict: Dictionary containing all evaluation results
+        output_dir: Directory where results should be saved
+        outer_fold: Outer fold index
+        inner_fold: Inner fold index
+        outer_test_subject: Test subject name for outer fold
+        inner_validation_subject: Validation subject name for inner fold
+        hyperparams: Hyperparameters used
+    
+    Returns:
+        tuple: (json_path, pkl_path) of saved files
+    """
+    # Build inner fold metadata
+    metadata = {
+        'outer_fold': outer_fold,
+        'inner_fold': inner_fold,
+        'outer_test_subject': outer_test_subject,
+        'inner_validation_subject': inner_validation_subject,
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'hyperparameters': hyperparams.copy() if hyperparams else {},
+        'refit': False  # This is inner CV, not refit
+    }
+    
+    # For inner fold, use data_info directly from results_dict
+    data_info = results_dict.get('data_info', {})
+    
+    # Use metric_scores for inner fold results
+    metric_scores = results_dict.get('metric_scores', {})
+    
+    # Create result structure
+    result = _create_result_structure(results_dict, metadata, metric_scores, data_info)
+    
+    # Save with inner fold specific filenames
+    json_filename = "evaluation_results.json"
+    pkl_filename = "evaluation_results.pkl"
+    
+    return _write_result_files(result, output_dir, json_filename, pkl_filename)
+
+def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, hyperparams):
+    """
+    Private function to handle refit specific data processing and saving.
+    
+    Args:
+        results_dict: Dictionary containing all evaluation results
+        output_dir: Directory where results should be saved
+        outer_fold: Outer fold index
+        outer_test_subject: Test subject name for outer fold
+        hyperparams: Hyperparameters used
+    
+    Returns:
+        tuple: (json_path, pkl_path) of saved files
+    """
+    # Build refit metadata
+    metadata = {
+        'outer_fold': outer_fold,
+        'outer_test_subject': outer_test_subject,
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'hyperparameters': hyperparams.copy() if hyperparams else {},
+        'refit': True  # This is the final refit on all training data
+    }
+    
+    # For refit, construct data_info from individual fields
+    data_info = {
+        'train_shape': [
+            results_dict.get('n_train_samples', 0),
+            results_dict.get('max_sequence_length', None),
+            results_dict.get('n_selected_features', 0)
+        ],
+        'train_class_distribution': results_dict.get('train_class_distribution', {}),
+        'test_shape': [
+            results_dict.get('n_test_samples', 0),
+            results_dict.get('max_sequence_length', None),
+            results_dict.get('n_selected_features', 0)
+        ],
+        'test_class_distribution': results_dict.get('test_class_distribution', {})
+    }
+    
+    # Use test_scores for refit results
+    metric_scores = results_dict.get('test_scores', {})
+    
+    # Create result structure
+    result = _create_result_structure(results_dict, metadata, metric_scores, data_info)
+    
+    # Save with refit specific filenames
+    json_filename = "refit_results.json"
+    pkl_filename = "refit_results.pkl"
+    
+    return _write_result_files(result, output_dir, json_filename, pkl_filename)
+
+def _create_result_structure(results_dict, metadata, metric_scores, data_info):
+    """
+    Private function to create the standardized result structure with JSON cleanup.
+    
+    Args:
+        results_dict: Raw results dictionary
+        metadata: Metadata for this result
+        metric_scores: Appropriate metric scores for this result type
+        data_info: Data information for this result type
+    
+    Returns:
+        dict: Clean, standardized result structure
+    """
+    # Extract and clean feature selection data  
+    feature_selection_cleaned = {}
+    feature_selection_raw = results_dict.get('feature_selection', {})
+    
+    if feature_selection_raw:
+        # Remove verbose selection_scores field
+        feature_selection_cleaned = {
+            k: v for k, v in feature_selection_raw.items()
+            if k != 'selection_scores'
+        }
+    
+    # Create comprehensive result dictionary with clean, consistent structure
+    return {
+        'metadata': metadata,
+        'evaluation_results': {
+            'metric_scores': metric_scores,
+            'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
+            'feature_selection': feature_selection_cleaned,
+            'data_info': data_info,
+        }
+    }
+
+def _write_result_files(result, output_dir, json_filename, pkl_filename):
+    """
+    Private function to write result files to disk.
+    
+    Args:
+        result: Result dictionary to save
+        output_dir: Directory to save files in
+        json_filename: Name for JSON file
+        pkl_filename: Name for pickle file
+    
+    Returns:
+        tuple: (json_path, pkl_path) of saved files
+    """
+    # Save as JSON for human readability
+    json_path = os.path.join(output_dir, json_filename)
+    json_safe_result = convert_numpy_types(result)
+    with open(json_path, 'w') as f:
+        json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
+    
+    # Also save as pickle for complete data preservation
+    pkl_path = os.path.join(output_dir, pkl_filename)
+    with open(pkl_path, 'wb') as f:
+        pickle.dump(result, f)
+        
+    return json_path, pkl_path
+
+def save_evaluation_results(results_dict, result_type, output_dir=None, experiment_dir=None, 
+                           outer_fold=None, inner_fold=None, outer_test_subject=None, 
+                           inner_validation_subject=None, hyperparams=None, immediate_save=True):
+    """
+    Main function to save evaluation results with consistent structure and JSON cleanup.
+    This is the primary interface for saving both inner fold and refit results.
+    
+    Args:
+        results_dict: Dictionary containing all evaluation results
+        result_type: 'inner_fold' or 'refit' to determine processing approach
+        output_dir: Direct output directory (if provided, used as-is)
+        experiment_dir: Base experiment directory (used to construct output_dir if output_dir not provided)
+        outer_fold: Outer fold index
+        inner_fold: Inner fold index (only for inner_fold type)
+        outer_test_subject: Test subject name for outer fold
+        inner_validation_subject: Validation subject name (only for inner_fold type)
+        hyperparams: Hyperparameters used
+        immediate_save: Whether to save immediately (default: True)
+    
+    Returns:
+        tuple: (json_path, pkl_path) of saved files
+    """
+    try:
+        # Determine the output directory
+        if output_dir is None:
+            if experiment_dir is None:
+                raise ValueError("Must provide either output_dir or experiment_dir")
+            
+            # Construct output directory based on result type
+            if result_type == 'inner_fold':
+                output_dir = _construct_inner_fold_directory(
+                    experiment_dir, outer_fold, inner_fold, 
+                    outer_test_subject, inner_validation_subject, hyperparams
+                )
+            elif result_type == 'refit':
+                output_dir = _construct_refit_directory(
+                    experiment_dir, outer_fold, outer_test_subject
+                )
+            else:
+                raise ValueError(f"Invalid result_type: {result_type}. Must be 'inner_fold' or 'refit'")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Delegate to appropriate private function based on result type
+        if result_type == 'inner_fold':
+            return _save_inner_fold_data(
+                results_dict, output_dir, outer_fold, inner_fold,
+                outer_test_subject, inner_validation_subject, hyperparams
+            )
+        elif result_type == 'refit':
+            return _save_refit_data(
+                results_dict, output_dir, outer_fold, outer_test_subject, hyperparams
+            )
+        else:
+            raise ValueError(f"Invalid result_type: {result_type}. Must be 'inner_fold' or 'refit'")
+        
+    except Exception as e:
+        if immediate_save:  # Only log if this was supposed to be immediate
+            logging.error(f"Failed to save {result_type} results: {e}")
+        raise e
+
+def _construct_inner_fold_directory(experiment_dir, outer_fold, inner_fold, 
+                                   outer_test_subject, inner_validation_subject, hyperparams):
+    """
+    Private function to construct directory structure for inner fold results.
+    
+    Returns:
+        str: Complete path for inner fold results
+    """
+    # Create TensorBoard-style directory structure for inner fold results
+    outer_fold_dir = os.path.join(
+        experiment_dir, 
+        f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+    )
+    
+    # Create hyperparameter string for directory structure
+    param_str = _create_hyperparameter_string(hyperparams)
+    
+    hyperparams_dir = os.path.join(outer_fold_dir, param_str)
+    inner_fold_dir = os.path.join(
+        hyperparams_dir, 
+        f"inner_fold_{inner_fold + 1:02d}_val_{inner_validation_subject}" if inner_validation_subject 
+        else f"inner_fold_{inner_fold + 1:02d}"
+    )
+    
+    return inner_fold_dir
+
+def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject):
+    """
+    Private function to construct directory structure for refit results.
+    
+    Returns:
+        str: Complete path for refit results
+    """
+    # Create TensorBoard-style directory structure for refit results
+    outer_fold_dir = os.path.join(
+        experiment_dir, 
+        f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+    )
+    refit_results_dir = os.path.join(outer_fold_dir, "default")
+    
+    return refit_results_dir
+
+def _create_hyperparameter_string(hyperparams):
+    """
+    Helper function to create hyperparameter string for directory structure.
+    
+    Args:
+        hyperparams: Dictionary of hyperparameters
+        
+    Returns:
+        str: Formatted hyperparameter string for directory naming
+    """
+    if not hyperparams or not isinstance(hyperparams, dict):
+        return "default"
+    
+    exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+    param_name_map = {
+        'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
+        'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
+        'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
+        'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act'
+    }
+    
+    param_parts = []
+    for k, v in hyperparams.items():
+        # Remove known pipeline prefixes for cleaner directory names
+        for prefix in ['classifier__', 'scaler__', 'feature_selector__']:
+            if k.startswith(prefix):
+                k = k[len(prefix):]
+                break
+        if k in exclude_keys:
+            continue
+        
+        short_k = param_name_map.get(k, k)
+        
+        # Format value more compactly
+        if isinstance(v, list):
+            if all(isinstance(x, (int, float)) for x in v):
+                v_str = 'x'.join(map(str, v))
+            else:
+                v_str = str(v).replace(' ', '').replace("'", "")
+        elif isinstance(v, float):
+            if v == int(v):
+                v_str = str(int(v))
+            else:
+                v_str = f"{v:.4f}".rstrip('0').rstrip('.')
+        else:
+            v_str = str(v)
+        
+        param_parts.append(f"{short_k}{v_str}")
+    
+    param_str = "_".join(param_parts)
+    # Ensure the path isn't too long
+    if len(param_str) > 100:
+        priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
+        priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
+        param_str = "_".join(priority_parts[:6])
+    
+    return param_str
+
 def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold, hyperparams, 
                            outer_test_subject=None, inner_validation_subject=None, immediate_save=True):
     """
-    Save comprehensive results for a single inner fold using TensorBoard directory structure.
+    Wrapper function to save inner fold results using the main save_evaluation_results function.
     
     Args:
         results_dict: Dictionary containing all evaluation results
@@ -3596,113 +3913,23 @@ def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold
         outer_test_subject: Test subject name for outer fold
         inner_validation_subject: Validation subject name for inner fold
         immediate_save: Whether to save immediately (default: True)
+    
+    Returns:
+        tuple: (json_path, pkl_path) from save_evaluation_results
     """
     try:
-        # Create TensorBoard-style directory structure
-        # Format: outer_fold_01_test_PW_EM59 > bs128_dasigmoid_du1_do0.2_ep2_hd64_lr0.001_optadam_ct0.85_nf150_vt0.01 > inner_fold_01_val_PW_FH57
-        outer_fold_dir = os.path.join(
-            experiment_dir, 
-            f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+        # Call the main saving function with inner fold parameters
+        return save_evaluation_results(
+            results_dict=results_dict,
+            result_type='inner_fold',
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+            hyperparams=hyperparams,
+            immediate_save=immediate_save
         )
-        
-        # Create hyperparameter string using the same logic as TensorBoard logging
-        if hyperparams and isinstance(hyperparams, dict):
-            exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
-            param_name_map = {
-                'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
-                'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
-                'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
-                'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act'
-            }
-            
-            param_parts = []
-            for k, v in hyperparams.items():
-                # Remove known pipeline prefixes for cleaner directory names
-                for prefix in ['classifier__', 'scaler__', 'feature_selector__']:
-                    if k.startswith(prefix):
-                        k = k[len(prefix):]
-                        break
-                if k in exclude_keys:
-                    continue
-                
-                short_k = param_name_map.get(k, k)
-                
-                # Format value more compactly
-                if isinstance(v, list):
-                    if all(isinstance(x, (int, float)) for x in v):
-                        v_str = 'x'.join(map(str, v))
-                    else:
-                        v_str = str(v).replace(' ', '').replace("'", "")
-                elif isinstance(v, float):
-                    if v == int(v):
-                        v_str = str(int(v))
-                    else:
-                        v_str = f"{v:.4f}".rstrip('0').rstrip('.')
-                else:
-                    v_str = str(v)
-                
-                param_parts.append(f"{short_k}{v_str}")
-            
-            param_str = "_".join(param_parts)
-            # Ensure the path isn't too long
-            if len(param_str) > 100:
-                priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
-                priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
-                param_str = "_".join(priority_parts[:6])
-        else:
-            param_str = "default"
-        
-        hyperparams_dir = os.path.join(outer_fold_dir, param_str)
-        inner_fold_dir = os.path.join(
-            hyperparams_dir, 
-            f"inner_fold_{inner_fold + 1:02d}_val_{inner_validation_subject}" if inner_validation_subject 
-            else f"inner_fold_{inner_fold + 1:02d}"
-        )
-        
-        # Create the directory
-        os.makedirs(inner_fold_dir, exist_ok=True)
-        
-        # Create comprehensive result dictionary with clean, consistent structure
-        inner_fold_result = {
-            'metadata': {
-                'outer_fold': outer_fold,
-                'inner_fold': inner_fold,
-                'outer_test_subject': outer_test_subject,
-                'inner_validation_subject': inner_validation_subject,
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'hyperparameters': hyperparams.copy() if hyperparams else {},
-                'refit': False  # This is inner CV, not refit
-            },
-            'evaluation_results': {
-                # Core metrics (remove duplicates from results_dict)
-                'metric_scores': results_dict.get('metric_scores', {}),
-                'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
-                # Apply same cleanup for feature selection
-                'feature_selection': {
-                    k: v for k, v in results_dict.get('feature_selection', {}).items()
-                    if k != 'selection_scores'
-                },
-                'data_info': results_dict.get('data_info', {}),
-            }
-        }
-        
-        # Save as JSON for human readability
-        json_filename = "evaluation_results.json"
-        json_path = os.path.join(inner_fold_dir, json_filename)
-        
-        # Convert numpy types before JSON serialization
-        json_safe_result = convert_numpy_types(inner_fold_result)
-        with open(json_path, 'w') as f:
-            json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
-        
-        # Also save as pickle for complete data preservation
-        pkl_filename = "evaluation_results.pkl"
-        pkl_path = os.path.join(inner_fold_dir, pkl_filename)
-        
-        with open(pkl_path, 'wb') as f:
-            pickle.dump(inner_fold_result, f)
-            
-        return json_path, pkl_path
         
     except Exception as e:
         logging.warning(format_warning_message(f"Failed to save inner fold results: {e}"))
@@ -3712,7 +3939,7 @@ def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold
 def save_refit_results(results_dict, experiment_dir, outer_fold, hyperparams, 
                       outer_test_subject=None, immediate_save=True):
     """
-    Save comprehensive results for refit on full training set using TensorBoard directory structure.
+    Wrapper function to save refit results using the main save_evaluation_results function.
     
     Args:
         results_dict: Dictionary containing all evaluation results
@@ -3721,70 +3948,22 @@ def save_refit_results(results_dict, experiment_dir, outer_fold, hyperparams,
         hyperparams: Best hyperparameters used for refit
         outer_test_subject: Test subject name for outer fold
         immediate_save: Whether to save immediately (default: True)
+    
+    Returns:
+        tuple: (json_path, pkl_path) from save_evaluation_results
     """
     try:
-        # Create TensorBoard-style directory structure for refit results
-        # Format: outer_fold_01_test_PW_EM59 > default (for refit results)
-        outer_fold_dir = os.path.join(
-            experiment_dir, 
-            f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+        # Call the main saving function with refit parameters
+        return save_evaluation_results(
+            results_dict=results_dict,
+            result_type='refit',
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            outer_test_subject=outer_test_subject,
+            hyperparams=hyperparams,
+            immediate_save=immediate_save
         )
-        refit_results_dir = os.path.join(outer_fold_dir, "default")
-        os.makedirs(refit_results_dir, exist_ok=True)
-        
-        # Create refit result with same structure as inner fold results  
-        refit_result = {
-            'metadata': {
-                'outer_fold': outer_fold,
-                'outer_test_subject': outer_test_subject,
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                'hyperparameters': hyperparams.copy() if hyperparams else {},
-                'refit': True  # This is the final refit on all training data
-            },
-            'evaluation_results': {
-                'metric_scores': results_dict.get('test_scores', {}),  # Use test_scores for refit
-                'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
-                # Apply same cleanup for feature selection
-                'feature_selection': {
-                    k: v for k, v in results_dict.get('feature_selection', {}).items()
-                    if k != 'selection_scores'
-                },
-                'data_info': {
-                    # Construct data_info from individual fields in results_dict
-                    'train_shape': [
-                        results_dict.get('n_train_samples', 0),
-                        results_dict.get('max_sequence_length', None),  # Default sequence length
-                        results_dict.get('n_selected_features', 0)
-                    ],
-                    'train_class_distribution': results_dict.get('train_class_distribution', {}),
-                    'test_shape': [  # For refit, use test terminology
-                        results_dict.get('n_test_samples', 0),
-                        results_dict.get('max_sequence_length', None),
-                        results_dict.get('n_selected_features', 0)
-                    ],
-                    'test_class_distribution': results_dict.get('test_class_distribution', {})
-                }
-            }
-        }
-        
-        # Save as JSON for human readability
-        json_filename = "refit_results.json"
-        json_path = os.path.join(refit_results_dir, json_filename)
-        
-        # Convert numpy types before JSON serialization
-        json_safe_result = convert_numpy_types(refit_result)
-        with open(json_path, 'w') as f:
-            json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
-        
-        # Also save as pickle for complete data preservation
-        pkl_filename = "refit_results.pkl"
-        pkl_path = os.path.join(refit_results_dir, pkl_filename)
-        
-        with open(pkl_path, 'wb') as f:
-            pickle.dump(refit_result, f)
             
-        return json_path, pkl_path
-        
     except Exception as e:
         logging.warning(format_warning_message(f"Failed to save refit results: {e}"))
         return None, None
@@ -3854,71 +4033,6 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
             'val_class_distribution': val_info.get('class_dist', {}),
         },
     }
-
-
-def aggregate_inner_fold_results(experiment_dir, outer_fold):
-    """
-    Aggregate all inner fold results for a given outer fold.
-    
-    Args:
-        experiment_dir: Base experiment directory
-        outer_fold: Outer fold index
-        
-    Returns:
-        Dictionary with aggregated results
-    """
-    try:
-        inner_results_dir = os.path.join(experiment_dir, "inner_fold_results", f"outer_fold_{outer_fold:02d}")
-        
-        if not os.path.exists(inner_results_dir):
-            return {}
-            
-        # Load all inner fold results
-        inner_fold_results = []
-        result_files = [f for f in os.listdir(inner_results_dir) if f.endswith('_results.pkl')]
-        
-        for result_file in sorted(result_files):
-            result_path = os.path.join(inner_results_dir, result_file)
-            try:
-                with open(result_path, 'rb') as f:
-                    result = pickle.load(f)
-                    inner_fold_results.append(result)
-            except Exception as e:
-                logging.warning(format_warning_message(f"Failed to load {result_file}: {e}"))
-                continue
-        
-        if not inner_fold_results:
-            return {}
-            
-        # Aggregate results across inner folds
-        aggregated = {
-            'metadata': {
-                'outer_fold': outer_fold,
-                'n_inner_folds': len(inner_fold_results),
-                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-            },
-            'hyperparameter_analysis': {},
-            'metric_summaries': {},
-            'feature_selection_analysis': {},
-        }
-        
-        # Analyze hyperparameter performance
-        hyperparam_performance = defaultdict(list)
-        for result in inner_fold_results:
-            hyperparams = result['metadata']['hyperparameters']
-            scores = result['evaluation_results']['metric_scores']
-            
-            # Create hashable hyperparameter key
-            hyperparam_key = tuple(sorted(hyperparams.items())) if isinstance(hyperparams, dict) else str(hyperparams)
-            hyperparam_performance[hyperparam_key].append(scores)
-        
-        aggregated['hyperparameter_analysis'] = dict(hyperparam_performance)
-        
-        return aggregated
-        
-    except Exception as e:
-        logging.warning(format_warning_message(f"Failed to aggregate inner fold results: {e}"))
-        return {}
 
 
 def run_nested_cv_sklearn(X, y, groups, mask_values, 
@@ -4246,8 +4360,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         )
                         
                         # Save results immediately to prevent data loss
-                        json_path, pkl_path = save_inner_fold_results(
+                        json_path, pkl_path = save_evaluation_results(
                             results_dict=comprehensive_results,
+                            result_type='inner_fold',
                             experiment_dir=experiment_dir,
                             outer_fold=outer_fold,
                             inner_fold=inner_fold,
@@ -4644,7 +4759,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Test performance metrics
                     'test_scores': test_metrics.copy(),
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
-                    'threshold_optimization': best_aggregated_threshold_results.copy() if best_aggregated_threshold_results else {},
+                    'threshold_optimization': best_aggregated_threshold_results.get('tuning_results', {}) if best_aggregated_threshold_results else {},
                     'feature_selection': {
                         'selected_features': best_features.copy() if best_features else [],
                         'n_selected_features': len(best_features) if best_features else 0,
@@ -4668,8 +4783,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 }
                 
                 # Save comprehensive sklearn refit results immediately
-                json_path, pkl_path = save_refit_results(
+                json_path, pkl_path = save_evaluation_results(
                     results_dict=comprehensive_sklearn_refit_results,
+                    result_type='refit',
                     experiment_dir=experiment_dir,
                     outer_fold=outer_fold,
                     hyperparams=best_params,
