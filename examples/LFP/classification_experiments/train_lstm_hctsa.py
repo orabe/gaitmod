@@ -451,7 +451,7 @@ class ProgressTrainingLogger(Callback):
 # ===================================================================
 def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
                             inner_fold=None, outer_test_subject=None, hyperparams=None,
-                            inner_validation_subject=None):
+                            inner_validation_subject=None, is_refit=False):
     """
     Setup hierarchical logging structure for nested cross-validation with improved organization.
     
@@ -464,6 +464,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         experiment_dir: Base experiment directory
         outer_test_subject: Test subject identifier for outer fold
         inner_validation_subject: Validation subject identifier for inner fold
+        is_refit: Whether this is refit training (uses "refit" instead of "default" for directory name)
         
     Returns:
         Dictionary with all logging paths and identifiers
@@ -537,7 +538,8 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
             priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
             param_str = "_".join(priority_parts[:6])  # Limit to 6 most important params
     else:
-        param_str = "default"
+        # Use "refit" for refit training, "default" for other cases
+        param_str = "refit" if is_refit else "default"
         
     run_id = f"{unique_id}--{param_str}"
     hyperparams_dir = os.path.join(outer_fold_dir, param_str)
@@ -577,7 +579,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
                                patience=10, monitor='loss', save_models=False, progress_frequency=10,
-                               has_validation_data=False):
+                               has_validation_data=False, is_refit=False):
     """
     Create callbacks for nested cross-validation training.
     
@@ -591,6 +593,8 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         monitor: Metric to monitor for early stopping
         save_models: Whether to save model checkpoints (for speed, set to False)
         progress_frequency: How often to print progress (epochs)
+        has_validation_data: Whether validation data is available
+        is_refit: Whether this is refit training (affects directory naming)
     
     Returns:
         List of Keras callbacks
@@ -601,7 +605,8 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         inner_fold=inner_fold,
         outer_test_subject=outer_test_subject,
         inner_validation_subject=inner_validation_subject,
-        hyperparams=hyperparameters
+        hyperparams=hyperparameters,
+        is_refit=is_refit
     )
     unique_id = paths['unique_id']
     
@@ -2153,9 +2158,11 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
     @staticmethod
     def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=2):
         """Evaluation-time masked ROC AUC score for sklearn compatibility."""
+        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
+        
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
-        y_pred_proba_flat = y_pred_proba.ravel()
+        y_pred_proba_flat = y_pred_proba_pos.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
             return 0.5
@@ -2323,13 +2330,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
-        
-        # Handle probability array - ensure it's 2D
-        if y_pred_proba.ndim == 1:
-            # Convert to 2D probability matrix for binary classification
-            y_pred_proba_2d = np.column_stack([1 - y_pred_proba, y_pred_proba])
-        else:
-            y_pred_proba_2d = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
         
         # Create mask for valid positions
         mask = y_true_flat != y_mask_val
@@ -2339,19 +2340,38 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             
         # Get valid data
         y_true_valid = y_true_flat[mask]
-        y_pred_proba_valid = y_pred_proba_2d[mask]
+        y_pred_proba_valid = y_pred_proba_pos[mask]
         
         # Check if we have at least 2 classes
         valid_classes = np.unique(y_true_valid)
         if len(valid_classes) < 2:
             return 0.0
         
-        # For multi-class, use weighted average
-        if len(valid_classes) > 2:
-            return average_precision_score(y_true_valid, y_pred_proba_valid, average='weighted')
+        # Binary classification - use positive class probability
+        return average_precision_score(y_true_valid, y_pred_proba_valid)
+    
+    @staticmethod
+    def _extract_positive_class_proba(y_pred_proba):
+        """
+        Convert model probability outputs into a 1D array of positive-class probabilities.
+        Handles outputs shaped as:
+          - (n_samples,)                    -> already positive-class probabilities
+          - (n_samples, timesteps)          -> positive probabilities per timestep
+          - (n_samples, timesteps, 1)       -> squeeze trailing singleton axis
+          - (n_samples, ..., 2)             -> two-class probabilities; take [:, ..., 1]
+        """
+        proba = np.asarray(y_pred_proba)
+        
+        if proba.ndim >= 2 and proba.shape[-1] == 1:
+            proba = np.squeeze(proba, axis=-1)
+        
+        if proba.ndim >= 2 and proba.shape[-1] == 2:
+            # Two-class probabilities – use positive class (index 1)
+            proba_pos = np.take(proba, indices=1, axis=-1)
         else:
-            # Binary classification - use positive class probability
-            return average_precision_score(y_true_valid, y_pred_proba_valid[:, 1])
+            proba_pos = proba
+        
+        return np.ravel(proba_pos)
 
     # ===================================================================
     # INTEGRATED THRESHOLD OPTIMIZATION METHODS
@@ -2728,7 +2748,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
             experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
             patience=10, monitor='loss', save_models=False, progress_frequency=10,
-            has_validation_data=has_validation_data)
+            has_validation_data=has_validation_data, is_refit=(inner_fold is None))
             
         # Create the LSTM classifier with simplified configuration and subject tracking
         if mask_values:
@@ -3321,7 +3341,7 @@ def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject):
         experiment_dir, 
         f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
     )
-    refit_results_dir = os.path.join(outer_fold_dir, "default")
+    refit_results_dir = os.path.join(outer_fold_dir, "refit")
     
     return refit_results_dir
 
@@ -4503,13 +4523,6 @@ def setup_logging(verbose_level=2, log_dir=None):
 
 
 def main(verbose: int = 2):
-    """Main nested cross-validation pipeline."""
-    
-    # ===================================================================
-    # CONFIGURATION: Number of subjects to use for testing/development
-    # ===================================================================
-    # Set to None to use all subjects, or specify a number for faster testing
-    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
     
     # Initialize TensorFlow
     initialize_tf()
@@ -4545,7 +4558,8 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    channel_name = 'channel_4'
+    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
+    channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
     # Load HCTSA data
