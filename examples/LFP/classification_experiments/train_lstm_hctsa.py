@@ -695,110 +695,6 @@ def setup_hyperparameter_experiment(experiment_dir, param_grid):
     return hparam_logger
 
 
-def log_gridsearch_results(hparam_logger, grid_search, outer_fold=None):
-    """
-    Log GridSearchCV results to TensorBoard for hyperparameter visualization.
-    
-    Args:
-        hparam_logger: HyperparameterTensorBoardLogger instance
-        grid_search: Fitted GridSearchCV object
-        outer_fold: Current outer fold number
-    """
-    if not hparam_logger or not hasattr(grid_search, 'cv_results_'):
-        return
-        
-    try:
-        cv_results = grid_search.cv_results_
-        
-        # Log each parameter combination
-        for i in range(len(cv_results['params'])):
-            trial_params = cv_results['params'][i]
-            
-            # Gather trial results
-            trial_results = {
-                'cv_score': cv_results['mean_test_score'][i],
-                'cv_std': cv_results['std_test_score'][i],
-                'rank': cv_results['rank_test_score'][i],
-            }
-            
-            # Add other available metrics
-            for key, values in cv_results.items():
-                if key.startswith('mean_test_') and key != 'mean_test_score':
-                    metric_name = key.replace('mean_test_', '')
-                    trial_results[metric_name] = values[i]
-                    trial_results[f'{metric_name}_std'] = cv_results[f'std_test_{metric_name}'][i]
-            
-            # Create unique session ID
-            session_id = f"fold{outer_fold:02d}_trial{i:03d}" if outer_fold else f"trial{i:03d}"
-            
-            # Log the trial
-            hparam_logger.log_hyperparameter_trial(trial_params, trial_results, session_id)
-            
-        logging.info(f"[HPARAMS] Logged {len(cv_results['params'])} hyperparameter trials for fold {outer_fold}")
-        
-    except Exception as e:
-        logging.warning(format_warning_message(f"Failed to log GridSearch results: {e}"))
-
-
-def create_hyperparameter_summary_plots(experiment_dir, all_fold_results):
-    """
-    Create comprehensive hyperparameter analysis plots and summaries.
-    
-    Args:
-        experiment_dir: Base experiment directory
-        all_fold_results: List of results from all outer folds
-    """
-    try:
-        # Create summary directory
-        summary_dir = os.path.join(experiment_dir, "hyperparameter_analysis")
-        os.makedirs(summary_dir, exist_ok=True)
-        
-        # Collect all trial data
-        all_trials = []
-        for fold_idx, fold_result in enumerate(all_fold_results):
-            if hasattr(fold_result['grid_search'], 'cv_results_'):
-                cv_results = fold_result['grid_search'].cv_results_
-                for i, params in enumerate(cv_results['params']):
-                    trial_data = {
-                        'fold': fold_idx,
-                        'trial': i,
-                        'params': params,
-                        'cv_score': cv_results['mean_test_score'][i],
-                        'cv_std': cv_results['std_test_score'][i],
-                        'rank': cv_results['rank_test_score'][i]
-                    }
-                    all_trials.append(trial_data)
-        
-        # Create TensorBoard summary
-        with tf.summary.create_file_writer(os.path.join(summary_dir, "tensorboard")).as_default():
-            if all_trials:
-                scores = [t['cv_score'] for t in all_trials]
-                tf.summary.scalar('overall_best_score', max(scores), step=0)
-                tf.summary.scalar('overall_mean_score', np.mean(scores), step=0)
-                tf.summary.scalar('overall_std_score', np.std(scores), step=0)
-                tf.summary.scalar('total_trials', len(all_trials), step=0)
-                
-                # Create comprehensive summary text
-                best_trial = max(all_trials, key=lambda x: x['cv_score'])
-                summary_text = f"""
-                Hyperparameter Tuning Results:
-                
-                Total Trials: {len(all_trials)}
-                Best CV Score: {max(scores):.4f}
-                Mean CV Score: {np.mean(scores):.4f} ± {np.std(scores):.4f}
-                
-                Best Configuration:
-                {json.dumps(best_trial['params'], indent=2)}
-                """
-                
-                tf.summary.text('hyperparameter_summary', summary_text, step=0)
-        
-        logging.info(f"[HPARAMS] Created comprehensive summary with {len(all_trials)} trials")
-        
-    except Exception as e:
-        logging.warning(format_warning_message(f"Failed to create hyperparameter summary: {e}"))
-
-
 def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_name=None):
     """
     Save training history for a specific fold.
@@ -881,8 +777,7 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
     
     return TS_DataMat, timeseries, operations, labels
 
-
-def feature_filter(X, operations_df=None, variance_threshold=1e-8, 
+def filter_features(X, operations_df=None, variance_threshold=1e-8, 
                    missing_threshold=0.0, outlier_iqr_factor=3.0, 
                    outlier_contamination_threshold=0.1, verbose: int = 1):
     """
@@ -1053,7 +948,6 @@ def feature_filter(X, operations_df=None, variance_threshold=1e-8,
     
     return X_filtered, valid_features, filter_report
 
-
 def parse_epoch_metadata(timeseries_df: pd.DataFrame, verbose: int = 0):
     """Parse epoch metadata from timeseries names."""
     if verbose >= 1:
@@ -1130,8 +1024,6 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
         logging.info(f"[GROUP] Created {len(X_list)} trials from {len(parsed_df)} epochs (epochs/trial: {min(epoch_counts)}-{max(epoch_counts)}, avg={np.mean(epoch_counts):.1f})")
     
     return X_list, y_list, np.array(groups), metadata
-
-
 
 def find_unique_mask_value(data_array, max_search=10000, global_mask_value=1e6, verbose=0):
     """
@@ -1861,12 +1753,18 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': 2}, 
                  use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
-                 outer_test_subject=None, inner_validation_subject=None):
+                 outer_test_subject=None, inner_validation_subject=None,
+                 threshold_range=(0.1, 0.9), n_thresholds=81):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
         
         Now follows a cleaner design where callbacks are created externally and passed 
-        to the fit method, rather than being created inside the classifier.
+        to the fit method, rather than being created inside the classifier. Also includes
+        integrated threshold optimization functionality.
+        
+        Args:
+            threshold_range: Range of thresholds to search during optimization (min, max)
+            n_thresholds: Number of threshold values to test during optimization
         """
         # LSTM architecture parameters
         self.hidden_dims = hidden_dims
@@ -1889,6 +1787,10 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         # Masking parameters
         self.mask_values = mask_values
         self.use_class_weights = use_class_weights
+        
+        # Threshold optimization parameters
+        self.threshold_range = threshold_range
+        self.n_thresholds = n_thresholds
         
         # Subject and fold tracking parameters
         self.experiment_dir = experiment_dir
@@ -2216,80 +2118,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         else:
             logging.info("Model is not built yet.")
     
-    def tune_threshold(self, X_val, y_val, metric='f1', threshold_range=(0.1, 0.9), n_thresholds=81, verbose=True):
-        """
-        Tune classification threshold for specified metric using validation data.
-        
-        Args:
-            X_val: Validation features
-            y_val: Validation labels (with masking)
-            metric: Metric to optimize ('accuracy', 'f1', 'precision', 'recall')
-            threshold_range: Range of thresholds to search
-            n_thresholds: Number of thresholds to test
-            verbose: Whether to print results
-            
-        Returns:
-            float: Optimal threshold for the specified metric
-        """
-        if self.model is None:
-            raise ValueError("Model has not been fitted yet.")
-        
-        # Get probability predictions
-        y_pred_proba = self.predict_proba(X_val)
-        
-        # Handle different probability shapes
-        if y_pred_proba.ndim > 2:
-            y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
-        
-        # For binary classification, use positive class probabilities
-        if y_pred_proba.shape[1] == 2:
-            y_pred_proba_pos = y_pred_proba[:, 1]
-        else:
-            y_pred_proba_pos = y_pred_proba.ravel()
-        
-        # Initialize threshold tuner
-        tuner = ThresholdTuner(threshold_range=threshold_range, 
-                              n_thresholds=n_thresholds,
-                              y_mask_val=self.mask_values.get('y_mask', 2))
-        
-        # Tune threshold for specified metric using the main unified method
-        optimal_threshold, optimal_score, _ = tuner.tune_threshold_for_binary_metric(y_val, y_pred_proba_pos, metric)
-        
-        if verbose:
-            logging.info(f"Optimal threshold for {metric}: {optimal_threshold:.3f} (score: {optimal_score:.4f})")
-        
-        # Update the classifier's threshold
-        self.threshold = optimal_threshold
-        
-        return optimal_threshold
-    
-    def evaluate_with_optimal_thresholds(self, X_test, y_test, threshold_range=(0.1, 0.9), 
-                                       n_thresholds=81, plot_curves=False, save_plot_path=None):
-        """
-        Evaluate the model with optimal thresholds for all metrics.
-        
-        Args:
-            X_test: Test features
-            y_test: Test labels (with masking)
-            threshold_range: Range of thresholds to search
-            n_thresholds: Number of thresholds to test
-            plot_curves: Whether to plot threshold curves
-            save_plot_path: Path to save plots
-            
-        Returns:
-            dict: Comprehensive evaluation results
-        """
-        return evaluate_with_tuned_binary_thresholds(
-            estimator=self,
-            X_test=X_test,
-            y_test=y_test,
-            y_mask_val=self.mask_values.get('y_mask', 2),
-            threshold_range=threshold_range,
-            n_thresholds=n_thresholds,
-            plot_curves=plot_curves,
-            save_plot_path=save_plot_path
-        )
-            
+     
     @staticmethod
     def lr_schedule(epoch, lr):
         if epoch > 10:
@@ -2364,6 +2193,109 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return recall_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
     
     @staticmethod
+    def eval_masked_specificity_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked specificity score for sklearn compatibility."""
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes
+            return 0.0
+        # Calculate specificity = TN / (TN + FP)
+        from sklearn.metrics import confusion_matrix
+        cm = confusion_matrix(y_true_flat[mask], y_pred_flat[mask])
+        if cm.shape == (2, 2):
+            tn, fp, fn, tp = cm.ravel()
+            return tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        return 0.0
+    
+    @staticmethod
+    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked balanced accuracy score for sklearn compatibility."""
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes
+            return 0.0
+        from sklearn.metrics import balanced_accuracy_score
+        return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
+    
+    @staticmethod
+    def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked confusion matrix for sklearn compatibility."""
+        from sklearn.metrics import confusion_matrix
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        
+        if np.sum(mask) == 0:  # No valid predictions
+            # Return empty 2x2 matrix for binary classification
+            return np.array([[0, 0], [0, 0]])
+        
+        # Extract valid data
+        y_true_valid = y_true_flat[mask]
+        y_pred_valid = y_pred_flat[mask]
+        
+        # Ensure binary values (clip to 0-1 range)
+        y_true_valid = np.clip(y_true_valid, 0, 1).astype(int)
+        y_pred_valid = np.clip(y_pred_valid, 0, 1).astype(int)
+        
+        # Check if we have at least 2 classes
+        valid_classes = np.unique(y_true_valid)
+        if len(valid_classes) < 2:
+            # If only one class present, create appropriate confusion matrix
+            if len(valid_classes) == 1:
+                single_class = valid_classes[0]
+                n_samples = len(y_true_valid)
+                if single_class == 0:
+                    # Only class 0 present
+                    return np.array([[n_samples, 0], [0, 0]])
+                else:
+                    # Only class 1 present
+                    return np.array([[0, 0], [0, n_samples]])
+            else:
+                # No valid classes
+                return np.array([[0, 0], [0, 0]])
+        
+        # Compute confusion matrix with proper labels to ensure 2x2 output
+        return confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
+    
+    @staticmethod
+    def eval_masked_confusion_matrix_components(y_true, y_pred, y_mask_val=2):
+        """
+        Evaluation-time masked confusion matrix components for sklearn compatibility.
+        
+        Returns:
+            dict: Dictionary with 'tn', 'fp', 'fn', 'tp' components and 'n_valid_samples'
+        """
+        cm = LSTMClassifier.eval_masked_confusion_matrix(y_true, y_pred, y_mask_val)
+        
+        # Extract components from 2x2 confusion matrix
+        # Format: [[TN, FP], [FN, TP]]
+        tn, fp, fn, tp = cm.ravel()
+        
+        # Count valid samples
+        y_true_flat = y_true.ravel()
+        mask = y_true_flat != y_mask_val
+        n_valid_samples = np.sum(mask)
+        
+        return {
+            'tn': int(tn),
+            'fp': int(fp), 
+            'fn': int(fn),
+            'tp': int(tp),
+            'n_valid_samples': int(n_valid_samples)
+        }
+    
+    @staticmethod
     def masked_classification_report(y_true, y_pred, target_names=None, digits=4, y_mask_val=2):
         mask = y_true != y_mask_val
         return classification_report(y_true[mask], y_pred[mask], target_names=target_names, digits=digits)
@@ -2421,248 +2353,101 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             # Binary classification - use positive class probability
             return average_precision_score(y_true_valid, y_pred_proba_valid[:, 1])
 
-
-# ===================================================================
-# Threshold Tuning Functionality
-# ===================================================================
-
-class ThresholdTuner:
-    """
-    Comprehensive threshold tuning for classification metrics.
-    Sweeps through threshold values to find optimal thresholds for each metric.
-    """
-        
-    def _apply_threshold_and_mask(self, y_true, y_pred_proba, threshold):
-        """Apply threshold to probabilities and create mask for valid data."""
-        # Convert probabilities to binary predictions
-        y_pred_binary = (y_pred_proba > threshold)
-        
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred_binary.ravel()
-        
-        # Create mask for non-masked positions
-        mask = y_true_flat != self.y_mask_val
-        
-        # Return valid data only
-        if np.sum(mask) == 0:
-            return None, None
-            
-        return y_true_flat[mask], y_pred_flat[mask]
+    # ===================================================================
+    # INTEGRATED THRESHOLD OPTIMIZATION METHODS
+    # ===================================================================
     
-    def __init__(self, threshold_range=(0.1, 0.9), n_thresholds=81, y_mask_val=2):
+    def tune_threshold_for_metric(self, X_val, y_val, metric_name='f1', 
+                                  threshold_range=(0.1, 0.9), n_thresholds=81, 
+                                  store_details=False):
         """
-        Initialize threshold tuner.
+        Tune threshold for a specific binary classification metric using the LSTM model.
         
         Args:
-            threshold_range: (min, max) threshold values to search
-            n_thresholds: Number of threshold values to test
-            y_mask_val: Value representing masked/padded positions
-        """
-        self.threshold_range = threshold_range
-        self.n_thresholds = n_thresholds
-        self.y_mask_val = y_mask_val
-        self.thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
-        
-        # Define supported metrics optimized for binary classification
-        self._metric_functions = {
-            'accuracy': {
-                'func': self._accuracy_metric,
-                'requires_both_classes': False,
-                'description': 'Binary classification accuracy'
-            },
-            'f1': {
-                'func': self._f1_metric,
-                'requires_both_classes': True,
-                'description': 'F1 score for positive class'
-            },
-            'precision': {
-                'func': self._precision_metric,
-                'requires_both_classes': True,
-                'description': 'Precision for positive class'
-            },
-            'recall': {
-                'func': self._recall_metric,
-                'requires_both_classes': True,
-                'description': 'Recall (sensitivity) for positive class'
-            },
-            'specificity': {
-                'func': self._specificity_metric,
-                'requires_both_classes': True,
-                'description': 'Specificity (recall for negative class)'
-            },
-            'balanced_accuracy': {
-                'func': self._balanced_accuracy_metric,
-                'requires_both_classes': True,
-                'description': 'Balanced accuracy (mean of sensitivity and specificity)'
-            }
-        }
-    
-    def _accuracy_metric(self, y_true, y_pred):
-        """Compute accuracy metric."""
-        return accuracy_score(y_true, y_pred)
-    
-    def _f1_metric(self, y_true, y_pred):
-        """Compute F1 score metric."""
-        return f1_score(y_true, y_pred, pos_label=1, zero_division=0)
-    
-    def _precision_metric(self, y_true, y_pred):
-        """Compute precision metric."""
-        return precision_score(y_true, y_pred, pos_label=1, zero_division=0)
-    
-    def _recall_metric(self, y_true, y_pred):
-        """Compute recall metric."""
-        return recall_score(y_true, y_pred, pos_label=1, zero_division=0)
-    
-    def _specificity_metric(self, y_true, y_pred):
-        """Compute specificity metric."""
-        return recall_score(y_true, y_pred, pos_label=0, zero_division=0)
-    
-    def _balanced_accuracy_metric(self, y_true, y_pred):
-        """Compute balanced accuracy metric."""
-        recall_pos = recall_score(y_true, y_pred, pos_label=1, zero_division=0)
-        recall_neg = recall_score(y_true, y_pred, pos_label=0, zero_division=0)
-        return (recall_pos + recall_neg) / 2
-    
-    def add_custom_binary_metric(self, metric_name, metric_func, requires_both_classes=True, description=None):
-        """
-        Add a custom binary classification metric to the threshold tuner.
-        
-        Args:
-            metric_name: Name of the metric
-            metric_func: Function that takes (y_true, y_pred) and returns a score for binary classification
-            requires_both_classes: Whether the metric requires both positive and negative classes
-            description: Optional description of the metric
-        """
-        self._metric_functions[metric_name] = {
-            'func': metric_func,
-            'requires_both_classes': requires_both_classes,
-            'description': description or f'Custom binary metric: {metric_name}'
-        }
-        logging.info(f"Added custom binary metric '{metric_name}': {self._metric_functions[metric_name]['description']}")
-    
-    def get_supported_metrics(self):
-        """Get list of supported metrics with their descriptions."""
-        return {name: config['description'] for name, config in self._metric_functions.items()}
-    
-    def _get_metric_function(self, metric_name):
-        """Get the appropriate metric function based on metric name."""
-        if metric_name not in self._metric_functions:
-            supported = list(self._metric_functions.keys())
-            raise ValueError(f"Unsupported metric: {metric_name}. Supported metrics: {supported}")
-        
-        return self._metric_functions[metric_name]['func']
-    
-    def _requires_both_classes(self, metric_name):
-        """Check if metric requires both positive and negative classes to compute."""
-        if metric_name not in self._metric_functions:
-            return True  # Conservative default
-        return self._metric_functions[metric_name]['requires_both_classes']
-    
-    def tune_threshold_for_binary_metric(self, y_true, y_pred_proba, metric_name, store_details=False):
-        """
-        Unified threshold tuning method for binary classification metrics.
-        
-        Args:
-            y_true: True binary labels with masking (values: 0, 1, mask_value)
-            y_pred_proba: Predicted probabilities for positive class (0.0 to 1.0)
-            metric_name: Name of binary metric to optimize
+            X_val: Validation features
+            y_val: Validation labels (with masking)
+            metric_name: Name of binary metric to optimize ('f1', 'accuracy', 'precision', 'recall', etc.)
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
             store_details: Whether to store detailed evaluation data for each threshold
             
         Returns:
             tuple: (best_threshold, best_score, detailed_results)
-                detailed_results contains all_scores and optionally detailed evaluation data
         """
-        # Get metric function
-        metric_func = self._get_metric_function(metric_name)
-        requires_both_classes = self._requires_both_classes(metric_name)
+        if self.model is None:
+            raise ValueError("Model must be fitted before threshold optimization")
+        
+        # Get model predictions
+        y_pred_proba = self.predict_proba(X_val)
+        
+        # Handle different probability shapes to get positive class probabilities
+        if y_pred_proba.ndim > 1:
+            if y_pred_proba.shape[1] == 2:
+                y_pred_proba_pos = y_pred_proba[:, 1]
+            else:
+                y_pred_proba_pos = y_pred_proba.ravel()
+        else:
+            y_pred_proba_pos = y_pred_proba.ravel()
+        
+        # Create threshold array
+        thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
+        
+        # Get mask value from the model's configuration
+        y_mask_val = self.mask_values.get('y_mask', 2)
         
         # Initialize tracking variables
         best_threshold = 0.5
         best_score = 0.0
         all_scores = []
-        
-        # Initialize detailed evaluation storage if requested
         detailed_evaluations = [] if store_details else None
         
+        # Define metric function mapping using the LSTMClassifier's evaluation methods
+        metric_functions = {
+            'f1': self.eval_masked_f1_score,
+            'accuracy': self.eval_masked_accuracy_score,
+            'precision': self.eval_masked_precision_score,
+            'recall': self.eval_masked_recall_score,
+            'specificity': self.eval_masked_specificity_score,
+            'balanced_accuracy': self.eval_masked_balanced_accuracy_score
+        }
+        
+        if metric_name not in metric_functions:
+            supported = list(metric_functions.keys())
+            raise ValueError(f"Unsupported metric: {metric_name}. Supported metrics: {supported}")
+        
+        metric_func = metric_functions[metric_name]
+        
         # Sweep through thresholds
-        for i, threshold in enumerate(self.thresholds):
-            y_true_valid, y_pred_valid = self._apply_threshold_and_mask(y_true, y_pred_proba, threshold)
-            
-            if y_true_valid is None:
-                all_scores.append(0.0)
-                if store_details:
-                    detailed_evaluations.append({
-                        'threshold': threshold,
-                        'score': 0.0,
-                        'metric': metric_name,
-                        'n_valid_samples': 0,
-                        'error': 'No valid samples after masking'
-                    })
-                continue
-                
+        for i, threshold in enumerate(thresholds):
             try:
-                # For binary classification, check if we have both classes when required
-                if requires_both_classes:
-                    unique_true = np.unique(y_true_valid)
-                    unique_pred = np.unique(y_pred_valid)
-                    
-                    # Skip if we don't have both classes in true labels or predictions
-                    if len(unique_true) < 2 or len(unique_pred) < 2:
-                        all_scores.append(0.0)
-                        if store_details:
-                            detailed_evaluations.append({
-                                'threshold': threshold,
-                                'score': 0.0,
-                                'metric': metric_name,
-                                'n_valid_samples': len(y_true_valid),
-                                'unique_true_classes': unique_true.tolist(),
-                                'unique_pred_classes': unique_pred.tolist(),
-                                'error': 'Insufficient class diversity'
-                            })
-                        continue
+                # Apply threshold to get binary predictions
+                y_pred_binary = (y_pred_proba_pos > threshold).astype(int)
                 
-                # Ensure we have valid binary labels (0 and 1 only)
-                if not np.all(np.isin(y_true_valid, [0, 1])) or not np.all(np.isin(y_pred_valid, [0, 1])):
-                    all_scores.append(0.0)
-                    if store_details:
-                        detailed_evaluations.append({
-                            'threshold': threshold,
-                            'score': 0.0,
-                            'metric': metric_name,
-                            'n_valid_samples': len(y_true_valid),
-                            'error': 'Invalid binary labels detected'
-                        })
-                    continue
-                
-                # Compute binary metric score
-                score = metric_func(y_true_valid, y_pred_valid)
+                # Compute metric score using masked evaluation
+                score = metric_func(y_val, y_pred_binary, y_mask_val)
                 all_scores.append(score)
                 
                 # Store detailed evaluation data if requested
                 if store_details:
-                    # Calculate additional statistics for detailed analysis
-                    from sklearn.metrics import confusion_matrix
-                    try:
-                        cm = confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
-                        tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-                    except:
-                        tn = fp = fn = tp = 0
+                    # Compute comprehensive metrics using LSTMClassifier evaluation methods
+                    # Get confusion matrix components
+                    cm_components = self.eval_masked_confusion_matrix_components(y_val, y_pred_binary, y_mask_val)
                     
                     detailed_evaluations.append({
                         'threshold': threshold,
                         'score': score,
                         'metric': metric_name,
-                        'n_valid_samples': len(y_true_valid),
-                        'true_positives': int(tp),
-                        'true_negatives': int(tn),
-                        'false_positives': int(fp),
-                        'false_negatives': int(fn),
-                        'positive_rate': float(np.mean(y_pred_valid)),
-                        'class_distribution': {
-                            'true_positive_rate': float(np.mean(y_true_valid)),
-                            'predicted_positive_rate': float(np.mean(y_pred_valid))
-                        },
+                        'n_valid_samples': cm_components['n_valid_samples'],
+                        'true_positives': cm_components['tp'],
+                        'true_negatives': cm_components['tn'],
+                        'false_positives': cm_components['fp'],
+                        'false_negatives': cm_components['fn'],
+                        'accuracy': self.eval_masked_accuracy_score(y_val, y_pred_binary, y_mask_val),
+                        'f1': self.eval_masked_f1_score(y_val, y_pred_binary, y_mask_val),
+                        'precision': self.eval_masked_precision_score(y_val, y_pred_binary, y_mask_val),
+                        'recall': self.eval_masked_recall_score(y_val, y_pred_binary, y_mask_val),
+                        'specificity': self.eval_masked_specificity_score(y_val, y_pred_binary, y_mask_val),
+                        'balanced_accuracy': self.eval_masked_balanced_accuracy_score(y_val, y_pred_binary, y_mask_val),
                         'is_optimal': False  # Will be updated below
                     })
                 
@@ -2679,7 +2464,7 @@ class ThresholdTuner:
                         'threshold': threshold,
                         'score': 0.0,
                         'metric': metric_name,
-                        'n_valid_samples': len(y_true_valid) if y_true_valid is not None else 0,
+                        'n_valid_samples': 0,
                         'error': str(e)
                     })
         
@@ -2693,31 +2478,41 @@ class ThresholdTuner:
         if store_details:
             detailed_results = {
                 'all_scores': all_scores,
-                'thresholds': self.thresholds.tolist(),
+                'thresholds': thresholds.tolist(),
                 'detailed_evaluations': detailed_evaluations,
                 'best_threshold_index': np.argmax(all_scores) if all_scores else 0,
-                'metric_info': self._metric_functions[metric_name]
+                'metric_info': {
+                    'func': metric_func,
+                    'requires_both_classes': True if metric_name != 'accuracy' else False,
+                    'description': f'Masked {metric_name} score for binary classification'
+                }
             }
         else:
             detailed_results = all_scores
                 
         return best_threshold, best_score, detailed_results
 
-    
-    def tune_all_binary_thresholds(self, y_true, y_pred_proba, metrics=None, verbose=True, store_details=False):
+    def tune_all_thresholds(self, X_val, y_val, metrics=None, 
+                           threshold_range=(0.1, 0.9), n_thresholds=81, 
+                           verbose=True, store_details=False):
         """
-        Tune thresholds for all or specified binary classification metrics.
+        Tune thresholds for multiple binary classification metrics using the LSTM model.
         
         Args:
-            y_true: True binary labels with masking (values: 0, 1, mask_value)
-            y_pred_proba: Predicted probabilities for positive class (0.0 to 1.0)
+            X_val: Validation features
+            y_val: Validation labels (with masking)
             metrics: List of binary metrics to tune (default: standard binary metrics)
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
             verbose: Whether to print results
             store_details: Whether to store detailed evaluation data for each threshold
             
         Returns:
             dict: Dictionary containing optimal thresholds, scores, and detailed evaluation data
         """
+        if self.model is None:
+            raise ValueError("Model must be fitted before threshold optimization")
+        
         if metrics is None:
             metrics = ['accuracy', 'f1', 'precision', 'recall', 'specificity', 'balanced_accuracy']
         
@@ -2725,14 +2520,14 @@ class ThresholdTuner:
         all_detailed_evaluations = {}  # Store all detailed evaluations for cross-metric analysis
         
         if verbose:
-            logging.info("Starting threshold tuning for {} metrics across {} threshold values...".format(
-                len(metrics), self.n_thresholds))
+            logging.info("Starting LSTM threshold tuning for {} metrics across {} threshold values...".format(
+                len(metrics), n_thresholds))
         
-        # Tune threshold for each metric using the main unified method
+        # Tune threshold for each metric using the integrated method
         for metric_name in metrics:
             try:
-                optimal_threshold, optimal_score, detailed_results = self.tune_threshold_for_binary_metric(
-                    y_true, y_pred_proba, metric_name, store_details=store_details
+                optimal_threshold, optimal_score, detailed_results = self.tune_threshold_for_metric(
+                    X_val, y_val, metric_name, threshold_range, n_thresholds, store_details
                 )
                 
                 if store_details and isinstance(detailed_results, dict):
@@ -2750,7 +2545,7 @@ class ThresholdTuner:
                     results[metric_name] = {
                         'optimal_threshold': optimal_threshold,
                         'optimal_score': optimal_score,
-                        'all_scores': detailed_results if isinstance(detailed_results, list) else [0.0] * self.n_thresholds
+                        'all_scores': detailed_results if isinstance(detailed_results, list) else [0.0] * n_thresholds
                     }
                 
                 if verbose:
@@ -2761,315 +2556,110 @@ class ThresholdTuner:
                 default_result = {
                     'optimal_threshold': 0.5,
                     'optimal_score': 0.0,
-                    'all_scores': [0.0] * self.n_thresholds
+                    'all_scores': [0.0] * n_thresholds
                 }
                 if store_details:
                     default_result['detailed_evaluations'] = []
                     default_result['error'] = str(e)
                 results[metric_name] = default_result
         
+        # Add AUC scores (threshold-independent) using the model's built-in evaluation methods
+        try:
+            y_pred_proba = self.predict_proba(X_val)
+            y_mask_val = self.mask_values.get('y_mask', 2)
+            
+            results['roc_auc'] = {
+                'optimal_threshold': None,  # AUC is threshold-independent
+                'optimal_score': self.eval_masked_roc_auc_score(y_val, y_pred_proba, y_mask_val),
+                'all_scores': []
+            }
+            
+            results['pr_auc'] = {
+                'optimal_threshold': None,  # AUC is threshold-independent
+                'optimal_score': self.eval_masked_pr_auc_score(y_val, y_pred_proba, y_mask_val),
+                'all_scores': []
+            }
+            
+            if verbose:
+                logging.info(f"  ROC AUC: {results['roc_auc']['optimal_score']:.4f} (threshold-independent)")
+                logging.info(f"  PR AUC: {results['pr_auc']['optimal_score']:.4f} (threshold-independent)")
+                
+        except Exception as e:
+            logging.warning(format_warning_message(f"Failed to compute AUC scores: {e}"))
+            results['roc_auc'] = {'optimal_threshold': None, 'optimal_score': 0.5, 'all_scores': []}
+            results['pr_auc'] = {'optimal_threshold': None, 'optimal_score': 0.0, 'all_scores': []}
+        
         # Add summary statistics if storing details
         if store_details and all_detailed_evaluations:
             results['_summary'] = {
-                'total_thresholds_evaluated': self.n_thresholds,
+                'total_thresholds_evaluated': n_thresholds,
                 'threshold_range': {
-                    'min': float(self.thresholds.min()),
-                    'max': float(self.thresholds.max()),
-                    'step': float(self.thresholds[1] - self.thresholds[0]) if len(self.thresholds) > 1 else 0.0
+                    'min': float(threshold_range[0]),
+                    'max': float(threshold_range[1]),
+                    'step': float((threshold_range[1] - threshold_range[0]) / (n_thresholds - 1)) if n_thresholds > 1 else 0.0
                 },
                 'evaluation_timestamp': np.datetime64('now').astype(str),
                 'metrics_evaluated': metrics,
-                'cross_metric_analysis': self._compute_cross_metric_analysis(all_detailed_evaluations)
+                'model_info': {
+                    'model_type': 'LSTMClassifier',
+                    'mask_values': self.mask_values,
+                    'threshold': self.threshold
+                }
             }
         
         return results
-    
-    def _compute_cross_metric_analysis(self, all_detailed_evaluations):
+
+    def optimize_thresholds_with_model(self, X_val, y_val, metrics=['f1', 'accuracy', 'precision', 'recall'], 
+                                      threshold_range=(0.1, 0.9), n_thresholds=81, verbose=False):
         """
-        Compute cross-metric analysis from detailed evaluations.
+        Unified threshold optimization method for the LSTM model - backward compatibility wrapper.
         
         Args:
-            all_detailed_evaluations: Dict of metric_name -> list of detailed evaluations
+            X_val: Validation features
+            y_val: Validation labels (with masking)
+            metrics: List of metrics to optimize thresholds for
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
+            verbose: Whether to print optimization details
             
         Returns:
-            dict: Cross-metric analysis results
+            dict: Optimized thresholds and scores for each metric (compatible with existing code)
         """
-        if not all_detailed_evaluations:
-            return {}
+        # Use the comprehensive threshold tuning method
+        tuning_results = self.tune_all_thresholds(
+            X_val, y_val, metrics=metrics, 
+            threshold_range=threshold_range, n_thresholds=n_thresholds, 
+            verbose=verbose, store_details=False
+        )
         
-        # Find thresholds where multiple metrics are simultaneously optimized
-        analysis = {
-            'consensus_thresholds': [],
-            'metric_correlations': {},
-            'threshold_stability': {}
-        }
+        # Extract optimized scores and thresholds in the expected format
+        optimized_scores = {}
+        optimal_thresholds = {}
         
-        try:
-            # Get all metric names and their optimal thresholds
-            metric_names = list(all_detailed_evaluations.keys())
-            optimal_thresholds = {}
-            
-            for metric_name, evaluations in all_detailed_evaluations.items():
-                optimal_eval = next((e for e in evaluations if e.get('is_optimal', False)), None)
-                if optimal_eval:
-                    optimal_thresholds[metric_name] = optimal_eval['threshold']
-            
-            # Find thresholds that are optimal or near-optimal for multiple metrics
-            threshold_metric_scores = {}
-            for metric_name, evaluations in all_detailed_evaluations.items():
-                for eval_data in evaluations:
-                    threshold = eval_data['threshold']
-                    if threshold not in threshold_metric_scores:
-                        threshold_metric_scores[threshold] = {}
-                    threshold_metric_scores[threshold][metric_name] = eval_data['score']
-            
-            # Identify consensus thresholds (within top 10% for multiple metrics)
-            for threshold, metric_scores in threshold_metric_scores.items():
-                high_performing_metrics = 0
-                for metric_name, score in metric_scores.items():
-                    if metric_name in optimal_thresholds:
-                        # Get all scores for this metric
-                        all_scores = [e['score'] for e in all_detailed_evaluations[metric_name]]
-                        if all_scores:
-                            top_10_percent_threshold = np.percentile(all_scores, 90)
-                            if score >= top_10_percent_threshold:
-                                high_performing_metrics += 1
-                
-                if high_performing_metrics >= 2:  # Threshold is good for at least 2 metrics
-                    analysis['consensus_thresholds'].append({
-                        'threshold': threshold,
-                        'high_performing_metrics': high_performing_metrics,
-                        'metric_scores': metric_scores
-                    })
-            
-            # Sort consensus thresholds by number of high-performing metrics
-            analysis['consensus_thresholds'].sort(key=lambda x: x['high_performing_metrics'], reverse=True)
-            
-            # Calculate pairwise correlations between metric scores across thresholds
-            if len(metric_names) >= 2:
-                for i, metric1 in enumerate(metric_names):
-                    for metric2 in metric_names[i+1:]:
-                        scores1 = [e['score'] for e in all_detailed_evaluations[metric1]]
-                        scores2 = [e['score'] for e in all_detailed_evaluations[metric2]]
-                        
-                        if len(scores1) == len(scores2) and len(scores1) > 1:
-                            correlation = np.corrcoef(scores1, scores2)[0, 1]
-                            if not np.isnan(correlation):
-                                analysis['metric_correlations'][f'{metric1}_vs_{metric2}'] = float(correlation)
-            
-        except Exception as e:
-            analysis['error'] = f"Cross-metric analysis failed: {str(e)}"
-        
-        return analysis
-
-    
-    def plot_binary_threshold_curves(self, results, save_path=None, metrics_to_plot=None):
-        """
-        Plot threshold vs metric score curves for binary classification metrics.
-        
-        Args:
-            results: Results from tune_all_binary_thresholds()
-            save_path: Optional path to save the plot
-            metrics_to_plot: List of metrics to plot (default: available metrics in results)
-        """
-        try:
-            
-            if metrics_to_plot is None:
-                # Use all available metrics from results, up to 6 for clean plotting
-                metrics_to_plot = list(results.keys())[:6]
-            
-            n_metrics = len(metrics_to_plot)
-            if n_metrics <= 4:
-                fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-                axes = axes.ravel()
+        for metric_name in metrics:
+            if metric_name in tuning_results:
+                optimal_thresholds[metric_name] = tuning_results[metric_name]['optimal_threshold']
+                optimized_scores[metric_name] = tuning_results[metric_name]['optimal_score']
             else:
-                fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-                axes = axes.ravel()
-            
-            colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown']
-            
-            for i, (metric, color) in enumerate(zip(metrics_to_plot, colors)):
-                ax = axes[i]
-                scores = results[metric]['all_scores']
-                optimal_thresh = results[metric]['optimal_threshold']
-                optimal_score = results[metric]['optimal_score']
-                
-                # Plot threshold curve
-                ax.plot(self.thresholds, scores, color=color, linewidth=2, label=f'{metric.capitalize()}')
-                
-                # Mark optimal point
-                ax.scatter([optimal_thresh], [optimal_score], color='red', s=100, zorder=5)
-                ax.axvline(x=optimal_thresh, color='red', linestyle='--', alpha=0.7)
-                
-                # Formatting
-                ax.set_xlabel('Threshold')
-                ax.set_ylabel(f'{metric.capitalize()} Score')
-                ax.set_title(f'{metric.capitalize()} vs Threshold\nOptimal: {optimal_thresh:.3f} (Score: {optimal_score:.4f})')
-                ax.grid(True, alpha=0.3)
-                ax.set_xlim(self.threshold_range)
-                
-            plt.tight_layout()
-            
-            if save_path:
-                plt.savefig(save_path, dpi=300, bbox_inches='tight')
-                logging.info(f"Saved threshold curves plot to: {save_path}")
-                
-            plt.show()
-            
-        except ImportError:
-            logging.warning(format_warning_message("Matplotlib not available. Cannot plot threshold curves."))
-        except Exception as e:
-            logging.warning(format_warning_message(f"Failed to plot threshold curves: {e}"))
-    
-
-
-
-def evaluate_with_tuned_binary_thresholds(estimator, X_test, y_test, y_mask_val=2, 
-                                        threshold_range=(0.1, 0.9), n_thresholds=81,
-                                        plot_curves=False, save_plot_path=None, store_detailed_thresholds=False):
-    """
-    Evaluate binary classifier with optimal thresholds for each metric.
-    
-    Args:
-        estimator: Fitted binary classifier with predict_proba method
-        X_test: Test features
-        y_test: Test binary labels (0, 1) with masking (mask_val)
-        y_mask_val: Value representing masked positions
-        threshold_range: Range of thresholds to search
-        n_thresholds: Number of thresholds to test
-        plot_curves: Whether to plot threshold curves
-        save_plot_path: Path to save plots
-        store_detailed_thresholds: Whether to store detailed threshold evaluation data
+                optimal_thresholds[metric_name] = 0.5
+                optimized_scores[metric_name] = 0.0
         
-    Returns:
-        dict: Evaluation results with optimal thresholds and detailed threshold analysis
-    """
-    # Get probability predictions
-    y_pred_proba = estimator.predict_proba(X_test)
-    
-    # Handle different probability shapes
-    if y_pred_proba.ndim > 2:
-        y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
-    
-    # For binary classification, use positive class probabilities
-    if y_pred_proba.shape[1] == 2:
-        y_pred_proba_pos = y_pred_proba[:, 1]
-    else:
-        y_pred_proba_pos = y_pred_proba.ravel()
-    
-    # Initialize threshold tuner
-    tuner = ThresholdTuner(threshold_range=threshold_range, 
-                          n_thresholds=n_thresholds,
-                          y_mask_val=y_mask_val)
-    
-    # Tune thresholds for binary classification with detailed storage
-    tuning_results = tuner.tune_all_binary_thresholds(
-        y_test, y_pred_proba_pos, 
-        verbose=True, 
-        store_details=store_detailed_thresholds
-    )
-    
-    # Plot curves if requested
-    if plot_curves:
-        tuner.plot_binary_threshold_curves(tuning_results, save_path=save_plot_path)
-    
-    # Evaluate model with optimal thresholds
-    evaluation_results = {}
-    
-    # Store optimal thresholds and scores for all available metrics
-    binary_metrics = ['accuracy', 'f1', 'precision', 'recall', 'specificity', 'balanced_accuracy']
-    for metric_name in binary_metrics:
-        if metric_name in tuning_results:
-            optimal_threshold = tuning_results[metric_name]['optimal_threshold']
-            optimal_score = tuning_results[metric_name]['optimal_score']
-            
-            evaluation_results[f'{metric_name}_optimal_threshold'] = optimal_threshold
-            evaluation_results[f'{metric_name}_optimal_score'] = optimal_score
-    
-    # Also evaluate with default 0.5 threshold for comparison
-    y_pred_default = (y_pred_proba_pos > 0.5)
-    
-    # Apply masking for default evaluation
-    y_test_flat = y_test.ravel()
-    y_pred_default_flat = y_pred_default.ravel()
-    mask = y_test_flat != y_mask_val
-    
-    if np.sum(mask) > 0:
-        y_test_valid = y_test_flat[mask]
-        y_pred_valid = y_pred_default_flat[mask]
+        # Add AUC scores if computed
+        for auc_metric in ['roc_auc', 'pr_auc']:
+            if auc_metric in tuning_results:
+                optimized_scores[auc_metric] = tuning_results[auc_metric]['optimal_score']
         
-        # Ensure we have valid binary data
-        if not (np.all(np.isin(y_test_valid, [0, 1])) and np.all(np.isin(y_pred_valid, [0, 1]))):
-            logging.warning(format_warning_message("Invalid binary data detected. Skipping default threshold evaluation."))
-        else:
-            try:
-                evaluation_results['accuracy_default_0.5'] = accuracy_score(y_test_valid, y_pred_valid)
-                
-                # Only compute other metrics if both classes are present
-                if len(np.unique(y_test_valid)) > 1 and len(np.unique(y_pred_valid)) > 1:
-                    evaluation_results['f1_default_0.5'] = f1_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
-                    evaluation_results['precision_default_0.5'] = precision_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
-                    evaluation_results['recall_default_0.5'] = recall_score(y_test_valid, y_pred_valid, pos_label=1, zero_division=0)
-                    evaluation_results['specificity_default_0.5'] = recall_score(y_test_valid, y_pred_valid, pos_label=0, zero_division=0)
-                    evaluation_results['balanced_accuracy_default_0.5'] = (
-                        evaluation_results['recall_default_0.5'] + evaluation_results['specificity_default_0.5']
-                    ) / 2
-            except Exception as e:
-                logging.warning(format_warning_message(f"Failed to compute default threshold metrics: {e}"))
-                evaluation_results['accuracy_default_0.5'] = 0.0
-                evaluation_results['f1_default_0.5'] = 0.0
-                evaluation_results['precision_default_0.5'] = 0.0
-                evaluation_results['recall_default_0.5'] = 0.0
-                evaluation_results['specificity_default_0.5'] = 0.0
-                evaluation_results['balanced_accuracy_default_0.5'] = 0.0
-    
-    # Add AUC scores (threshold-independent)
-    y_pred_proba_flat = y_pred_proba_pos.ravel()
-    mask_proba = y_test_flat != y_mask_val
-    
-    if np.sum(mask_proba) > 0:
-        y_test_valid_proba = y_test_flat[mask_proba]
-        y_pred_proba_valid = y_pred_proba_flat[mask_proba]
-        
-        try:
-            evaluation_results['roc_auc'] = roc_auc_score(y_test_valid_proba, y_pred_proba_valid)
-            evaluation_results['pr_auc'] = average_precision_score(y_test_valid_proba, y_pred_proba_valid)
-        except:
-            evaluation_results['roc_auc'] = 0.5
-            evaluation_results['pr_auc'] = 0.0
-    
-    # Store detailed threshold evaluation data if requested
-    if store_detailed_thresholds:
-        # Store detailed evaluations for each metric
-        for metric_name in binary_metrics:
-            if metric_name in tuning_results and 'detailed_evaluations' in tuning_results[metric_name]:
-                evaluation_results[f'{metric_name}_detailed_evaluations'] = tuning_results[metric_name]['detailed_evaluations']
-        
-        # Store cross-metric analysis if available
-        if 'cross_metric_analysis' in tuning_results:
-            evaluation_results['cross_metric_analysis'] = tuning_results['cross_metric_analysis']
-        
-        # Store summary statistics if available
-        if 'summary_statistics' in tuning_results:
-            evaluation_results['summary_statistics'] = tuning_results['summary_statistics']
-        
-        # Store threshold tuning metadata
-        evaluation_results['threshold_tuning_metadata'] = {
-            'threshold_range': threshold_range,
-            'n_thresholds': n_thresholds,
-            'y_mask_val': y_mask_val,
-            'test_samples': len(y_test),
-            'valid_samples': np.sum(y_test != y_mask_val),
-            'store_detailed_thresholds': store_detailed_thresholds
+        return {
+            'optimized_scores': optimized_scores,
+            'optimal_thresholds': optimal_thresholds,
+            'tuning_results': tuning_results
         }
-    
-    return evaluation_results
 
 
+# ===================================================================
+# Pipeline Building and Parameter Grid Functions
+# ===================================================================
 
-
-
-# # ======================
 def build_pipeline(model_type='lstm', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
@@ -3432,112 +3022,6 @@ def get_default_param_grid(model_type, mask_values=None):
     
     return param_grid
 
-def optimize_thresholds(y_true, y_pred_proba=None, estimator=None, X_val=None, 
-                       y_mask_val=2, metrics=['f1', 'accuracy', 'precision', 'recall'], 
-                       threshold_range=(0.1, 0.9), n_thresholds=81, verbose=False):
-    """
-    Unified threshold optimization function that works with either probability vectors or estimator.
-    
-    Args:
-        y_true: True labels (with masking)
-        y_pred_proba: Probability predictions (positive class probabilities) - provide this OR estimator+X_val
-        estimator: Fitted classifier with predict_proba method - provide this OR y_pred_proba
-        X_val: Validation features (required if estimator is provided)
-        y_mask_val: Value representing masked positions
-        metrics: List of metrics to optimize thresholds for
-        threshold_range: Range of thresholds to search
-        n_thresholds: Number of thresholds to test
-        verbose: Whether to print optimization details
-        
-    Returns:
-        dict: Optimized thresholds and scores for each metric
-    """
-    try:
-        from sklearn.metrics import roc_auc_score, average_precision_score
-        
-        # Input validation and probability extraction
-        if y_pred_proba is not None:
-            # Direct probability input
-            if estimator is not None or X_val is not None:
-                raise ValueError("Cannot provide both y_pred_proba and estimator/X_val. Choose one approach.")
-            proba = y_pred_proba
-        elif estimator is not None and X_val is not None:
-            # Estimator-based input
-            proba = estimator.predict_proba(X_val)
-        else:
-            raise ValueError("Must provide either y_pred_proba OR both estimator and X_val")
-        
-        # Handle different probability shapes
-        if proba.ndim > 1:
-            if proba.shape[1] == 2:
-                y_pred_proba_pos = proba[:, 1]
-            else:
-                y_pred_proba_pos = proba.ravel()
-        else:
-            y_pred_proba_pos = proba.ravel()
-        
-        # Initialize threshold tuner
-        tuner = ThresholdTuner(threshold_range=threshold_range, 
-                              n_thresholds=n_thresholds,
-                              y_mask_val=y_mask_val)
-        
-        # Tune thresholds for specified metrics
-        tuning_results = tuner.tune_all_binary_thresholds(y_true, y_pred_proba_pos, 
-                                                         metrics=metrics, verbose=verbose)
-        
-        # Extract optimized scores for each metric
-        optimized_scores = {}
-        optimal_thresholds = {}
-        
-        for metric_name in metrics:
-            if metric_name in tuning_results:
-                optimal_thresholds[metric_name] = tuning_results[metric_name]['optimal_threshold']
-                optimized_scores[metric_name] = tuning_results[metric_name]['optimal_score']
-            else:
-                optimal_thresholds[metric_name] = 0.5
-                optimized_scores[metric_name] = 0.0
-        
-        # Add AUC scores (threshold-independent)
-        y_true_flat = y_true.ravel()
-        y_pred_proba_flat = y_pred_proba_pos.ravel()
-        mask = y_true_flat != y_mask_val
-        
-        if np.sum(mask) > 0:
-            y_true_valid = y_true_flat[mask]
-            y_pred_proba_valid = y_pred_proba_flat[mask]
-            
-            # Ensure binary data for AUC calculation
-            if len(np.unique(y_true_valid)) == 2 and np.all(np.isin(y_true_valid, [0, 1])):
-                try:
-                    optimized_scores['roc_auc'] = roc_auc_score(y_true_valid, y_pred_proba_valid)
-                    optimized_scores['pr_auc'] = average_precision_score(y_true_valid, y_pred_proba_valid)
-                except:
-                    optimized_scores['roc_auc'] = 0.5
-                    optimized_scores['pr_auc'] = 0.0
-            else:
-                optimized_scores['roc_auc'] = 0.5
-                optimized_scores['pr_auc'] = 0.0
-        
-        return {
-            'optimized_scores': optimized_scores,
-            'optimal_thresholds': optimal_thresholds,
-            'tuning_results': tuning_results
-        }
-        
-    except Exception as e:
-        if verbose:
-            logging.warning(format_warning_message(f"Threshold optimization failed: {e}"))
-        # Return default values
-        default_scores = {metric: 0.0 for metric in metrics}
-        default_thresholds = {metric: 0.5 for metric in metrics}
-        default_scores.update({'roc_auc': 0.5, 'pr_auc': 0.0})
-        
-        return {
-            'optimized_scores': default_scores,
-            'optimal_thresholds': default_thresholds,
-            'tuning_results': {}
-        }
-
 # ===================================================================
 # Comprehensive Result Storage Functions
 # ===================================================================
@@ -3899,76 +3383,6 @@ def _create_hyperparameter_string(hyperparams):
     
     return param_str
 
-def save_inner_fold_results(results_dict, experiment_dir, outer_fold, inner_fold, hyperparams, 
-                           outer_test_subject=None, inner_validation_subject=None, immediate_save=True):
-    """
-    Wrapper function to save inner fold results using the main save_evaluation_results function.
-    
-    Args:
-        results_dict: Dictionary containing all evaluation results
-        experiment_dir: Base experiment directory
-        outer_fold: Outer fold index
-        inner_fold: Inner fold index
-        hyperparams: Hyperparameters used for this fold
-        outer_test_subject: Test subject name for outer fold
-        inner_validation_subject: Validation subject name for inner fold
-        immediate_save: Whether to save immediately (default: True)
-    
-    Returns:
-        tuple: (json_path, pkl_path) from save_evaluation_results
-    """
-    try:
-        # Call the main saving function with inner fold parameters
-        return save_evaluation_results(
-            results_dict=results_dict,
-            result_type='inner_fold',
-            experiment_dir=experiment_dir,
-            outer_fold=outer_fold,
-            inner_fold=inner_fold,
-            outer_test_subject=outer_test_subject,
-            inner_validation_subject=inner_validation_subject,
-            hyperparams=hyperparams,
-            immediate_save=immediate_save
-        )
-        
-    except Exception as e:
-        logging.warning(format_warning_message(f"Failed to save inner fold results: {e}"))
-        return None, None
-
-
-def save_refit_results(results_dict, experiment_dir, outer_fold, hyperparams, 
-                      outer_test_subject=None, immediate_save=True):
-    """
-    Wrapper function to save refit results using the main save_evaluation_results function.
-    
-    Args:
-        results_dict: Dictionary containing all evaluation results
-        experiment_dir: Base experiment directory  
-        outer_fold: Outer fold index
-        hyperparams: Best hyperparameters used for refit
-        outer_test_subject: Test subject name for outer fold
-        immediate_save: Whether to save immediately (default: True)
-    
-    Returns:
-        tuple: (json_path, pkl_path) from save_evaluation_results
-    """
-    try:
-        # Call the main saving function with refit parameters
-        return save_evaluation_results(
-            results_dict=results_dict,
-            result_type='refit',
-            experiment_dir=experiment_dir,
-            outer_fold=outer_fold,
-            outer_test_subject=outer_test_subject,
-            hyperparams=hyperparams,
-            immediate_save=immediate_save
-        )
-            
-    except Exception as e:
-        logging.warning(format_warning_message(f"Failed to save refit results: {e}"))
-        return None, None
-
-
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
                                     selected_features, hyperparams, train_info, val_info):
     """
@@ -4252,18 +3666,17 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         inner_val_labels.append(y_inner_val)
                         inner_val_weights.append(len(y_inner_val))  # Weight by validation set size
                         
-                        # Threshold-optimized evaluation for LSTM models
+                        # Threshold-optimized evaluation for LSTM models using integrated method
                         if verbose >= 2:
                             logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
                         
                         # Define metrics to optimize thresholds for
                         threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                         
-                        threshold_results = optimize_thresholds(
-                            y_true=y_inner_val,
-                            estimator=lstm_classifier,
+                        # Use LSTMClassifier's integrated threshold optimization method
+                        threshold_results = lstm_classifier.optimize_thresholds_with_model(
                             X_val=X_val_transformed,
-                            y_mask_val=mask_values.get('y_mask', -1),
+                            y_val=y_inner_val,
                             metrics=threshold_metrics,
                             verbose=(verbose >= 3)
                         )
@@ -4296,27 +3709,46 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         inner_val_labels.append(y_inner_val)
                         inner_val_weights.append(len(y_inner_val))  # Weight by validation set size
                         
-                        # Threshold-optimized evaluation for non-LSTM models
+                        # Use default threshold evaluation for non-LSTM models (no threshold optimization)
                         if verbose >= 2:
-                            logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
+                            logging.info(f"[CV_SKLEARN]       Using default threshold (0.5) for baseline model evaluation")
                         
-                        # Define metrics to optimize thresholds for
-                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        # Use default threshold (0.5) for baseline models
+                        default_threshold = 0.5
                         
-                        threshold_results = optimize_thresholds(
-                            y_true=y_inner_val,
-                            estimator=inner_pipeline,
-                            X_val=X_inner_val_2d,
-                            y_mask_val=mask_values.get('y_mask', -1),
-                            metrics=threshold_metrics,
-                            verbose=(verbose >= 3)
-                        )
+                        # Get positive class probabilities
+                        if y_val_proba.ndim > 1 and y_val_proba.shape[1] == 2:
+                            y_val_proba_pos = y_val_proba[:, 1]
+                        else:
+                            y_val_proba_pos = y_val_proba.ravel()
                         
-                        # Use threshold-optimized scores
-                        fold_scores = threshold_results['optimized_scores']
+                        # Apply default threshold
+                        y_val_pred_threshold = (y_val_proba_pos > default_threshold).astype(int)
                         
-                        # Store optimal thresholds for this fold
-                        optimal_thresholds = threshold_results['optimal_thresholds']
+                        # Compute standard sklearn metrics with default threshold (no masking needed for 2D baseline models)
+                        fold_scores = {}
+                        fold_scores['f1'] = f1_score(y_inner_val, y_val_pred_threshold, average='weighted')
+                        fold_scores['accuracy'] = accuracy_score(y_inner_val, y_val_pred_threshold)
+                        fold_scores['precision'] = precision_score(y_inner_val, y_val_pred_threshold, average='weighted')
+                        fold_scores['recall'] = recall_score(y_inner_val, y_val_pred_threshold, average='weighted')
+                        fold_scores['balanced_accuracy'] = balanced_accuracy_score(y_inner_val, y_val_pred_threshold)
+                        
+                        # Add AUC scores (threshold-independent)
+                        try:
+                            fold_scores['roc_auc'] = roc_auc_score(y_inner_val, y_val_proba_pos, average='weighted')
+                            fold_scores['pr_auc'] = average_precision_score(y_inner_val, y_val_proba_pos, average='weighted')
+                        except:
+                            fold_scores['roc_auc'] = 0.5
+                            fold_scores['pr_auc'] = 0.0
+                        
+                        # Store default thresholds (all 0.5 for baseline models)
+                        optimal_thresholds = {
+                            'f1': default_threshold,
+                            'accuracy': default_threshold,
+                            'precision': default_threshold,
+                            'recall': default_threshold,
+                            'balanced_accuracy': default_threshold
+                        }
                         
                         if verbose >= 2:
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
@@ -4451,28 +3883,67 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             
             # Compute stable thresholds using aggregated validation predictions
             # This avoids optimism bias from refitting thresholds on training data
+            # Only for LSTM models - baseline models use default thresholds
             aggregated_optimal_thresholds = {}
             aggregated_threshold_results = {}
-            if inner_val_predictions and inner_val_labels:
+            if inner_val_predictions and inner_val_labels and model_type == 'lstm':
                 try:
                     # Aggregate validation predictions and labels across all inner folds
                     all_val_proba = np.vstack(inner_val_predictions)  # Shape: (total_val_samples, n_classes)
                     all_val_labels = np.concatenate(inner_val_labels)  # Shape: (total_val_samples,)
                     
                     if verbose >= 2:
-                        logging.info(f"[CV_SKLEARN]   Computing stable thresholds on {len(all_val_labels)} aggregated validation samples")
+                        logging.info(f"[CV_SKLEARN]   Computing stable thresholds on {len(all_val_labels)} aggregated validation samples (LSTM only)")
                     
-                    # Optimize thresholds directly on aggregated validation data
+                    # Optimize thresholds directly on aggregated validation data for LSTM
                     threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
-                    aggregated_threshold_results = optimize_thresholds(
-                        y_true=all_val_labels,
-                        y_pred_proba=all_val_proba,
-                        y_mask_val=mask_values.get('y_mask', -1),
-                        metrics=threshold_metrics,
-                        verbose=(verbose >= 3)
-                    )
                     
-                    aggregated_optimal_thresholds = aggregated_threshold_results['optimal_thresholds']
+                    # Simple threshold optimization for aggregated data
+                    # Extract positive class probabilities
+                    if all_val_proba.ndim > 1 and all_val_proba.shape[1] == 2:
+                        y_pred_proba_pos = all_val_proba[:, 1]
+                    else:
+                        y_pred_proba_pos = all_val_proba.ravel()
+                    
+                    # Search thresholds
+                    thresholds = np.linspace(0.1, 0.9, 81)
+                    aggregated_optimal_thresholds = {}
+                    aggregated_optimized_scores = {}
+                    
+                    for metric in threshold_metrics:
+                        best_score = 0.0
+                        best_threshold = 0.5
+                        
+                        for threshold in thresholds:
+                            y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
+                            
+                            # Use LSTMClassifier's evaluation methods for consistency
+                            y_mask_val = mask_values.get('y_mask', -1)
+                            if metric == 'f1':
+                                score = LSTMClassifier.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'accuracy':
+                                score = LSTMClassifier.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'precision':
+                                score = LSTMClassifier.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'recall':
+                                score = LSTMClassifier.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'balanced_accuracy':
+                                score = LSTMClassifier.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                            else:
+                                score = 0.0
+                            
+                            if score > best_score:
+                                best_score = score
+                                best_threshold = threshold
+                        
+                        aggregated_optimal_thresholds[metric] = best_threshold
+                        aggregated_optimized_scores[metric] = best_score
+                    
+                    aggregated_threshold_results = {
+                        'optimal_thresholds': aggregated_optimal_thresholds,
+                        'optimized_scores': aggregated_optimized_scores,
+                        'tuning_results': {}
+                    }
                     
                     if verbose >= 2:
                         threshold_summary = ", ".join([f"{k}={v:.3f}" for k, v in aggregated_optimal_thresholds.items()])
@@ -4483,6 +3954,24 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         logging.warning(f"[CV_SKLEARN]   Failed to compute aggregated thresholds: {e}")
                     aggregated_optimal_thresholds = {}
                     aggregated_threshold_results = {}
+            elif inner_val_predictions and inner_val_labels and model_type != 'lstm':
+                # For baseline models, use default thresholds (0.5)
+                if verbose >= 2:
+                    logging.info(f"[CV_SKLEARN]   Using default thresholds (0.5) for baseline model")
+                
+                default_threshold = 0.5
+                aggregated_optimal_thresholds = {
+                    'f1': default_threshold,
+                    'accuracy': default_threshold,
+                    'precision': default_threshold,
+                    'recall': default_threshold,
+                    'balanced_accuracy': default_threshold
+                }
+                aggregated_threshold_results = {
+                    'optimal_thresholds': aggregated_optimal_thresholds,
+                    'optimized_scores': {},  # Will be computed during final evaluation
+                    'tuning_results': {}
+                }
             
             param_features.append(aggregated_features)
             param_aggregated_thresholds.append(aggregated_optimal_thresholds)
@@ -4947,9 +4436,6 @@ def get_optimal_n_jobs(model_type='lstm', conservative=True):
         logging.warning(format_warning_message(f"[SYSTEM] Error detecting system resources: {e}"))
         return 1
 
-
-
-# Configure logging levels
 def setup_logging(verbose_level=2, log_dir=None):
     """
     Configure logging with different verbosity levels and optional file logging.
@@ -5074,7 +4560,7 @@ def main(verbose: int = 2):
         logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING")
         logging.info("[MAIN] " + "-" * 40)
     
-    TS_DataMat_filtered, valid_features_mask, filter_report = feature_filter(
+    TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
         TS_DataMat,
         operations_df=operations,
         variance_threshold=1e-8,
