@@ -152,7 +152,7 @@ def find_latest_results(base_dir="logs"):
 def main():
     # Hardcoded path to the nested CV results
 
-    basepath = "logs/nested_cv_20250926_212240/summary"
+    basepath = "logs/nested_cv_20251013_175139/summary"
     csv_path = os.path.join(basepath, "nested_cv_results.csv")
     
     # Generate output filename based on current date
@@ -166,7 +166,7 @@ def main():
     
     # Check if input file exists
     if not os.path.exists(csv_path):
-        print(f"❌ File not found: {csv_path}")
+        print(f"File not found: {csv_path}")
         return
     
     try:
@@ -174,15 +174,15 @@ def main():
         df = load_results(csv_path)
         generate_report(df, output_file)
         
-        print(f"✅ Report generated successfully!")
-        print(f"📄 Output saved to: {output_file}")
+        print(f"Report generated successfully!")
+        print(f"Output saved to: {output_file}")
         
         # Show file size
         file_size = os.path.getsize(output_file)
-        print(f"📊 File size: {file_size:,} bytes")
+        print(f"File size: {file_size:,} bytes")
         
     except Exception as e:
-        print(f"❌ Error generating report: {e}")
+        print(f"Error generating report: {e}")
 
 if __name__ == "__main__":
     main()

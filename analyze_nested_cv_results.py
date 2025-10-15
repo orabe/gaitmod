@@ -37,8 +37,8 @@ def load_results(csv_path):
     """Load nested CV results from CSV file."""
     try:
         df = pd.read_csv(csv_path)
-        print(f"✅ Loaded results from: {csv_path}")
-        print(f"📊 Dataset: {len(df)} outer folds")
+        print(f"Loaded results from: {csv_path}")
+        print(f"Dataset: {len(df)} outer folds")
         return df
     except Exception as e:
         raise Exception(f"Failed to load results: {e}")
@@ -46,14 +46,14 @@ def load_results(csv_path):
 def analyze_performance(df):
     """Analyze model performance across folds."""
     print("\n" + "="*60)
-    print("📈 PERFORMANCE ANALYSIS")
+    print("PERFORMANCE ANALYSIS")
     print("="*60)
     
     # Main metrics
     metrics = ['test_f1', 'test_auc', 'test_accuracy']
     metric_names = ['F1 Score', 'ROC AUC', 'Accuracy']
     
-    print("\n🎯 PRIMARY METRICS:")
+    print("\nPRIMARY METRICS:")
     print("-" * 40)
     for metric, name in zip(metrics, metric_names):
         if metric in df.columns:
@@ -66,7 +66,7 @@ def analyze_performance(df):
     # Additional metrics if available
     additional_metrics = [col for col in df.columns if col.startswith('test_') and col not in metrics]
     if additional_metrics:
-        print(f"\n📋 ADDITIONAL METRICS:")
+        print(f"\nADDITIONAL METRICS:")
         print("-" * 40)
         for metric in additional_metrics:
             # Skip non-numeric columns
@@ -80,11 +80,11 @@ def analyze_performance(df):
 def analyze_hyperparameters(df):
     """Analyze hyperparameter selection across folds."""
     print("\n" + "="*60)
-    print("⚙️  HYPERPARAMETER ANALYSIS")
+    print("HYPERPARAMETER ANALYSIS")
     print("="*60)
     
     if 'best_params' not in df.columns:
-        print("❌ No hyperparameter information found")
+        print("No hyperparameter information found")
         return
     
     # Parse best parameters (assuming they're stored as strings)
@@ -105,9 +105,9 @@ def analyze_hyperparameters(df):
                 value_str = str(value)
                 param_counts[key][value_str] = param_counts[key].get(value_str, 0) + 1
         except Exception as e:
-            print(f"⚠️  Warning: Could not parse parameters for fold {idx+1}: {e}")
+            print(f"Warning: Could not parse parameters for fold {idx+1}: {e}")
     
-    print("\n🔧 PARAMETER SELECTION FREQUENCY:")
+    print("\nPARAMETER SELECTION FREQUENCY:")
     print("-" * 50)
     for param_name, value_counts in param_counts.items():
         print(f"\n{param_name}:")
@@ -119,14 +119,14 @@ def analyze_hyperparameters(df):
 def analyze_subjects(df):
     """Analyze per-subject performance."""
     print("\n" + "="*60)
-    print("👥 PER-SUBJECT ANALYSIS")
+    print("PER-SUBJECT ANALYSIS")
     print("="*60)
     
     if 'test_subject_name' not in df.columns:
-        print("❌ No subject information found")
+        print("No subject information found")
         return
     
-    print("\n🧑 INDIVIDUAL SUBJECT PERFORMANCE:")
+    print("\nINDIVIDUAL SUBJECT PERFORMANCE:")
     print("-" * 55)
     print(f"{'Subject':<12} {'F1 Score':<10} {'ROC AUC':<10} {'Accuracy':<10}")
     print("-" * 55)
@@ -141,7 +141,7 @@ def analyze_subjects(df):
 def create_visualizations(df, output_dir=None):
     """Create performance visualizations."""
     print("\n" + "="*60)
-    print("📊 CREATING VISUALIZATIONS")
+    print("CREATING VISUALIZATIONS")
     print("="*60)
     
     # Set up plotting style
@@ -223,8 +223,8 @@ def create_visualizations(df, output_dir=None):
     if output_dir:
         output_path = os.path.join(output_dir, 'nested_cv_analysis.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"📁 Visualization saved: {output_path}")
-    
+        print(f"Visualization saved: {output_path}")
+
     plt.show()
 
 def main():
@@ -241,41 +241,41 @@ def main():
     else:
         try:
             csv_path = find_latest_results()
-            print(f"🔍 Auto-detected latest results: {csv_path}")
+            print(f"Auto-detected latest results: {csv_path}")
         except FileNotFoundError as e:
-            print(f"❌ {e}")
-            print("💡 Please specify the path to nested_cv_results.csv")
+            print(f"{e}")
+            print("Please specify the path to nested_cv_results.csv")
             return
     
     # Check if file exists
     if not os.path.exists(csv_path):
-        print(f"❌ File not found: {csv_path}")
+        print(f"File not found: {csv_path}")
         return
     
     try:
         # Load and analyze results
         df = load_results(csv_path)
-        
+
         # Print basic info about the dataset
-        print(f"📋 Columns: {list(df.columns)}")
-        
+        print(f"Columns: {list(df.columns)}")
+
         # Perform analyses
         analyze_performance(df)
         analyze_hyperparameters(df)
         analyze_subjects(df)
-        
+
         # Create visualizations
         if not args.no_plot:
             try:
                 output_dir = args.save_plots if args.save_plots else os.path.dirname(csv_path)
                 create_visualizations(df, output_dir)
             except Exception as e:
-                print(f"⚠️  Warning: Could not create visualizations: {e}")
-        
-        print(f"\n✅ Analysis complete!")
-        
+                print(f"Warning: Could not create visualizations: {e}")
+
+        print(f"\nAnalysis complete!")
+
     except Exception as e:
-        print(f"❌ Error during analysis: {e}")
+        print(f"Error during analysis: {e}")
 
 if __name__ == "__main__":
     main()
