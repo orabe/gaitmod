@@ -1096,8 +1096,54 @@ def _create_hyperparameter_string(hyperparams):
     
     return param_str
 
+def build_feature_mapping(selected_features, feature_names=None):
+    """
+    Build parallel lists and detailed mappings between feature indices and names.
+    
+    Args:
+        selected_features: Iterable of feature indices
+        feature_names: Sequence of feature names aligned with column order
+    
+    Returns:
+        tuple: (feature_names_list, feature_details_list, feature_index_to_name_map)
+    """
+    if selected_features is None:
+        return [], [], {}
+    
+    try:
+        indices = list(selected_features)
+    except TypeError:
+        indices = [selected_features]
+    
+    if feature_names is not None:
+        # Ensure we can index into feature_names
+        if hasattr(feature_names, 'tolist'):
+            feature_names_seq = feature_names.tolist()
+        else:
+            feature_names_seq = list(feature_names)
+    else:
+        feature_names_seq = None
+    
+    mapped_names = []
+    details = []
+    index_to_name = {}
+    
+    for idx in indices:
+        idx_int = int(idx)
+        if feature_names_seq is not None and 0 <= idx_int < len(feature_names_seq):
+            name = feature_names_seq[idx_int]
+        else:
+            name = f"feature_{idx_int}"
+        mapped_names.append(name)
+        details.append({'index': idx_int, 'name': name})
+        index_to_name[idx_int] = name
+    
+    return mapped_names, details, index_to_name
+
+
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
-                                    selected_features, hyperparams, train_info, val_info):
+                                    selected_features, hyperparams, train_info, val_info,
+                                    feature_names=None):
     """
     Create a comprehensive results dictionary for storage.
     
@@ -1106,6 +1152,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         optimal_thresholds: Dictionary of optimal thresholds
         threshold_results: Complete threshold optimization results
         selected_features: List of selected feature indices
+        feature_names: Optional list/sequence of feature names aligned with features
         hyperparams: Hyperparameters used
         train_info: Training set information
         val_info: Validation set information
@@ -1135,7 +1182,12 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
                 essential_threshold_results[metric_name] = essential_metric
         
         # Skip verbose summary data 
-        
+    
+    selected_feature_names, selected_feature_details, selected_feature_index_map = build_feature_mapping(
+        selected_features,
+        feature_names=feature_names
+    )
+    
     return {
         # Core evaluation metrics
         'metric_scores': fold_scores.copy() if fold_scores else {},
@@ -1148,9 +1200,11 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         
         # Feature selection results  
         'feature_selection': {
-            'selected_features': selected_features.copy() if isinstance(selected_features, list) else list(selected_features) if selected_features is not None else [],
-            'n_selected_features': len(selected_features) if selected_features else 0,
+            'selected_feature_index_map': selected_feature_index_map,
+            'n_selected_features': len(selected_feature_index_map),
         },
+        'selected_feature_names': selected_feature_names,
+        'selected_feature_details': selected_feature_details,
         
         # Data information (only shapes and class distributions)
         'data_info': {
@@ -3402,7 +3456,7 @@ def get_default_param_grid(model_type, mask_values=None):
                 15,     # Moderate patience: Good balance for biomedical data
             ],
             'classifier__epochs': [
-                100,    # Sufficient for small datasets with early stopping
+                3,    # Sufficient for small datasets with early stopping
             ],
             
             # Batch Size - Small batches for better generalization on small datasets
@@ -3471,7 +3525,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           experiment_dir=None,
                           n_jobs=1, 
                           verbose: int = 1,
-                          hparam_logger=None):
+                          hparam_logger=None,
+                          feature_names=None):
     """
     Nested cross-validation with pre-computed padding to optimize efficiency.
     
@@ -3493,12 +3548,19 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         n_jobs: Number of parallel jobs
         verbose: Verbosity level
         hparam_logger: Hyperparameter logger
+        feature_names: Optional list/sequence of feature names aligned with features
         
     Returns:
         tuple: (outer_results, all_best_params, experiment_dir)
     """
     from sklearn.model_selection import ParameterGrid
     from collections import defaultdict, Counter
+    
+    if feature_names is not None:
+        try:
+            feature_names = feature_names.tolist()
+        except AttributeError:
+            feature_names = list(feature_names)
     
     if verbose >= 1:
         logging.info(f"\n[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
@@ -3803,7 +3865,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             selected_features=selected_features if 'selected_features' in locals() else [],
                             hyperparams=params,
                             train_info=train_info,
-                            val_info=val_info
+                            val_info=val_info,
+                            feature_names=feature_names
                         )
                         
                         # Save results immediately to prevent data loss
@@ -4029,6 +4092,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_aggregated_threshold_results = {}
             if verbose >= 1:
                 logging.warning(format_warning_message(f"[CV_SKLEARN] No valid scores found, using default parameters"))
+        
+        best_feature_names, best_feature_details, best_feature_index_map = build_feature_mapping(best_features, feature_names)
+        if verbose >= 2 and best_feature_names:
+            preview = ", ".join(best_feature_names[:10])
+            logging.info(f"[CV_SKLEARN] Sample selected features: {preview}{' ...' if len(best_feature_names) > 10 else ''}")
         
         # Step 9: Final retrain using PRE-COMPUTED PADDING for efficiency
         if verbose >= 1:
@@ -4265,13 +4333,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
                     'threshold_optimization': best_aggregated_threshold_results.get('tuning_results', {}) if best_aggregated_threshold_results else {},
                     'feature_selection': {
-                        'selected_features': best_features.copy() if best_features else [],
-                        'n_selected_features': len(best_features) if best_features else 0,
+                        'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
+                        'n_selected_features': len(best_feature_index_map),
                     },
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
                     'selected_features': best_features.copy() if best_features else [],
+                    'selected_feature_names': best_feature_names.copy() if best_feature_names else [],
+                    'selected_feature_details': best_feature_details.copy() if best_feature_details else [],
+                    'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                     'n_selected_features': len(best_features) if best_features else 0,
                     
                     # Data information
@@ -4311,6 +4382,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'best_params': best_params,
                 'best_inner_score': best_score,
                 'selected_features': best_features,
+                'selected_feature_names': best_feature_names,
+                'selected_feature_details': best_feature_details,
+                'selected_feature_index_map': best_feature_index_map,
                 'n_selected_features': len(best_features),
                 'test_f1': test_f1,
                 'test_auc': test_auc,
@@ -4340,6 +4414,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'best_params': best_params,
                 'best_inner_score': best_score,
                 'selected_features': best_features,
+                'selected_feature_names': best_feature_names,
+                'selected_feature_details': best_feature_details,
+                'selected_feature_index_map': best_feature_index_map,
                 'n_selected_features': len(best_features),
                 'test_f1': 0.0,
                 'test_auc': 0.5,
@@ -4553,7 +4630,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
+    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
     channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
@@ -4594,6 +4671,13 @@ def main(verbose: int = 2):
     # Use filtered data for downstream processing
     TS_DataMat = TS_DataMat_filtered
     operations = operations_filtered
+    if isinstance(operations, pd.DataFrame):
+        if 'Name' in operations.columns:
+            feature_names = operations['Name'].tolist()
+        else:
+            feature_names = operations.index.astype(str).tolist()
+    else:
+        feature_names = None
     
     # Parse metadata and group by trials
     if verbose >= 1:
@@ -4699,7 +4783,8 @@ def main(verbose: int = 2):
         experiment_dir=experiment_dir,
         n_jobs=n_jobs,
         verbose=verbose,
-        hparam_logger=hparam_logger
+        hparam_logger=hparam_logger,
+        feature_names=feature_names
     )
 
     # Step 19: Final Evaluation
