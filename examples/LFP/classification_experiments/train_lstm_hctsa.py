@@ -794,7 +794,7 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
         hyperparams: Hyperparameters used
     
     Returns:
-        tuple: (json_path, pkl_path) of saved files
+        str: Path to saved JSON file
     """
     # Build inner fold metadata
     metadata = {
@@ -804,7 +804,8 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
         'inner_validation_subject': inner_validation_subject,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
-        'refit': False  # This is inner CV, not refit
+        'refit': False,  # This is inner CV, not refit
+        'trained_epochs': results_dict.get('trained_epochs')
     }
     
     # For inner fold, use data_info directly from results_dict
@@ -818,9 +819,8 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
     
     # Save with inner fold specific filenames
     json_filename = "evaluation_results.json"
-    pkl_filename = "evaluation_results.pkl"
     
-    return _write_result_files(result, output_dir, json_filename, pkl_filename)
+    return _write_result_files(result, output_dir, json_filename)
 
 def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, hyperparams):
     """
@@ -834,7 +834,7 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         hyperparams: Hyperparameters used
     
     Returns:
-        tuple: (json_path, pkl_path) of saved files
+        str: Path to saved JSON file
     """
     # Build refit metadata
     metadata = {
@@ -842,7 +842,8 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'outer_test_subject': outer_test_subject,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
-        'refit': True  # This is the final refit on all training data
+        'refit': True,  # This is the final refit on all training data
+        'trained_epochs': results_dict.get('trained_epochs')
     }
     
     # For refit, construct data_info from individual fields
@@ -869,9 +870,8 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
     
     # Save with refit specific filenames
     json_filename = "refit_results.json"
-    pkl_filename = "refit_results.pkl"
     
-    return _write_result_files(result, output_dir, json_filename, pkl_filename)
+    return _write_result_files(result, output_dir, json_filename)
 
 def _create_result_structure(results_dict, metadata, metric_scores, data_info):
     """
@@ -908,7 +908,7 @@ def _create_result_structure(results_dict, metadata, metric_scores, data_info):
         }
     }
 
-def _write_result_files(result, output_dir, json_filename, pkl_filename):
+def _write_result_files(result, output_dir, json_filename):
     """
     Private function to write result files to disk.
     
@@ -916,10 +916,9 @@ def _write_result_files(result, output_dir, json_filename, pkl_filename):
         result: Result dictionary to save
         output_dir: Directory to save files in
         json_filename: Name for JSON file
-        pkl_filename: Name for pickle file
     
     Returns:
-        tuple: (json_path, pkl_path) of saved files
+        str: Path to saved JSON file
     """
     # Save as JSON for human readability
     json_path = os.path.join(output_dir, json_filename)
@@ -927,12 +926,7 @@ def _write_result_files(result, output_dir, json_filename, pkl_filename):
     with open(json_path, 'w') as f:
         json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
     
-    # Also save as pickle for complete data preservation
-    pkl_path = os.path.join(output_dir, pkl_filename)
-    with open(pkl_path, 'wb') as f:
-        pickle.dump(result, f)
-        
-    return json_path, pkl_path
+    return json_path
 
 def save_evaluation_results(results_dict, result_type, output_dir=None, experiment_dir=None, 
                            outer_fold=None, inner_fold=None, outer_test_subject=None, 
@@ -954,7 +948,7 @@ def save_evaluation_results(results_dict, result_type, output_dir=None, experime
         immediate_save: Whether to save immediately (default: True)
     
     Returns:
-        tuple: (json_path, pkl_path) of saved files
+        str: Path to saved JSON file
     """
     try:
         # Determine the output directory
@@ -1143,7 +1137,7 @@ def build_feature_mapping(selected_features, feature_names=None):
 
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
                                     selected_features, hyperparams, train_info, val_info,
-                                    feature_names=None):
+                                    feature_names=None, trained_epochs=None):
     """
     Create a comprehensive results dictionary for storage.
     
@@ -1213,6 +1207,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
             'val_shape': val_info.get('shape', None), 
             'val_class_distribution': val_info.get('class_dist', {}),
         },
+        'trained_epochs': int(trained_epochs) if trained_epochs is not None else None,
     }
 
 # ===================================================================
@@ -3644,6 +3639,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         param_all_metrics = []  # Storage for all metrics across parameter combinations
         param_aggregated_thresholds = []  # Storage for stable thresholds computed on aggregated validation data
         param_aggregated_threshold_results = []  # Storage for full threshold optimization results
+        param_inner_fold_details = []  # Storage for fold-level training metadata
         
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
@@ -3654,6 +3650,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             inner_scores = []
             inner_selected_features = []  # Features selected in each inner fold
             inner_all_metrics = []  # Storage for all metrics across inner folds
+            inner_fold_details = []  # Metadata describing each inner fold
             
             # Storage for aggregating validation predictions across inner folds
             # This will be used to compute stable thresholds on held-out validation data
@@ -3697,6 +3694,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         has_validation_data=True  # Enable validation data monitoring
                     )
                     inner_pipeline.set_params(**params)
+                    
+                    trained_epochs = None
                     
                     # Step 7: Fit and evaluate pipeline with proper validation data handling
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
@@ -3837,6 +3836,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
                     
+                    trained_epochs = 0
+                    if model_type == 'lstm':
+                        lstm_histories = getattr(inner_pipeline.named_steps['classifier'], 'history_', [])
+                        if lstm_histories:
+                            last_history = lstm_histories[-1]
+                            if isinstance(last_history, dict):
+                                trained_epochs = len(last_history.get('loss', []))
+                    inner_fold_details.append({'trained_epochs': trained_epochs})
+                    
                     # Store selected features from this inner fold
                     if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
                         selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
@@ -3866,11 +3874,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             hyperparams=params,
                             train_info=train_info,
                             val_info=val_info,
-                            feature_names=feature_names
+                            feature_names=feature_names,
+                            trained_epochs=trained_epochs
                         )
                         
                         # Save results immediately to prevent data loss
-                        json_path, pkl_path = save_evaluation_results(
+                        json_path = save_evaluation_results(
                             results_dict=comprehensive_results,
                             result_type='inner_fold',
                             experiment_dir=experiment_dir,
@@ -4054,6 +4063,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             param_features.append(aggregated_features)
             param_aggregated_thresholds.append(aggregated_optimal_thresholds)
             param_aggregated_threshold_results.append(aggregated_threshold_results)
+            param_inner_fold_details.append(inner_fold_details)
             
             if verbose >= 1:
                 logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
@@ -4071,6 +4081,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_metrics = param_all_metrics[best_param_idx] if param_all_metrics else {}
             best_aggregated_thresholds = param_aggregated_thresholds[best_param_idx] if param_aggregated_thresholds else {}
             best_aggregated_threshold_results = param_aggregated_threshold_results[best_param_idx] if param_aggregated_threshold_results else {}
+            best_inner_fold_details = param_inner_fold_details[best_param_idx] if param_inner_fold_details else []
             
             if verbose >= 1:
                 logging.info(f"\n[CV_SKLEARN] Best parameters: {best_params}")
@@ -4090,6 +4101,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_metrics = {}
             best_aggregated_thresholds = {}
             best_aggregated_threshold_results = {}
+            best_inner_fold_details = []
             if verbose >= 1:
                 logging.warning(format_warning_message(f"[CV_SKLEARN] No valid scores found, using default parameters"))
         
@@ -4121,14 +4133,29 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 logging.info(f"[CV_SKLEARN] Pre-computed mask values: {mask_values}")
             
             # Train on full outer training set
+            threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+            refit_trained_epochs = None
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
-                # Apply pipeline-aware validation data handling for final training
-                if verbose >= 1:
-                    logging.info(f"[CV_SKLEARN] Final training with test set as validation data for early stopping")
-                
-                # Fit preprocessing steps on training data only
                 preprocessing_steps = final_pipeline.steps[:-1]
+                lstm_classifier = final_pipeline.steps[-1][1]
                 
+                trained_epoch_candidates = [
+                    fd.get('trained_epochs', 0) for fd in best_inner_fold_details
+                    if isinstance(fd, dict) and fd.get('trained_epochs')
+                ]
+                refit_epochs = max(trained_epoch_candidates) if trained_epoch_candidates else lstm_classifier.epochs
+                refit_epochs = max(int(refit_epochs), 1)
+                
+                # Disable callbacks and validation for leakage-free refit
+                lstm_classifier.callbacks = []
+                lstm_classifier._validation_data = None
+                lstm_classifier.epochs = refit_epochs
+                refit_trained_epochs = refit_epochs
+                
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Final training (no early stopping): epochs={refit_epochs}, train={X_outer_train.shape}, test={X_outer_test.shape}")
+                
+                # Fit preprocessing steps on full training data
                 X_train_final = X_outer_train
                 for step_name, transformer in preprocessing_steps:
                     transformer.fit(X_train_final, y_outer_train)
@@ -4139,14 +4166,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 for step_name, transformer in preprocessing_steps:
                     X_test_final = transformer.transform(X_test_final)
                 
-                # Set validation data for LSTM classifier (test set for early stopping)
-                lstm_classifier = final_pipeline.steps[-1][1]
-                lstm_classifier._validation_data = (X_test_final, y_outer_test)
-                
-                if verbose >= 1:
-                    logging.info(f"[CV_SKLEARN] Final training: train={X_train_final.shape}, test_as_val={X_test_final.shape}")
-                
-                # Fit the LSTM classifier with test set validation monitoring
+                # Fit the LSTM classifier with fixed epoch schedule
                 lstm_classifier.fit(X_train_final, y_outer_train)
                 
                 # Use stable thresholds computed on aggregated validation data from inner CV
@@ -4336,6 +4356,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                         'n_selected_features': len(best_feature_index_map),
                     },
+                    'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
@@ -4358,7 +4379,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 }
                 
                 # Save comprehensive sklearn refit results immediately
-                json_path, pkl_path = save_evaluation_results(
+                json_path = save_evaluation_results(
                     results_dict=comprehensive_sklearn_refit_results,
                     result_type='refit',
                     experiment_dir=experiment_dir,
@@ -4386,6 +4407,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'selected_feature_details': best_feature_details,
                 'selected_feature_index_map': best_feature_index_map,
                 'n_selected_features': len(best_features),
+                'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
                 'test_f1': test_f1,
                 'test_auc': test_auc,
                 'test_accuracy': test_accuracy
