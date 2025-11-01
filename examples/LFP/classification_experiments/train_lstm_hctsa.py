@@ -737,7 +737,7 @@ def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_
 
 
 # ===================================================================
-# Comprehensive Result Storage Functions
+# Result Storage Functions
 # ===================================================================
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder for numpy types"""
@@ -2374,7 +2374,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Calculate and store class weights for the loss function (if enabled)
         self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
-        
+        class_weights = None
+
         if self.use_class_weights:
             class_weights = self.calculate_class_weights(y)
             self._class_weights = class_weights  # Loss function will access this during training
@@ -2428,7 +2429,10 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         # For sequence-to-sequence tasks (TimeDistributed output), class_weight parameter causes shape conflicts
         # Class balancing is now handled in the custom masked loss function instead
         logging.info(f"[LSTM FIT] Class weighting applied via custom loss function (avoids shape conflicts)")
-        logging.info(f"[LSTM FIT] Class weights: {class_weights}")
+        if class_weights is not None:
+            logging.info(f"[LSTM FIT] Class weights: {class_weights}")
+        else:
+            logging.info(f"[LSTM FIT] Class weights: None (disabled)")
         
         # Log training configuration
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
