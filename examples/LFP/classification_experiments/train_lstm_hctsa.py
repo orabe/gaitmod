@@ -1906,55 +1906,91 @@ class MaskAwareScaler(BaseEstimator, TransformerMixin):
     def __init__(self, x_mask_value=None, scaler_type='robust'):
         self.x_mask_value = x_mask_value
         self.scaler_type = scaler_type
-        self.scaler = None
+        self.scalers_ = None
+        self.n_features_ = None
+
+    def _create_base_scaler(self):
+        """Instantiate a fresh scaler of the configured type."""
+        if self.scaler_type == 'standard':
+            return StandardScaler()
+        if self.scaler_type == 'robust':
+            return RobustScaler()
+        if self.scaler_type == 'minmax':
+            return MinMaxScaler()
+        raise ValueError(f"Unsupported scaler_type: {self.scaler_type}")
         
     def fit(self, X, y=None):
         """Fit scaler on non-masked values."""
-        # Use RobustScaler by default for HCTSA features to prevent overflow
-        if self.scaler_type == 'standard':
-            self.scaler = StandardScaler()
-        elif self.scaler_type == 'robust':
-            self.scaler = RobustScaler()
-        elif self.scaler_type == 'minmax':
-            self.scaler = MinMaxScaler()
-
-        if self.x_mask_value is not None:
-            # Get non-masked values for fitting
-            mask = X != self.x_mask_value
-            valid_data = X[mask]
-            if len(valid_data) > 0:
-                # Clip extreme values to prevent overflow
-                valid_data = np.clip(valid_data, -1e10, 1e10)
-                self.scaler.fit(valid_data.reshape(-1, 1))
+        X_array = np.asarray(X)
+        if X_array.ndim == 3:
+            _, _, n_features = X_array.shape
+            X_flat = X_array.reshape(-1, n_features)
+        elif X_array.ndim == 2:
+            n_features = X_array.shape[1]
+            X_flat = X_array
         else:
-            # Flatten and fit with clipping
-            X_clipped = np.clip(X, -1e10, 1e10)
-            self.scaler.fit(X_clipped.reshape(-1, 1))
+            raise ValueError("MaskAwareScaler expects 2D or 3D input arrays")
+
+        self.n_features_ = n_features
+        self.scalers_ = []
+
+        for feature_idx in range(n_features):
+            base_scaler = self._create_base_scaler()
+            column = X_flat[:, feature_idx]
+
+            if self.x_mask_value is not None:
+                valid_mask = column != self.x_mask_value
+                column_valid = column[valid_mask]
+            else:
+                column_valid = column
+
+            if column_valid.size == 0:
+                # Fit on a neutral value to keep scaler parameters defined
+                base_scaler.fit(np.zeros((1, 1)))
+            else:
+                column_clipped = np.clip(column_valid, -1e10, 1e10)
+                base_scaler.fit(column_clipped.reshape(-1, 1))
+
+            self.scalers_.append(base_scaler)
         
         return self
     
     def transform(self, X):
         """Transform data while preserving masked values."""
-        X_transformed = X.copy().astype(np.float64)  # Ensure float64 for stability
+        if self.scalers_ is None or self.n_features_ is None:
+            raise ValueError("MaskAwareScaler instance is not fitted yet")
 
-        if self.x_mask_value is not None:
-            # Only transform non-masked values
-            mask = X != self.x_mask_value
-            if np.any(mask):
-                # Clip extreme values and transform
-                valid_data = np.clip(X[mask], -1e10, 1e10)
-                transformed_data = self.scaler.transform(valid_data.reshape(-1, 1)).flatten()
-                # Clip transformed values to prevent extreme scaling
-                transformed_data = np.clip(transformed_data, -10, 10)
-                X_transformed[mask] = transformed_data
+        X_array = np.asarray(X)
+        if X_array.ndim == 3:
+            original_shape = X_array.shape
+            X_flat = X_array.reshape(-1, original_shape[2]).astype(np.float32)
+        elif X_array.ndim == 2:
+            original_shape = X_array.shape
+            X_flat = X_array.reshape(-1, original_shape[1]).astype(np.float32)
         else:
-            # Transform all values with clipping
-            original_shape = X.shape
-            X_clipped = np.clip(X, -1e10, 1e10)
-            X_scaled = self.scaler.transform(X_clipped.reshape(-1, 1)).reshape(original_shape)
-            X_transformed = np.clip(X_scaled, -10, 10)
-        
-        return X_transformed
+            raise ValueError("MaskAwareScaler expects 2D or 3D input arrays")
+
+        if self.n_features_ != X_flat.shape[1]:
+            raise ValueError("Input feature dimension does not match fitted data")
+
+        for feature_idx, scaler in enumerate(self.scalers_):
+            column = X_flat[:, feature_idx]
+            if self.x_mask_value is not None:
+                valid_mask = column != self.x_mask_value
+            else:
+                valid_mask = np.ones_like(column, dtype=bool)
+
+            if not np.any(valid_mask):
+                continue
+
+            valid_values = np.clip(column[valid_mask], -1e10, 1e10).reshape(-1, 1)
+            transformed = scaler.transform(valid_values).flatten()
+            transformed = np.clip(transformed, -10, 10).astype(np.float32)
+            column[valid_mask] = transformed
+            X_flat[:, feature_idx] = column
+
+        X_transformed = X_flat.reshape(original_shape)
+        return X_transformed.astype(np.float32)
 
 # ===================================================================
 # ADVANCED FEATURE SELECTION SECTION
@@ -4656,7 +4692,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
+    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
     channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
