@@ -16,6 +16,7 @@ events.out.tfevents.*
 
 # Image files
 # images/
+*.mat
 *.png
 *.jpg
 *.jpeg
