@@ -779,6 +779,40 @@ def convert_numpy_types(obj):
     else:
         return obj
 
+def extract_final_history_metrics(history_dict):
+    """
+    Extract final-epoch training and validation metrics from a Keras history dictionary.
+    
+    Args:
+        history_dict (dict): History dictionary as returned by Keras.
+    
+    Returns:
+        dict: Mapping of standardized metric names to their final float values.
+    """
+    if not history_dict:
+        return {}
+    
+    metric_mapping = {
+        'loss': 'train_loss',
+        'val_loss': 'val_loss',
+        'MASKED_accuracy': 'train_accuracy',
+        'val_MASKED_accuracy': 'val_accuracy',
+        'MASKED_f1_score': 'train_f1',
+        'val_MASKED_f1_score': 'val_f1',
+        'MASKED_roc_auc': 'train_roc_auc',
+        'val_MASKED_roc_auc': 'val_roc_auc',
+    }
+    
+    extracted = {}
+    for source_key, target_key in metric_mapping.items():
+        values = history_dict.get(source_key)
+        if isinstance(values, (list, tuple, np.ndarray)) and len(values) > 0:
+            try:
+                extracted[target_key] = float(values[-1])
+            except (TypeError, ValueError):
+                continue
+    return extracted
+
 def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
                          outer_test_subject, inner_validation_subject, hyperparams):
     """
@@ -3626,6 +3660,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         # For other models, use ParameterGrid to create combinations
         param_combinations = list(ParameterGrid(param_grid))
     
+    hparam_trials = [] if hparam_logger else None
+    
     if verbose >= 1:
         logging.info(f"[CV_SKLEARN] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
         logging.info(f"[CV_SKLEARN] Total estimated fits: {n_outer_folds * (len(param_combinations) * (n_outer_folds-1) + 1)}")
@@ -3776,6 +3812,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Fit the LSTM classifier with validation monitoring
                         lstm_classifier.fit(X_train_transformed, y_inner_train)
                         
+                        history_metrics = {}
+                        lstm_histories = getattr(lstm_classifier, 'history_', [])
+                        if lstm_histories:
+                            history_metrics = extract_final_history_metrics(lstm_histories[-1])
+                        
                         # Step 7d: Evaluate on validation data using threshold optimization
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
                         y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
@@ -3803,6 +3844,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                         # Use threshold-optimized scores
                         fold_scores = threshold_results['optimized_scores']
+                        if history_metrics:
+                            fold_scores.update(history_metrics)
                         
                         # Store optimal thresholds for this fold
                         optimal_thresholds = threshold_results['optimal_thresholds']
@@ -4149,6 +4192,44 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             param_aggregated_thresholds.append(aggregated_optimal_thresholds)
             param_aggregated_threshold_results.append(aggregated_threshold_results)
             param_inner_fold_details.append(inner_fold_details)
+            
+            if hparam_logger:
+                trial_results = {
+                    'cv_score': float(avg_score),
+                    'cv_std': float(np.std(inner_scores)) if len(inner_scores) > 1 else 0.0,
+                }
+                
+                metric_keys = [
+                    'train_loss', 'val_loss',
+                    'train_accuracy', 'val_accuracy',
+                    'train_f1', 'val_f1',
+                    'train_roc_auc', 'val_roc_auc'
+                ]
+                
+                for metric_key in metric_keys:
+                    value = aggregated_metrics.get(metric_key)
+                    if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                        trial_results[metric_key] = float(value)
+                
+                fallback_mapping = {
+                    'f1': 'val_f1',
+                    'accuracy': 'val_accuracy',
+                    'roc_auc': 'val_roc_auc',
+                }
+                for source_key, target_key in fallback_mapping.items():
+                    if target_key not in trial_results:
+                        value = aggregated_metrics.get(source_key)
+                        if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                            trial_results[target_key] = float(value)
+                
+                session_id = f"outer{outer_fold + 1:02d}_combo{param_idx + 1:03d}"
+                hparam_logger.log_hyperparameter_trial(params, trial_results, session_id=session_id)
+                
+                if hparam_trials is not None:
+                    sanitized_params = convert_numpy_types(dict(params))
+                    trial_record = trial_results.copy()
+                    trial_record['params'] = sanitized_params
+                    hparam_trials.append(trial_record)
             
             if verbose >= 1:
                 logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
@@ -4606,6 +4687,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     logging.info(f"[CV_SKLEARN] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
             
             logging.info(f"[CV_SKLEARN] Average selected features: {avg_features:.1f}")
+    
+    if hparam_logger and hparam_trials:
+        try:
+            hparam_logger.create_hyperparameter_summary(hparam_trials)
+        except Exception as summary_error:
+            logging.warning(format_warning_message(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}"))
     
     return outer_results, all_best_params, experiment_dir  
 
