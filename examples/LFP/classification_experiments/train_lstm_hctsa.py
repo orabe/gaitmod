@@ -2478,7 +2478,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             logging.info("Training on GPU with validation data pipeline optimization")
             try:
                 with tf.device('/device:GPU:0'):
-                    # Optimize validation data for better pipeline performance
                     if 'validation_data' in fit_kwargs:
                         X_val, y_val = fit_kwargs['validation_data']
                         # Ensure validation data is properly formatted and cached
@@ -2639,6 +2638,29 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return lr
     
     @staticmethod
+    def _extract_positive_class_proba(y_pred_proba):
+        """
+        Convert model probability outputs into a 1D array of positive-class probabilities.
+        Handles outputs shaped as:
+          - (n_samples,)                    -> already positive-class probabilities
+          - (n_samples, timesteps)          -> positive probabilities per timestep
+          - (n_samples, timesteps, 1)       -> squeeze trailing singleton axis
+          - (n_samples, ..., 2)             -> two-class probabilities; take [:, ..., 1]
+        """
+        proba = np.asarray(y_pred_proba)
+        
+        if proba.ndim >= 2 and proba.shape[-1] == 1:
+            proba = np.squeeze(proba, axis=-1)
+        
+        if proba.ndim >= 2 and proba.shape[-1] == 2:
+            # Two-class probabilities – use positive class (index 1)
+            proba_pos = np.take(proba, indices=1, axis=-1)
+        else:
+            proba_pos = proba
+        
+        return np.ravel(proba_pos)
+    
+    @staticmethod
     def eval_masked_accuracy_score(y_true, y_pred, y_mask_val=2):
         """Evaluation-time masked accuracy score for sklearn compatibility."""
         # Flatten arrays for consistent processing
@@ -2648,7 +2670,22 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         if np.sum(mask) == 0:  # No valid predictions
             return 0.0
         return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
-
+    
+    @staticmethod
+    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=2):
+        """Evaluation-time masked balanced accuracy score for sklearn compatibility."""
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_flat = y_pred.ravel()
+        mask = y_true_flat != y_mask_val
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+        valid_classes = np.unique(y_true_flat[mask])
+        if len(valid_classes) < 2:  # Need at least 2 classes
+            return 0.0
+        from sklearn.metrics import balanced_accuracy_score
+        return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
+    
     @staticmethod
     def eval_masked_f1_score(y_true, y_pred, y_mask_val=2):
         """Evaluation-time masked F1 score for sklearn compatibility."""
@@ -2678,7 +2715,45 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         if len(valid_classes) < 2:  # Need at least 2 classes for AUC
             return 0.5
         return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
-    
+
+    @staticmethod
+    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
+        """
+        Evaluation-time masked PR AUC score for sklearn compatibility.
+        Calculate PR AUC with masking support for sequence data.
+        
+        Args:
+            y_true: True labels (2D or flattened)
+            y_pred_proba: Predicted probabilities (should be 2D: [n_samples, n_classes])
+            y_mask_val: Value representing masked/padded positions
+            
+        Returns:
+            float: PR AUC score for valid (non-masked) positions
+        """
+        from sklearn.metrics import average_precision_score
+        
+        # Flatten arrays for consistent processing
+        y_true_flat = y_true.ravel()
+        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
+        
+        # Create mask for valid positions
+        mask = y_true_flat != y_mask_val
+        
+        if np.sum(mask) == 0:  # No valid predictions
+            return 0.0
+            
+        # Get valid data
+        y_true_valid = y_true_flat[mask]
+        y_pred_proba_valid = y_pred_proba_pos[mask]
+        
+        # Check if we have at least 2 classes
+        valid_classes = np.unique(y_true_valid)
+        if len(valid_classes) < 2:
+            return 0.0
+        
+        # Binary classification - use positive class probability
+        return average_precision_score(y_true_valid, y_pred_proba_valid)
+        
     @staticmethod
     def eval_masked_precision_score(y_true, y_pred, y_mask_val=2):
         """Evaluation-time masked precision score for sklearn compatibility."""
@@ -2726,22 +2801,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             tn, fp, fn, tp = cm.ravel()
             return tn / (tn + fp) if (tn + fp) > 0 else 0.0
         return 0.0
-    
-    @staticmethod
-    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=2):
-        """Evaluation-time masked balanced accuracy score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        from sklearn.metrics import balanced_accuracy_score
-        return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
-    
+
     @staticmethod
     def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=2):
         """Evaluation-time masked confusion matrix for sklearn compatibility."""
@@ -2809,77 +2869,11 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             'tp': int(tp),
             'n_valid_samples': int(n_valid_samples)
         }
-    
+
     @staticmethod
     def masked_classification_report(y_true, y_pred, target_names=None, digits=4, y_mask_val=2):
         mask = y_true != y_mask_val
         return classification_report(y_true[mask], y_pred[mask], target_names=target_names, digits=digits)
-
-    @staticmethod
-    def masked_confusion_matrix(y_true, y_pred, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return confusion_matrix(y_true[mask], y_pred[mask])
-
-    @staticmethod
-    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
-        """
-        Evaluation-time masked PR AUC score for sklearn compatibility.
-        Calculate PR AUC with masking support for sequence data.
-        
-        Args:
-            y_true: True labels (2D or flattened)
-            y_pred_proba: Predicted probabilities (should be 2D: [n_samples, n_classes])
-            y_mask_val: Value representing masked/padded positions
-            
-        Returns:
-            float: PR AUC score for valid (non-masked) positions
-        """
-        from sklearn.metrics import average_precision_score
-        
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
-        
-        # Create mask for valid positions
-        mask = y_true_flat != y_mask_val
-        
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-            
-        # Get valid data
-        y_true_valid = y_true_flat[mask]
-        y_pred_proba_valid = y_pred_proba_pos[mask]
-        
-        # Check if we have at least 2 classes
-        valid_classes = np.unique(y_true_valid)
-        if len(valid_classes) < 2:
-            return 0.0
-        
-        # Binary classification - use positive class probability
-        return average_precision_score(y_true_valid, y_pred_proba_valid)
-    
-    @staticmethod
-    def _extract_positive_class_proba(y_pred_proba):
-        """
-        Convert model probability outputs into a 1D array of positive-class probabilities.
-        Handles outputs shaped as:
-          - (n_samples,)                    -> already positive-class probabilities
-          - (n_samples, timesteps)          -> positive probabilities per timestep
-          - (n_samples, timesteps, 1)       -> squeeze trailing singleton axis
-          - (n_samples, ..., 2)             -> two-class probabilities; take [:, ..., 1]
-        """
-        proba = np.asarray(y_pred_proba)
-        
-        if proba.ndim >= 2 and proba.shape[-1] == 1:
-            proba = np.squeeze(proba, axis=-1)
-        
-        if proba.ndim >= 2 and proba.shape[-1] == 2:
-            # Two-class probabilities – use positive class (index 1)
-            proba_pos = np.take(proba, indices=1, axis=-1)
-        else:
-            proba_pos = proba
-        
-        return np.ravel(proba_pos)
 
     # ===================================================================
     # INTEGRATED THRESHOLD OPTIMIZATION METHODS
@@ -2931,12 +2925,12 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Define metric function mapping using the LSTMClassifier's evaluation methods
         metric_functions = {
-            'f1': self.eval_masked_f1_score,
             'accuracy': self.eval_masked_accuracy_score,
+            'balanced_accuracy': self.eval_masked_balanced_accuracy_score,
+            'f1': self.eval_masked_f1_score,
             'precision': self.eval_masked_precision_score,
             'recall': self.eval_masked_recall_score,
             'specificity': self.eval_masked_specificity_score,
-            'balanced_accuracy': self.eval_masked_balanced_accuracy_score
         }
         
         if metric_name not in metric_functions:
@@ -2966,16 +2960,16 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                         'score': score,
                         'metric': metric_name,
                         'n_valid_samples': cm_components['n_valid_samples'],
-                        'true_positives': cm_components['tp'],
-                        'true_negatives': cm_components['tn'],
-                        'false_positives': cm_components['fp'],
-                        'false_negatives': cm_components['fn'],
                         'accuracy': self.eval_masked_accuracy_score(y_val, y_pred_binary, y_mask_val),
+                        'balanced_accuracy': self.eval_masked_balanced_accuracy_score(y_val, y_pred_binary, y_mask_val),
                         'f1': self.eval_masked_f1_score(y_val, y_pred_binary, y_mask_val),
                         'precision': self.eval_masked_precision_score(y_val, y_pred_binary, y_mask_val),
                         'recall': self.eval_masked_recall_score(y_val, y_pred_binary, y_mask_val),
                         'specificity': self.eval_masked_specificity_score(y_val, y_pred_binary, y_mask_val),
-                        'balanced_accuracy': self.eval_masked_balanced_accuracy_score(y_val, y_pred_binary, y_mask_val),
+                        'true_positives': cm_components['tp'],
+                        'true_negatives': cm_components['tn'],
+                        'false_positives': cm_components['fp'],
+                        'false_negatives': cm_components['fn'],
                         'is_optimal': False  # Will be updated below
                     })
                 
@@ -3303,22 +3297,22 @@ def build_pipeline(model_type='lstm', mask_values=None,
         # Use masked scoring functions that match the training metrics
         logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
         scoring_functions = {
+            'accuracy': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_accuracy_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),
+            'balanced_accuracy': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_balanced_accuracy_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),            
             'f1': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_f1_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
-                ),
-                greater_is_better=True
-            ),
-            'precision': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_precision_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
-                ),
-                greater_is_better=True
-            ),
-            'recall': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_recall_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
@@ -3339,25 +3333,40 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 ),
                 needs_proba=True,
                 greater_is_better=True
-            ),
-            'accuracy': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_accuracy_score(
+            ),               
+            'precision': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_precision_score(
                     y_true, y_pred, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
                 ),
                 greater_is_better=True
-            )
+            ),
+            'recall': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_recall_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),         
+            'specificity': make_scorer(
+                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_specificity_score(
+                    y_true, y_pred, 
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                ),
+                greater_is_better=True
+            ),        
         }
     else:
         # Standard sklearn scoring functions for non-LSTM models
         from sklearn.metrics import average_precision_score, precision_score, recall_score
         scoring_functions = {
+            'accuracy': make_scorer(accuracy_score),
+            'balanced_accuracy': make_scorer(balanced_accuracy_score),
             'f1': make_scorer(f1_score, average='weighted'),
             'precision': make_scorer(precision_score, average='weighted'),
             'recall': make_scorer(recall_score, average='weighted'),
             'auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
             'pr_auc': make_scorer(average_precision_score, needs_proba=True, average='weighted'),
-            'accuracy': make_scorer(accuracy_score)
         }
     
     return pipeline, scoring_functions
@@ -3809,6 +3818,21 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                         # Primary score for hyperparameter selection (threshold-optimized F1)
                         score = fold_scores.get('f1', 0.0)
+
+                        # Store confusion matrix components at the F1-optimal threshold
+                        try:
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            conf_threshold = optimal_thresholds.get('f1', 0.5)
+                            y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
+                            y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
+                            if y_val_pred_conf.size == y_inner_val.size:
+                                y_val_pred_conf = y_val_pred_conf.reshape(y_inner_val.shape)
+                            cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_conf, y_mask_val)
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
+                            cm_components = None
+                        if cm_components is not None:
+                            fold_scores['confusion_matrix_components'] = cm_components
                         
                     else:
                         # For other models, flatten to 2D
@@ -3848,6 +3872,14 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         fold_scores['precision'] = precision_score(y_inner_val, y_val_pred_threshold, average='weighted')
                         fold_scores['recall'] = recall_score(y_inner_val, y_val_pred_threshold, average='weighted')
                         fold_scores['balanced_accuracy'] = balanced_accuracy_score(y_inner_val, y_val_pred_threshold)
+
+                        # Store confusion matrix components for baseline models
+                        try:
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_threshold, y_mask_val)
+                            fold_scores['confusion_matrix_components'] = cm_components
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Baseline confusion matrix components unavailable: {cm_error}")
                         
                         # Add AUC scores (threshold-independent)
                         try:
@@ -3979,10 +4011,23 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         if isinstance(fold_metrics, dict) and metric_name in fold_metrics:
                             metric_values.append(fold_metrics[metric_name])
                     
-                    if metric_values:
-                        aggregated_metrics[metric_name] = np.mean(metric_values)
+                    # Only aggregate numeric or array-like metrics
+                    numeric_values = []
+                    for value in metric_values:
+                        if isinstance(value, (int, float, np.integer, np.floating)):
+                            numeric_values.append(float(value))
+                        elif isinstance(value, (np.ndarray, list, tuple)):
+                            try:
+                                numeric_values.append(float(np.mean(value)))
+                            except Exception:
+                                continue
+                        else:
+                            continue
+                    
+                    if numeric_values:
+                        aggregated_metrics[metric_name] = float(np.mean(numeric_values))
                     else:
-                        aggregated_metrics[metric_name] = 0.0
+                        aggregated_metrics[metric_name] = metric_values[-1] if metric_values else 0.0
             else:
                 aggregated_metrics = {'f1': avg_score}
             
@@ -4022,7 +4067,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]   Computing stable thresholds on {len(all_val_labels)} aggregated validation samples (LSTM only)")
                     
-                    # Optimize thresholds directly on aggregated validation data for LSTM
                     threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
                     
                     # Simple threshold optimization for aggregated data
@@ -4046,16 +4090,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             
                             # Use LSTMClassifier's evaluation methods for consistency
                             y_mask_val = mask_values.get('y_mask', -1)
-                            if metric == 'f1':
-                                score = LSTMClassifier.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)
-                            elif metric == 'accuracy':
+                            if metric == 'accuracy':
                                 score = LSTMClassifier.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'balanced_accuracy':
+                                score = LSTMClassifier.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)   
+                            elif metric == 'f1':
+                                score = LSTMClassifier.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)                                        
+                            elif metric == 'roc_auc':
+                                score = LSTMClassifier.eval_masked_roc_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
+                            elif metric == 'pr_auc':
+                                score = LSTMClassifier.eval_masked_pr_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)                            
                             elif metric == 'precision':
                                 score = LSTMClassifier.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
                             elif metric == 'recall':
                                 score = LSTMClassifier.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
-                            elif metric == 'balanced_accuracy':
-                                score = LSTMClassifier.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                            elif metric == 'specificity':
+                                score = LSTMClassifier.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val) 
                             else:
                                 score = 0.0
                             
@@ -4246,7 +4296,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Apply masking to test data
                 y_test_flat = y_outer_test.ravel()
                 y_test_proba_flat = y_test_proba_pos.ravel()
-                mask = y_test_flat != mask_values.get('y_mask', -1)
+                y_mask_val = mask_values.get('y_mask', -1)
+                mask = y_test_flat != y_mask_val
                 
                 if np.sum(mask) > 0:
                     y_test_valid = y_test_flat[mask]
@@ -4286,6 +4337,17 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
                         test_metrics['roc_auc'] = np.nan
                         test_metrics['pr_auc'] = np.nan
+
+                # Derive confusion matrix components at the F1-optimized threshold
+                try:
+                    confusion_threshold = optimal_thresholds.get('f1', 0.5)
+                    y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
+                    if y_test_pred_conf.size == y_outer_test.size:
+                        y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
+                    cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
+                    test_metrics['confusion_matrix_components'] = cm_components
+                except Exception as e:
+                    logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}"))
                 
                 # Extract primary metrics for backward compatibility
                 test_f1 = test_metrics.get('f1', np.nan)
@@ -4330,6 +4392,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     y_test_proba_pos = y_test_pred_proba[:, 1]
                 else:
                     y_test_proba_pos = y_test_pred_proba.ravel()
+                y_mask_val = mask_values.get('y_mask', -1)
                 
                 # Calculate threshold-optimized metrics
                 for metric_name in threshold_metrics:
@@ -4365,6 +4428,17 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
                     test_metrics['roc_auc'] = np.nan
                     test_metrics['pr_auc'] = np.nan
+
+                # Derive confusion matrix components at the F1-optimized threshold
+                try:
+                    confusion_threshold = optimal_thresholds.get('f1', 0.5)
+                    y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
+                    if y_test_pred_conf.size == y_outer_test.size:
+                        y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
+                    cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
+                    test_metrics['confusion_matrix_components'] = cm_components
+                except Exception as e:
+                    logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}"))
                 
                 # Extract primary metrics for backward compatibility
                 test_f1 = test_metrics.get('f1', np.nan)
@@ -4498,6 +4572,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             avg_f1 = np.mean([r['test_f1'] for r in outer_results])
             avg_auc = np.mean([r['test_auc'] for r in outer_results])
             avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
+            balanced_accuracy_values = [
+                r['test_balanced_accuracy'] for r in outer_results
+                if isinstance(r.get('test_balanced_accuracy'), (int, float, np.number))
+                and not np.isnan(float(r.get('test_balanced_accuracy')))
+            ]
+            avg_balanced_accuracy = np.mean(balanced_accuracy_values) if balanced_accuracy_values else None
             avg_features = np.mean([r['n_selected_features'] for r in outer_results])
             
             # Calculate averages for all test metrics
@@ -4519,6 +4599,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             logging.info(f"[CV_SKLEARN] Average F1: {avg_f1:.4f}")
             logging.info(f"[CV_SKLEARN] Average AUC: {avg_auc:.4f}")
             logging.info(f"[CV_SKLEARN] Average Accuracy: {avg_accuracy:.4f}")
+            if avg_balanced_accuracy is not None:
+                logging.info(f"[CV_SKLEARN] Average Balanced Accuracy: {avg_balanced_accuracy:.4f}")
             
             # Log all test metrics
             for metric_name, values in all_test_metrics.items():
@@ -4692,7 +4774,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
+    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
     channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
@@ -4868,12 +4950,20 @@ def main(verbose: int = 2):
     std_auc = results_df['test_auc'].std()
     mean_accuracy = results_df['test_accuracy'].mean()
     std_accuracy = results_df['test_accuracy'].std()
+    if 'test_balanced_accuracy' in results_df.columns:
+        mean_balanced_accuracy = results_df['test_balanced_accuracy'].mean()
+        std_balanced_accuracy = results_df['test_balanced_accuracy'].std()
+    else:
+        mean_balanced_accuracy = None
+        std_balanced_accuracy = None
     
     if verbose >= 1:
         logging.info(f"[MAIN] FINAL RESULTS:")
         logging.info(f"[MAIN] F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
         logging.info(f"[MAIN] AUC Score: {mean_auc:.4f} ± {std_auc:.4f}")
         logging.info(f"[MAIN] Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+        if mean_balanced_accuracy is not None:
+            logging.info(f"[MAIN] Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
     
     # Most common hyperparameters
     param_counts = {}
@@ -4920,6 +5010,8 @@ def main(verbose: int = 2):
             'std_auc': std_auc,
             'mean_accuracy': mean_accuracy,
             'std_accuracy': std_accuracy,
+            'mean_balanced_accuracy': mean_balanced_accuracy,
+            'std_balanced_accuracy': std_balanced_accuracy,
             'most_common_params': dict(most_common_params) if most_common_params else {},
             'n_subjects': len(np.unique(groups)),
             'n_trials': len(X_list)
