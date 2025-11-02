@@ -108,7 +108,7 @@ except ImportError:
 
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score, ParameterGrid
-from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, classification_report, confusion_matrix, precision_score, recall_score, average_precision_score, balanced_accuracy_score
+from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, confusion_matrix, precision_score, recall_score, average_precision_score, balanced_accuracy_score
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
@@ -2870,11 +2870,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             'n_valid_samples': int(n_valid_samples)
         }
 
-    @staticmethod
-    def masked_classification_report(y_true, y_pred, target_names=None, digits=4, y_mask_val=2):
-        mask = y_true != y_mask_val
-        return classification_report(y_true[mask], y_pred[mask], target_names=target_names, digits=digits)
-
     # ===================================================================
     # INTEGRATED THRESHOLD OPTIMIZATION METHODS
     # ===================================================================
@@ -3318,7 +3313,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 ),
                 greater_is_better=True
             ),
-            'auc': make_scorer(
+            'roc_auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_roc_auc_score(
                     y_true, y_pred_proba, 
                     y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
@@ -3365,7 +3360,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
             'f1': make_scorer(f1_score, average='weighted'),
             'precision': make_scorer(precision_score, average='weighted'),
             'recall': make_scorer(recall_score, average='weighted'),
-            'auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
+            'roc_auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
             'pr_auc': make_scorer(average_precision_score, needs_proba=True, average='weighted'),
         }
     

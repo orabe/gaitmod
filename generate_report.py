@@ -44,13 +44,13 @@ def generate_report(df, output_file):
         
         # Metric mapping from CSV columns to display names
         metrics = [
+            ('test_f1', 'F1'),
+            ('test_roc_auc', 'ROC AUC'),
+            ('test_pr_auc', 'PR AUC'),
             ('test_accuracy', 'Accuracy'),
             ('test_balanced_accuracy', 'Balanced Accuracy'),
-            ('test_f1', 'F1'),
-            ('test_pr_auc', 'Pr Auc'),
             ('test_precision', 'Precision'),
             ('test_recall', 'Recall'),
-            ('test_roc_auc', 'Roc Auc')
         ]
         
         for col, name in metrics:
@@ -80,20 +80,20 @@ def generate_report(df, output_file):
         f.write("(never used for training or hyperparameter tuning).\n\n")
         
         f.write("INDIVIDUAL SUBJECT TEST PERFORMANCE:\n")
-        f.write("-" * 89 + "\n")
-        f.write(f"{'Subject':<12} {'F1':<10} {'Roc Auc':<10} {'Pr Auc':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'Balanced':<10}\n")
-        f.write("-" * 89 + "\n")
+        f.write("-" * 90 + "\n")
+        f.write(f"{'Subject':<12} {'F1':<10} {'ROC AUC':<10} {'PR AUC':<10} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'Balanced':<10}\n")
+        f.write("-" * 90 + "\n")
         
         # Individual subject performance
         for _, row in df.iterrows():
             subject = row['test_subject_name']
-            f1 = row.get('test_f1', 0)
-            roc_auc = row.get('test_roc_auc', 0)
-            pr_auc = row.get('test_pr_auc', 0)
-            accuracy = row.get('test_accuracy', 0)
-            precision = row.get('test_precision', 0)
-            recall = row.get('test_recall', 0)
-            balanced = row.get('test_balanced_accuracy', 0)
+            f1 = row.get('test_f1', np.nan)
+            roc_auc = row.get('test_roc_auc', np.nan)
+            pr_auc = row.get('test_pr_auc', np.nan)
+            accuracy = row.get('test_accuracy', np.nan)
+            precision = row.get('test_precision', np.nan)
+            recall = row.get('test_recall', np.nan)
+            balanced = row.get('test_balanced_accuracy', np.nan)
             
             f.write(f"{subject:<12} {f1:<10.4f} {roc_auc:<10.4f} {pr_auc:<10.4f} {accuracy:<10.4f} {precision:<10.4f} {recall:<10.4f} {balanced:<10.4f}\n")
         
@@ -152,7 +152,7 @@ def find_latest_results(base_dir="logs"):
 def main():
     # Hardcoded path to the nested CV results
 
-    basepath = "logs/nested_cv_20251013_175139/summary"
+    basepath = "logs/nested_cv_20251102_032908/summary"
     csv_path = os.path.join(basepath, "nested_cv_results.csv")
     
     # Generate output filename based on current date
