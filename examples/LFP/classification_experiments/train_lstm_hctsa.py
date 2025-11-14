@@ -200,14 +200,30 @@ class HyperparameterTensorBoardLogger:
             metrics = [
                 hp.Metric('cv_score', display_name='CV Score'),
                 hp.Metric('cv_std', display_name='CV Std'),
+                
                 hp.Metric('train_loss', display_name='Training Loss'),
                 hp.Metric('val_loss', display_name='Validation Loss'),
+                
                 hp.Metric('train_accuracy', display_name='Training Accuracy'),
                 hp.Metric('val_accuracy', display_name='Validation Accuracy'),
                 hp.Metric('train_f1', display_name='Training F1'),
                 hp.Metric('val_f1', display_name='Validation F1'),
+                hp.Metric('train_precision', display_name='Training Precision'),
+                hp.Metric('val_precision', display_name='Validation Precision'),
+                hp.Metric('train_recall', display_name='Training Recall'),
+                hp.Metric('val_recall', display_name='Validation Recall'),
+                hp.Metric('train_balanced_accuracy', display_name='Training Balanced Accuracy'),
+                hp.Metric('val_balanced_accuracy', display_name='Validation Balanced Accuracy'),
+                hp.Metric('train_pr_auc', display_name='Training PR AUC'),
+                hp.Metric('val_pr_auc', display_name='Validation PR AUC'),
                 hp.Metric('train_roc_auc', display_name='Training ROC AUC'),
                 hp.Metric('val_roc_auc', display_name='Validation ROC AUC'),
+                
+                hp.Metric('val_tuned_accuracy', display_name='Validation Tuned Accuracy'),
+                hp.Metric('val_tuned_precision', display_name='Validation Tuned Precision'),
+                hp.Metric('val_tuned_recall', display_name='Validation Tuned Recall'),
+                hp.Metric('val_tuned_balanced_accuracy', display_name='Validation Tuned Balanced Accuracy'),
+                hp.Metric('val_tuned_f1', display_name='Validation Tuned F1'),
             ]
             
             # Write the experiment configuration
@@ -801,6 +817,14 @@ def extract_final_history_metrics(history_dict):
         'val_MASKED_f1_score': 'val_f1',
         'MASKED_roc_auc': 'train_roc_auc',
         'val_MASKED_roc_auc': 'val_roc_auc',
+        'MASKED_precision': 'train_precision',
+        'val_MASKED_precision': 'val_precision',
+        'MASKED_recall': 'train_recall',
+        'val_MASKED_recall': 'val_recall',
+        'MASKED_pr_auc': 'train_pr_auc',
+        'val_MASKED_pr_auc': 'val_pr_auc',
+        'MASKED_balanced_accuracy': 'train_balanced_accuracy',
+        'val_MASKED_balanced_accuracy': 'val_balanced_accuracy',
     }
     
     extracted = {}
@@ -812,6 +836,70 @@ def extract_final_history_metrics(history_dict):
             except (TypeError, ValueError):
                 continue
     return extracted
+
+BASE_METRIC_KEYS = {
+    'accuracy': 'accuracy',
+    'precision': 'precision',
+    'recall': 'recall',
+    'balanced_accuracy': 'balanced_accuracy',
+    'f1': 'f1',
+    'roc_auc': 'roc_auc',
+    'pr_auc': 'pr_auc'
+}
+
+THRESHOLD_BASE_METRICS = {'accuracy', 'precision', 'recall', 'balanced_accuracy', 'f1'}
+
+def standardize_metric_names(metrics_dict, stage=None, tuned=False):
+    """
+    Rename metric keys with consistent prefixes based on stage and tuning status.
+    
+    Args:
+        metrics_dict (dict): Original metric dictionary
+        stage (str): Optional stage prefix (e.g., 'val', 'test')
+        tuned (bool): Whether the metrics correspond to threshold-tuned scores
+    
+    Returns:
+        dict: Dictionary with standardized metric keys
+    """
+    if not metrics_dict:
+        return {}
+    
+    renamed = {}
+    for key, value in metrics_dict.items():
+        base_key = key.lower()
+        mapped_base = BASE_METRIC_KEYS.get(base_key)
+        if mapped_base:
+            key_parts = []
+            if stage:
+                key_parts.append(stage)
+            if tuned:
+                if base_key in THRESHOLD_BASE_METRICS:
+                    tuned_key = "_".join(key_parts + ['tuned', mapped_base])
+                    renamed[tuned_key] = value
+                else:
+                    tuned_key = "_".join(key_parts + ['notuning', mapped_base])
+                    renamed[tuned_key] = value
+            else:
+                base_key_name = "_".join(key_parts + [mapped_base]) if key_parts else mapped_base
+                renamed[base_key_name] = value
+        else:
+            renamed[key] = value
+    return renamed
+
+
+def add_notuning_metrics(metrics_dict, stage):
+    """
+    Ensure PR AUC and ROC AUC include *_tuned_notuning_* counterparts.
+    """
+    if not metrics_dict or not stage:
+        return metrics_dict
+    
+    for metric_name in ['roc_auc', 'pr_auc']:
+        base_key = f"{stage}_{metric_name}"
+        notuning_key = f"{stage}_notuning_{metric_name}"
+        if base_key in metrics_dict:
+            metrics_dict[notuning_key] = metrics_dict[base_key]
+    return metrics_dict
 
 def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
                          outer_test_subject, inner_validation_subject, hyperparams):
@@ -896,7 +984,7 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'test_class_distribution': results_dict.get('test_class_distribution', {})
     }
     
-    # Use test_scores for refit results
+    # Use test scores for refit results
     metric_scores = results_dict.get('test_scores', {})
     
     # Create result structure
@@ -1170,8 +1258,9 @@ def build_feature_mapping(selected_features, feature_names=None):
 
 
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
-                                    selected_features, hyperparams, train_info, val_info,
-                                    feature_names=None, trained_epochs=None):
+                                     selected_features, hyperparams, train_info, val_info,
+                                     feature_names=None, trained_epochs=None,
+                                     feature_selection_report=None):
     """
     Create a comprehensive results dictionary for storage.
     
@@ -1184,6 +1273,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         hyperparams: Hyperparameters used
         train_info: Training set information
         val_info: Validation set information
+        feature_selection_report: Optional step-wise status dictionary produced by FeatureSelector
         
     Returns:
         Dictionary with all results organized for storage
@@ -1216,6 +1306,13 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         feature_names=feature_names
     )
     
+    feature_selection_report = feature_selection_report or {}
+    feature_selection_steps = feature_selection_report.get('steps', {})
+    feature_selection_fallback = feature_selection_report.get('fallback_used', False)
+    feature_selection_initial = feature_selection_report.get('initial_features')
+    feature_selection_strategy = feature_selection_report.get('final_feature_strategy')
+    feature_selection_strategy_details = feature_selection_report.get('final_feature_strategy_details', {})
+    
     return {
         # Core evaluation metrics
         'metric_scores': fold_scores.copy() if fold_scores else {},
@@ -1230,6 +1327,11 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         'feature_selection': {
             'selected_feature_index_map': selected_feature_index_map,
             'n_selected_features': len(selected_feature_index_map),
+            'step_status': feature_selection_steps,
+            'fallback_used': feature_selection_fallback,
+            'initial_features': feature_selection_initial,
+            'final_strategy': feature_selection_strategy,
+            'final_strategy_details': feature_selection_strategy_details,
         },
         'selected_feature_names': selected_feature_names,
         'selected_feature_details': selected_feature_details,
@@ -1879,6 +1981,49 @@ class MonitoringMaskedRecall(tf.keras.metrics.Metric):
         self.tp.assign(0.0)
         self.fn.assign(0.0)
         
+class MonitoringMaskedBalancedAccuracy(tf.keras.metrics.Metric):
+    """Real-time masked balanced accuracy metric for TensorFlow/Keras models"""
+    def __init__(self, y_mask_value=2, name='monitoring_masked_balanced_accuracy', **kwargs):
+        super(MonitoringMaskedBalancedAccuracy, self).__init__(name=name, **kwargs)
+        self.y_mask_value = y_mask_value
+        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
+        self.tn = self.add_weight(name='tn', initializer='zeros', dtype=tf.float32)
+        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
+        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
+            y_pred = tf.squeeze(y_pred, axis=-1)
+        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
+        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
+        y_pred_rounded = tf.round(y_pred)
+
+        if sample_weight is not None:
+            sample_weight = tf.cast(sample_weight, tf.float32) * mask
+        else:
+            sample_weight = mask
+
+        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
+        tn = tf.reduce_sum((1 - y_true_masked) * (1 - y_pred_rounded) * sample_weight)
+        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * sample_weight)
+        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
+
+        self.tp.assign_add(tf.cast(tp, tf.float32))
+        self.tn.assign_add(tf.cast(tn, tf.float32))
+        self.fp.assign_add(tf.cast(fp, tf.float32))
+        self.fn.assign_add(tf.cast(fn, tf.float32))
+
+    def result(self):
+        tpr = tf.math.divide_no_nan(self.tp, self.tp + self.fn + K.epsilon())
+        tnr = tf.math.divide_no_nan(self.tn, self.tn + self.fp + K.epsilon())
+        return (tpr + tnr) / 2.0
+
+    def reset_states(self):
+        self.tp.assign(0.0)
+        self.tn.assign(0.0)
+        self.fp.assign(0.0)
+        self.fn.assign(0.0)
+        
 class MonitoringMaskedROC_AUC(tf.keras.metrics.AUC):
     """Real-time masked ROC AUC monitoring metric for TensorFlow/Keras models"""
     def __init__(self, y_mask_value=2, name='monitoring_masked_roc_auc', **kwargs):
@@ -2039,7 +2184,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                  variance_threshold=1e-8,
                  correlation_threshold=0.95,
                  x_mask_value=None,
-                 selection_method='composite'):
+                 selection_method=None):
         self.n_features = n_features
         self.variance_threshold = variance_threshold
         self.correlation_threshold = correlation_threshold
@@ -2050,6 +2195,67 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         self.selected_features_ = None
         self.feature_scores_ = None
         self.variance_selector_ = None
+        self.selection_report_ = None
+
+    def _init_selection_report(self, n_features):
+        """Initialize structured tracking for each feature-selection stage."""
+        return {
+            'initial_features': int(n_features),
+            'fallback_used': False,
+            'final_feature_strategy': None,
+            'final_feature_strategy_details': {},
+            'steps': {
+                'variance_filter': {'status': 'pending'},
+                'univariate_scoring': {'status': 'pending'},
+                'correlation_filter': {'status': 'pending'},
+                'final_selection': {'status': 'pending'},
+            }
+        }
+
+    def _update_step_report(self, step_name, status, **details):
+        """Update per-step status with sanitized detail values."""
+        if self.selection_report_ is None:
+            self.selection_report_ = self._init_selection_report(0)
+        step_entry = self.selection_report_.setdefault('steps', {}).setdefault(step_name, {})
+        step_entry['status'] = status
+        if details:
+            sanitized = {}
+            for key, value in details.items():
+                if isinstance(value, (np.integer, np.floating)):
+                    sanitized[key] = value.item()
+                elif isinstance(value, np.ndarray):
+                    sanitized[key] = value.tolist()
+                else:
+                    sanitized[key] = value
+            step_entry['details'] = sanitized
+
+    def _mark_fallback(self):
+        if self.selection_report_ is None:
+            self.selection_report_ = self._init_selection_report(0)
+        self.selection_report_['fallback_used'] = True
+
+    def _mark_pending_steps(self, status='skipped', reason=None):
+        if self.selection_report_ is None:
+            return
+        for step_name, step_data in self.selection_report_.get('steps', {}).items():
+            if step_data.get('status') == 'pending':
+                details = {'reason': reason} if reason else {}
+                self._update_step_report(step_name, status, **details)
+    
+    def _set_final_strategy(self, strategy_name, **details):
+        if self.selection_report_ is None:
+            self.selection_report_ = self._init_selection_report(0)
+        self.selection_report_['final_feature_strategy'] = strategy_name
+        if details:
+            sanitized = {}
+            for key, value in details.items():
+                if isinstance(value, (np.integer, np.floating)):
+                    sanitized[key] = value.item()
+                elif isinstance(value, np.ndarray):
+                    sanitized[key] = value.tolist()
+                else:
+                    sanitized[key] = value
+            self.selection_report_['final_feature_strategy_details'] = sanitized
         
     def _calculate_masked_variance(self, X):
         """Calculate variance ignoring masked values."""
@@ -2231,16 +2437,48 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         """Fit feature selector."""
         # Determine number of features (handle both 2D and 3D data)
         n_features = X.shape[-1]  # Last dimension is always features
+        self.selection_report_ = self._init_selection_report(n_features)
         
         try:
             # Step 1: Variance filtering
-            variances = self._calculate_masked_variance(X)
-            high_variance_mask = variances > self.variance_threshold
-            high_variance_indices = np.where(high_variance_mask)[0]
-            
-            if len(high_variance_indices) == 0:
-                logging.info(f"Warning: No features pass variance threshold {self.variance_threshold}, using all features")
-                high_variance_indices = np.arange(n_features)
+            variance_input = int(n_features)
+            try:
+                variances = self._calculate_masked_variance(X)
+                high_variance_mask = variances > self.variance_threshold
+                high_variance_indices = np.where(high_variance_mask)[0]
+                retained = int(len(high_variance_indices))
+                
+                if retained == 0:
+                    logging.info(f"Warning: No features pass variance threshold {self.variance_threshold}, using all features")
+                    high_variance_indices = np.arange(n_features)
+                    self._update_step_report(
+                        'variance_filter',
+                        'warning',
+                        input_features=variance_input,
+                        output_features=int(len(high_variance_indices)),
+                        removed=0,
+                        threshold=float(self.variance_threshold),
+                        note="No feature passed threshold; reverted to all features"
+                    )
+                else:
+                    removed = variance_input - retained
+                    self._update_step_report(
+                        'variance_filter',
+                        'success',
+                        input_features=variance_input,
+                        output_features=retained,
+                        removed=removed,
+                        threshold=float(self.variance_threshold)
+                    )
+            except Exception as variance_error:
+                self._update_step_report(
+                    'variance_filter',
+                    'failed',
+                    input_features=variance_input,
+                    output_features=0,
+                    error=str(variance_error)
+                )
+                raise
             
             # Step 2: Univariate feature scoring
             if len(X.shape) == 3:
@@ -2250,22 +2488,79 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                 
             self.feature_scores_ = np.zeros(n_features)
             
-            univariate_scores = self._calculate_univariate_scores(X_filtered, y)
+            univariate_input = int(len(high_variance_indices))
+            scoring_method = 'mutual_info_classif' if self.x_mask_value is not None else 'f_classif'
+            try:
+                univariate_scores = self._calculate_univariate_scores(X_filtered, y)
+                self._update_step_report(
+                    'univariate_scoring',
+                    'success',
+                    input_features=univariate_input,
+                    output_features=univariate_input,
+                    scoring_method=scoring_method
+                )
+            except Exception as univariate_error:
+                self._update_step_report(
+                    'univariate_scoring',
+                    'failed',
+                    input_features=univariate_input,
+                    output_features=0,
+                    scoring_method=scoring_method,
+                    error=str(univariate_error)
+                )
+                raise
             self.feature_scores_[high_variance_indices] = univariate_scores
             
             # Step 3: Select top features
             top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features * 2, len(high_variance_indices))]
             
             # Step 4: Remove correlated features (with error handling)
+            correlation_input = int(len(top_indices))
             try:
                 final_indices = self._remove_correlated_features(X, top_indices)
+                correlation_output = int(len(final_indices))
+                removed = max(correlation_input - correlation_output, 0)
+                self._update_step_report(
+                    'correlation_filter',
+                    'success',
+                    input_features=correlation_input,
+                    output_features=correlation_output,
+                    removed=int(removed),
+                    threshold=float(self.correlation_threshold)
+                )
             except Exception as e:
                 logging.info(f"Warning: Correlation filtering failed ({e}), using top features without correlation filtering")
                 final_indices = top_indices
+                self._mark_fallback()
+                self._update_step_report(
+                    'correlation_filter',
+                    'failed',
+                    input_features=correlation_input,
+                    output_features=correlation_input,
+                    error=str(e),
+                    action="Reverted to top-ranked features without correlation filtering"
+                )
             
             # Step 5: Final selection
+            final_input = int(len(final_indices))
             final_indices = final_indices[:self.n_features]  # Ensure we don't exceed n_features
             self.selected_features_ = sorted(final_indices)
+            selected_count = int(len(self.selected_features_))
+            removed = max(final_input - selected_count, 0)
+            self._update_step_report(
+                'final_selection',
+                'success',
+                input_features=final_input,
+                output_features=selected_count,
+                requested_n_features=int(self.n_features),
+                removed=removed
+            )
+            self._set_final_strategy(
+                'correlation_pruned_top_k',
+                requested_n_features=int(self.n_features),
+                available_features=final_input,
+                selected_features=selected_count
+            )
             
             logging.info(f"Feature selection: {len(self.selected_features_)} features selected from {n_features}")
             
@@ -2273,6 +2568,23 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             logging.info(f"Feature selection failed: {e}. Using first {min(self.n_features, n_features)} features")
             self.selected_features_ = list(range(min(self.n_features, n_features)))
             self.feature_scores_ = np.ones(n_features)  # Dummy scores
+            self._mark_fallback()
+            self._update_step_report(
+                'final_selection',
+                'fallback',
+                input_features=int(n_features),
+                output_features=int(len(self.selected_features_)),
+                requested_n_features=int(self.n_features),
+                error=str(e),
+                n_selected=int(len(self.selected_features_) if self.selected_features_ is not None else 0)
+            )
+            self._set_final_strategy(
+                'fallback_first_n',
+                requested_n_features=int(self.n_features),
+                selected_features=int(len(self.selected_features_)),
+                reason=str(e)
+            )
+            self._mark_pending_steps(status='skipped', reason='Exception triggered fallback selection')
             
         return self
     
@@ -2403,6 +2715,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                           MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
                           MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
                           MonitoringMaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
+                          MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='MASKED_balanced_accuracy'), 
                           MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
                           MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
                     ])
@@ -3753,6 +4066,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 try:
+                    selected_features = []
+                    selection_report = None
                     # Step 4: Create pre-padded inner training and validation data
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]     Inner train trials: {len(inner_train_idx)}, val trials: {len(inner_val_idx)}")
@@ -3820,7 +4135,20 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Step 7d: Evaluate on validation data using threshold optimization
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
                         y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
-                        
+                        default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
+                        base_confusion_components = None
+                        try:
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
+                            y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
+                            if y_val_pred_default.size == y_inner_val.size:
+                                y_val_pred_default = y_val_pred_default.reshape(y_inner_val.shape)
+                            base_confusion_components = LSTMClassifier.eval_masked_confusion_matrix_components(
+                                y_inner_val, y_val_pred_default, y_mask_val
+                            )
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute baseline confusion matrix components: {cm_error}")
+
                         # Capture validation predictions for aggregated threshold optimization
                         # This ensures threshold tuning is done on truly held-out data
                         inner_val_predictions.append(y_val_proba)
@@ -3843,19 +4171,24 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         )
                         
                         # Use threshold-optimized scores
-                        fold_scores = threshold_results['optimized_scores']
+                        optimized_scores = threshold_results.get('optimized_scores', {})
+                        fold_scores = standardize_metric_names(optimized_scores, stage='val', tuned=True)
                         if history_metrics:
                             fold_scores.update(history_metrics)
+                        if base_confusion_components is not None:
+                            fold_scores['val_confusion_matrix_components'] = base_confusion_components
+                        else:
+                            fold_scores['val_confusion_matrix_components'] = None
                         
                         # Store optimal thresholds for this fold
                         optimal_thresholds = threshold_results['optimal_thresholds']
                         
                         if verbose >= 2:
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
-                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('val_tuned_f1', 0.0):.4f}")
                         
                         # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('f1', 0.0)
+                        score = fold_scores.get('val_tuned_f1', 0.0)
 
                         # Store confusion matrix components at the F1-optimal threshold
                         try:
@@ -3870,7 +4203,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
                             cm_components = None
                         if cm_components is not None:
-                            fold_scores['confusion_matrix_components'] = cm_components
+                            fold_scores['val_tuned_confusion_matrix_components'] = cm_components
+                        else:
+                            fold_scores['val_tuned_confusion_matrix_components'] = None
+
+                        fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
                     else:
                         # For other models, flatten to 2D
@@ -3904,28 +4241,30 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         y_val_pred_threshold = (y_val_proba_pos > default_threshold).astype(int)
                         
                         # Compute standard sklearn metrics with default threshold (no masking needed for 2D baseline models)
-                        fold_scores = {}
-                        fold_scores['f1'] = f1_score(y_inner_val, y_val_pred_threshold, average='weighted')
-                        fold_scores['accuracy'] = accuracy_score(y_inner_val, y_val_pred_threshold)
-                        fold_scores['precision'] = precision_score(y_inner_val, y_val_pred_threshold, average='weighted')
-                        fold_scores['recall'] = recall_score(y_inner_val, y_val_pred_threshold, average='weighted')
-                        fold_scores['balanced_accuracy'] = balanced_accuracy_score(y_inner_val, y_val_pred_threshold)
+                        baseline_scores = {
+                            'f1': f1_score(y_inner_val, y_val_pred_threshold, average='weighted'),
+                            'accuracy': accuracy_score(y_inner_val, y_val_pred_threshold),
+                            'precision': precision_score(y_inner_val, y_val_pred_threshold, average='weighted', zero_division=0),
+                            'recall': recall_score(y_inner_val, y_val_pred_threshold, average='weighted'),
+                            'balanced_accuracy': balanced_accuracy_score(y_inner_val, y_val_pred_threshold)
+                        }
 
-                        # Store confusion matrix components for baseline models
+                        baseline_confusion_components = None
                         try:
                             y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                            cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_threshold, y_mask_val)
-                            fold_scores['confusion_matrix_components'] = cm_components
+                            baseline_confusion_components = LSTMClassifier.eval_masked_confusion_matrix_components(
+                                y_inner_val, y_val_pred_threshold, y_mask_val
+                            )
                         except Exception as cm_error:
                             logging.debug(f"[CV_SKLEARN]       Baseline confusion matrix components unavailable: {cm_error}")
                         
                         # Add AUC scores (threshold-independent)
                         try:
-                            fold_scores['roc_auc'] = roc_auc_score(y_inner_val, y_val_proba_pos, average='weighted')
-                            fold_scores['pr_auc'] = average_precision_score(y_inner_val, y_val_proba_pos, average='weighted')
+                            baseline_scores['roc_auc'] = roc_auc_score(y_inner_val, y_val_proba_pos, average='weighted')
+                            baseline_scores['pr_auc'] = average_precision_score(y_inner_val, y_val_proba_pos, average='weighted')
                         except:
-                            fold_scores['roc_auc'] = 0.5
-                            fold_scores['pr_auc'] = 0.0
+                            baseline_scores['roc_auc'] = 0.5
+                            baseline_scores['pr_auc'] = 0.0
                         
                         # Store default thresholds (all 0.5 for baseline models)
                         optimal_thresholds = {
@@ -3938,10 +4277,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                         if verbose >= 2:
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
-                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('f1', 0.0):.4f}")
+                            logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {baseline_scores.get('f1', 0.0):.4f}")
+                        
+                        base_scores = standardize_metric_names(baseline_scores, stage='val', tuned=False)
+                        tuned_scores = standardize_metric_names(baseline_scores, stage='val', tuned=True)
+                        fold_scores = base_scores
+                        fold_scores.update(tuned_scores)
+                        if baseline_confusion_components is not None:
+                            fold_scores['val_confusion_matrix_components'] = baseline_confusion_components
+                            fold_scores['val_tuned_confusion_matrix_components'] = baseline_confusion_components
+                        else:
+                            fold_scores['val_confusion_matrix_components'] = None
+                            fold_scores['val_tuned_confusion_matrix_components'] = None
+                        fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
                         # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('f1', 0.0)
+                        score = fold_scores.get('val_tuned_f1', 0.0)
                     
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
@@ -3955,10 +4306,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                 trained_epochs = len(last_history.get('loss', []))
                     inner_fold_details.append({'trained_epochs': trained_epochs})
                     
-                    # Store selected features from this inner fold
-                    if hasattr(inner_pipeline.named_steps['feature_selector'], 'selected_features_'):
-                        selected_features = inner_pipeline.named_steps['feature_selector'].selected_features_
-                        inner_selected_features.append(selected_features)
+                    # Store selected features and capture step status for this inner fold
+                    feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
+                    if feature_selector_step is not None:
+                        if hasattr(feature_selector_step, 'selected_features_'):
+                            selected_features = feature_selector_step.selected_features_
+                            inner_selected_features.append(selected_features)
+                        selection_report = getattr(feature_selector_step, 'selection_report_', None)
+                        if selection_report:
+                            failed_steps = [
+                                step for step, meta in selection_report.get('steps', {}).items()
+                                if isinstance(meta, dict) and meta.get('status') == 'failed'
+                            ]
+                            if failed_steps:
+                                logging.warning(format_warning_message(
+                                    f"[FEATURE_SELECTOR] Steps failed during inner fold {inner_fold + 1}: {', '.join(failed_steps)}"
+                                ))
                     
                     # === COMPREHENSIVE RESULT STORAGE FOR SKLEARN INNER FOLD ===
                     try:
@@ -3980,12 +4343,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             fold_scores=fold_scores,
                             optimal_thresholds=optimal_thresholds,
                             threshold_results=threshold_results,
-                            selected_features=selected_features if 'selected_features' in locals() else [],
+                            selected_features=selected_features,
                             hyperparams=params,
                             train_info=train_info,
                             val_info=val_info,
                             feature_names=feature_names,
-                            trained_epochs=trained_epochs
+                            trained_epochs=trained_epochs,
+                            feature_selection_report=selection_report
                         )
                         
                         # Save results immediately to prevent data loss
@@ -4010,7 +4374,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Enhanced logging with multiple metrics
                     if verbose >= 2:
                         metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in fold_scores.items()])
-                        logging.info(f"[CV_SKLEARN]     Scores: {metrics_str}, Features: {len(selected_features) if 'selected_features' in locals() else 'N/A'}")
+                        feature_count = len(selected_features) if selected_features else 0
+                        logging.info(f"[CV_SKLEARN]     Scores: {metrics_str}, Features: {feature_count if feature_count else 'N/A'}")
                     
                     # Memory cleanup for inner fold
                     if model_type == 'lstm':
@@ -4198,29 +4563,33 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'cv_score': float(avg_score),
                     'cv_std': float(np.std(inner_scores)) if len(inner_scores) > 1 else 0.0,
                 }
-                
-                metric_keys = [
+
+                allowed_metric_keys = {
                     'train_loss', 'val_loss',
                     'train_accuracy', 'val_accuracy',
                     'train_f1', 'val_f1',
+                    'train_precision', 'val_precision',
+                    'train_recall', 'val_recall',
+                    'train_balanced_accuracy', 'val_balanced_accuracy',
+                    'train_pr_auc', 'val_pr_auc',
                     'train_roc_auc', 'val_roc_auc'
-                ]
-                
-                for metric_key in metric_keys:
+                }
+                for metric_key in allowed_metric_keys:
                     value = aggregated_metrics.get(metric_key)
                     if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
                         trial_results[metric_key] = float(value)
                 
-                fallback_mapping = {
-                    'f1': 'val_f1',
-                    'accuracy': 'val_accuracy',
-                    'roc_auc': 'val_roc_auc',
-                }
-                for source_key, target_key in fallback_mapping.items():
-                    if target_key not in trial_results:
-                        value = aggregated_metrics.get(source_key)
-                        if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
-                            trial_results[target_key] = float(value)
+                tuned_metric_keys = [
+                    'val_tuned_accuracy',
+                    'val_tuned_precision',
+                    'val_tuned_recall',
+                    'val_tuned_balanced_accuracy',
+                    'val_tuned_f1',
+                ]
+                for metric_key in tuned_metric_keys:
+                    value = aggregated_metrics.get(metric_key)
+                    if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                        trial_results[metric_key] = float(value)
                 
                 session_id = f"outer{outer_fold + 1:02d}_combo{param_idx + 1:03d}"
                 hparam_logger.log_hyperparameter_trial(params, trial_results, session_id=session_id)
@@ -4292,6 +4661,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 inner_validation_subject=None
             )
             final_pipeline.set_params(**best_params)
+            final_feature_selection_report = None
+            final_feature_selection_steps = {}
+            final_feature_selection_fallback = False
+            final_feature_selection_strategy = None
+            final_feature_selection_strategy_details = {}
+            final_feature_selection_initial = None
             
             # Step 10: Use PRE-COMPUTED PADDING for final retraining (no additional padding needed)
             if verbose >= 1:
@@ -4301,10 +4676,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             # Train on full outer training set
             threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
             refit_trained_epochs = None
+            test_metrics = {}
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
                 preprocessing_steps = final_pipeline.steps[:-1]
                 lstm_classifier = final_pipeline.steps[-1][1]
-                
+
                 trained_epoch_candidates = [
                     fd.get('trained_epochs', 0) for fd in best_inner_fold_details
                     if isinstance(fd, dict) and fd.get('trained_epochs')
@@ -4331,15 +4707,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 X_test_final = X_outer_test
                 for step_name, transformer in preprocessing_steps:
                     X_test_final = transformer.transform(X_test_final)
-                
+
                 # Fit the LSTM classifier with fixed epoch schedule
                 lstm_classifier.fit(X_train_final, y_outer_train)
-                
+
                 # Use stable thresholds computed on aggregated validation data from inner CV
                 # This avoids optimism bias from refitting thresholds on training data
                 if verbose >= 1:
                     logging.info(f"[CV_SKLEARN] Using stable thresholds from inner CV aggregation")
-                
+
                 # Use the stable thresholds computed during inner CV
                 optimal_thresholds = best_aggregated_thresholds.copy()
                 
@@ -4355,11 +4731,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 if verbose >= 2:
                     stable_threshold_summary = ", ".join([f"{k}={v:.3f}" for k, v in optimal_thresholds.items()])
                     logging.info(f"[CV_SKLEARN] Using stable thresholds: {stable_threshold_summary}")
-                
+
                 # Apply stable thresholds to test predictions
-                test_metrics = {}
                 y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
-                
+
                 # Get positive class probabilities
                 if y_test_pred_proba.ndim > 2:
                     y_test_pred_proba = y_test_pred_proba.reshape(-1, y_test_pred_proba.shape[-1])
@@ -4370,6 +4745,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     y_test_proba_pos = y_test_pred_proba.ravel()
                 
                 # Apply masking to test data
+                default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
                 y_test_flat = y_outer_test.ravel()
                 y_test_proba_flat = y_test_proba_pos.ravel()
                 y_mask_val = mask_values.get('y_mask', -1)
@@ -4379,41 +4755,78 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     y_test_valid = y_test_flat[mask]
                     y_test_proba_valid = y_test_proba_flat[mask]
                     
+                    # Base metrics using default threshold
+                    try:
+                        y_test_pred_default = (y_test_proba_valid > default_threshold)
+                        from sklearn.metrics import (
+                            f1_score, accuracy_score, precision_score,
+                            recall_score, balanced_accuracy_score
+                        )
+                        test_metrics['test_f1'] = f1_score(y_test_valid, y_test_pred_default, pos_label=1)
+                        test_metrics['test_accuracy'] = accuracy_score(y_test_valid, y_test_pred_default)
+                        test_metrics['test_precision'] = precision_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
+                        test_metrics['test_recall'] = recall_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
+                        test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
+                    except Exception as metric_error:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}"))
+                        test_metrics.setdefault('test_f1', np.nan)
+                        test_metrics.setdefault('test_accuracy', np.nan)
+                        test_metrics.setdefault('test_precision', np.nan)
+                        test_metrics.setdefault('test_recall', np.nan)
+                        test_metrics.setdefault('test_balanced_accuracy', np.nan)
+                    
+                    # Base confusion matrix components
+                    try:
+                        y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
+                        if y_test_pred_default_full.size == y_outer_test.size:
+                            y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
+                        cm_base = LSTMClassifier.eval_masked_confusion_matrix_components(
+                            y_outer_test, y_test_pred_default_full, y_mask_val
+                        )
+                        test_metrics['test_confusion_matrix_components'] = cm_base
+                    except Exception as cm_error:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute base test confusion matrix: {cm_error}"))
+                        test_metrics['test_confusion_matrix_components'] = None
+                    
                     # Calculate threshold-optimized metrics
                     for metric_name in threshold_metrics:
                         threshold = optimal_thresholds.get(metric_name, 0.5)
                         y_test_pred_thresh = (y_test_proba_valid > threshold)
                         
+                        requires_threshold = metric_name in THRESHOLD_BASE_METRICS
+                        metric_prefix = 'test_tuned' if requires_threshold else 'test'
+                        metric_key = f"{metric_prefix}_{metric_name}"
                         try:
                             if metric_name == 'f1':
                                 from sklearn.metrics import f1_score
-                                test_metrics[metric_name] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
+                                test_metrics[metric_key] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
                             elif metric_name == 'accuracy':
                                 from sklearn.metrics import accuracy_score
-                                test_metrics[metric_name] = accuracy_score(y_test_valid, y_test_pred_thresh)
+                                test_metrics[metric_key] = accuracy_score(y_test_valid, y_test_pred_thresh)
                             elif metric_name == 'precision':
                                 from sklearn.metrics import precision_score
-                                test_metrics[metric_name] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                                test_metrics[metric_key] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
                             elif metric_name == 'recall':
                                 from sklearn.metrics import recall_score
-                                test_metrics[metric_name] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                                test_metrics[metric_key] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
                             elif metric_name == 'balanced_accuracy':
                                 from sklearn.metrics import balanced_accuracy_score
-                                test_metrics[metric_name] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
+                                test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
                         except Exception as e:
                             logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
-                            test_metrics[metric_name] = np.nan
+                            test_metrics[metric_key] = np.nan
                     
                     # Add AUC scores (threshold-independent)
                     try:
                         from sklearn.metrics import roc_auc_score, average_precision_score
-                        test_metrics['roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
-                        test_metrics['pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
+                        test_metrics['test_roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
+                        pr_auc = average_precision_score(y_test_valid, y_test_proba_valid)
+                        test_metrics['test_pr_auc'] = pr_auc
                     except Exception as e:
                         logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
-                        test_metrics['roc_auc'] = np.nan
-                        test_metrics['pr_auc'] = np.nan
-
+                        test_metrics['test_roc_auc'] = np.nan
+                        test_metrics['test_pr_auc'] = np.nan
+                
                 # Derive confusion matrix components at the F1-optimized threshold
                 try:
                     confusion_threshold = optimal_thresholds.get('f1', 0.5)
@@ -4421,14 +4834,17 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     if y_test_pred_conf.size == y_outer_test.size:
                         y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
                     cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
-                    test_metrics['confusion_matrix_components'] = cm_components
+                    test_metrics['test_tuned_confusion_matrix_components'] = cm_components
                 except Exception as e:
                     logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}"))
+                    test_metrics['test_tuned_confusion_matrix_components'] = None
+                
+                test_metrics = add_notuning_metrics(test_metrics, 'test')
                 
                 # Extract primary metrics for backward compatibility
-                test_f1 = test_metrics.get('f1', np.nan)
-                test_auc = test_metrics.get('roc_auc', np.nan)
-                test_accuracy = test_metrics.get('accuracy', np.nan)
+                test_f1 = test_metrics.get('test_tuned_f1', np.nan)
+                test_auc = test_metrics.get('test_roc_auc', np.nan)
+                test_accuracy = test_metrics.get('test_tuned_accuracy', np.nan)
                 
             else:
                 # For other models
@@ -4459,67 +4875,140 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 if verbose >= 2:
                     stable_threshold_summary = ", ".join([f"{k}={v:.3f}" for k, v in optimal_thresholds.items()])
                     logging.info(f"[CV_SKLEARN] Using stable thresholds: {stable_threshold_summary}")
-                
+
+                y_mask_val = mask_values.get('y_mask', -1)
+                default_threshold = 0.5
+
                 # Apply optimized thresholds to test predictions
                 test_metrics = {}
-                
+
                 # Get positive class probabilities
                 if y_test_pred_proba.ndim > 1 and y_test_pred_proba.shape[1] > 1:
                     y_test_proba_pos = y_test_pred_proba[:, 1]
                 else:
                     y_test_proba_pos = y_test_pred_proba.ravel()
-                y_mask_val = mask_values.get('y_mask', -1)
-                
-                # Calculate threshold-optimized metrics
-                for metric_name in threshold_metrics:
-                    threshold = optimal_thresholds.get(metric_name, 0.5)
-                    y_test_pred_thresh = (y_test_proba_pos > threshold)
-                    
-                    try:
-                        if metric_name == 'f1':
-                            from sklearn.metrics import f1_score
-                            test_metrics[metric_name] = f1_score(y_outer_test, y_test_pred_thresh, pos_label=1)
-                        elif metric_name == 'accuracy':
-                            from sklearn.metrics import accuracy_score
-                            test_metrics[metric_name] = accuracy_score(y_outer_test, y_test_pred_thresh)
-                        elif metric_name == 'precision':
-                            from sklearn.metrics import precision_score
-                            test_metrics[metric_name] = precision_score(y_outer_test, y_test_pred_thresh, pos_label=1, zero_division=0)
-                        elif metric_name == 'recall':
-                            from sklearn.metrics import recall_score
-                            test_metrics[metric_name] = recall_score(y_outer_test, y_test_pred_thresh, pos_label=1, zero_division=0)
-                        elif metric_name == 'balanced_accuracy':
-                            from sklearn.metrics import balanced_accuracy_score
-                            test_metrics[metric_name] = balanced_accuracy_score(y_outer_test, y_test_pred_thresh)
-                    except Exception as e:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
-                        test_metrics[metric_name] = np.nan
-                
-                # Add AUC scores (threshold-independent)
-                try:
-                    from sklearn.metrics import roc_auc_score, average_precision_score
-                    test_metrics['roc_auc'] = roc_auc_score(y_outer_test, y_test_proba_pos)
-                    test_metrics['pr_auc'] = average_precision_score(y_outer_test, y_test_proba_pos)
-                except Exception as e:
-                    logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
-                    test_metrics['roc_auc'] = np.nan
-                    test_metrics['pr_auc'] = np.nan
 
-                # Derive confusion matrix components at the F1-optimized threshold
-                try:
-                    confusion_threshold = optimal_thresholds.get('f1', 0.5)
-                    y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
-                    if y_test_pred_conf.size == y_outer_test.size:
-                        y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
-                    cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
-                    test_metrics['confusion_matrix_components'] = cm_components
-                except Exception as e:
-                    logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}"))
-                
+                y_test_flat = y_outer_test.ravel()
+                test_mask = y_test_flat != y_mask_val
+                if np.sum(test_mask) > 0:
+                    y_test_valid = y_test_flat[test_mask]
+                    y_test_proba_valid = y_test_proba_pos[test_mask]
+
+                    try:
+                        y_test_pred_default = (y_test_proba_valid > default_threshold)
+                        from sklearn.metrics import (
+                            f1_score, accuracy_score, precision_score,
+                            recall_score, balanced_accuracy_score
+                        )
+                        test_metrics['test_f1'] = f1_score(y_test_valid, y_test_pred_default, pos_label=1)
+                        test_metrics['test_accuracy'] = accuracy_score(y_test_valid, y_test_pred_default)
+                        test_metrics['test_precision'] = precision_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
+                        test_metrics['test_recall'] = recall_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
+                        test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
+                    except Exception as metric_error:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}"))
+                        test_metrics.setdefault('test_f1', np.nan)
+                        test_metrics.setdefault('test_accuracy', np.nan)
+                        test_metrics.setdefault('test_precision', np.nan)
+                        test_metrics.setdefault('test_recall', np.nan)
+                        test_metrics.setdefault('test_balanced_accuracy', np.nan)
+
+                    try:
+                        y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
+                        if y_test_pred_default_full.size == y_outer_test.size:
+                            y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
+                        cm_base = LSTMClassifier.eval_masked_confusion_matrix_components(
+                            y_outer_test, y_test_pred_default_full, y_mask_val
+                        )
+                        test_metrics['test_confusion_matrix_components'] = cm_base
+                    except Exception as cm_error:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute base test confusion matrix: {cm_error}"))
+                        test_metrics['test_confusion_matrix_components'] = None
+
+                    for metric_name in threshold_metrics:
+                        threshold = optimal_thresholds.get(metric_name, 0.5)
+                        y_test_pred_thresh = (y_test_proba_valid > threshold)
+
+                        requires_threshold = metric_name in THRESHOLD_BASE_METRICS
+                        metric_prefix = 'test_tuned' if requires_threshold else 'test'
+                        metric_key = f"{metric_prefix}_{metric_name}"
+                        try:
+                            if metric_name == 'f1':
+                                test_metrics[metric_key] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
+                            elif metric_name == 'accuracy':
+                                test_metrics[metric_key] = accuracy_score(y_test_valid, y_test_pred_thresh)
+                            elif metric_name == 'precision':
+                                test_metrics[metric_key] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'recall':
+                                test_metrics[metric_key] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                            elif metric_name == 'balanced_accuracy':
+                                test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
+                        except Exception as e:
+                            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
+                            test_metrics[metric_key] = np.nan
+
+                    try:
+                        from sklearn.metrics import roc_auc_score, average_precision_score
+                        test_metrics['test_roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
+                        test_metrics['test_pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
+                    except Exception as e:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
+                        test_metrics['test_roc_auc'] = np.nan
+                        test_metrics['test_pr_auc'] = np.nan
+                    try:
+                        confusion_threshold = optimal_thresholds.get('f1', 0.5)
+                        y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
+                        if y_test_pred_conf.size == y_outer_test.size:
+                            y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
+                        cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(
+                            y_outer_test, y_test_pred_conf, y_mask_val
+                        )
+                        test_metrics['test_tuned_confusion_matrix_components'] = cm_components
+                    except Exception as e:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute tuned test confusion matrix: {e}"))
+                        test_metrics['test_tuned_confusion_matrix_components'] = None
+                else:
+                    logging.warning(format_warning_message("[CV_SKLEARN] No valid test samples after masking"))
+                    for metric_name in ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']:
+                        test_metrics[f'test_{metric_name}'] = np.nan
+                        test_metrics[f'test_tuned_{metric_name}'] = np.nan
+                    test_metrics['test_roc_auc'] = np.nan
+                    test_metrics['test_pr_auc'] = np.nan
+                    test_metrics['test_confusion_matrix_components'] = None
+                    test_metrics['test_tuned_confusion_matrix_components'] = None
+                    y_test_proba_pos = np.asarray([])
+
+                test_metrics = add_notuning_metrics(test_metrics, 'test')
+
                 # Extract primary metrics for backward compatibility
-                test_f1 = test_metrics.get('f1', np.nan)
-                test_auc = test_metrics.get('roc_auc', np.nan)
-                test_accuracy = test_metrics.get('accuracy', np.nan)
+                test_f1 = test_metrics.get('test_tuned_f1', np.nan)
+                test_auc = test_metrics.get('test_roc_auc', np.nan)
+                test_accuracy = test_metrics.get('test_tuned_accuracy', np.nan)
+
+            # Update feature selection metadata from the fitted final pipeline
+            feature_selector_step = final_pipeline.named_steps.get('feature_selector')
+            if feature_selector_step is not None:
+                final_feature_selection_report = getattr(feature_selector_step, 'selection_report_', None)
+                if hasattr(feature_selector_step, 'selected_features_'):
+                    best_features = feature_selector_step.selected_features_
+                    best_feature_names, best_feature_details, best_feature_index_map = build_feature_mapping(
+                        best_features,
+                        feature_names
+                    )
+                if final_feature_selection_report:
+                    final_feature_selection_steps = final_feature_selection_report.get('steps', {})
+                    final_feature_selection_fallback = final_feature_selection_report.get('fallback_used', False)
+                    final_feature_selection_strategy = final_feature_selection_report.get('final_feature_strategy')
+                    final_feature_selection_strategy_details = final_feature_selection_report.get('final_feature_strategy_details', {})
+                    final_feature_selection_initial = final_feature_selection_report.get('initial_features')
+                    failed_steps = [
+                        step for step, meta in final_feature_selection_report.get('steps', {}).items()
+                        if isinstance(meta, dict) and meta.get('status') == 'failed'
+                    ]
+                    if failed_steps:
+                        logging.warning(format_warning_message(
+                            f"[FEATURE_SELECTOR] Steps failed during final retraining: {', '.join(failed_steps)}"
+                        ))
             
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
@@ -4545,6 +5034,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'feature_selection': {
                         'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                         'n_selected_features': len(best_feature_index_map),
+                        'step_status': final_feature_selection_steps,
+                        'fallback_used': final_feature_selection_fallback,
+                        'initial_features': final_feature_selection_initial,
+                        'final_strategy': final_feature_selection_strategy,
+                        'final_strategy_details': final_feature_selection_strategy_details,
                     },
                     'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
                     
@@ -4597,20 +5091,29 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'selected_feature_details': best_feature_details,
                 'selected_feature_index_map': best_feature_index_map,
                 'n_selected_features': len(best_features),
+                'feature_selection_step_status': final_feature_selection_steps,
+                'feature_selection_fallback_used': final_feature_selection_fallback,
+                'feature_selection_initial_features': final_feature_selection_initial,
+                'feature_selection_final_strategy': final_feature_selection_strategy,
+                'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
                 'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
-                'test_f1': test_f1,
-                'test_auc': test_auc,
-                'test_accuracy': test_accuracy
+                'test_tuned_f1': test_f1,
+                'test_roc_auc': test_auc,
+                'test_tuned_accuracy': test_accuracy
             }
             # Add all test metrics to results
-            result_dict.update({f'test_{k}': v for k, v in test_metrics.items()})
+            result_dict.update(test_metrics)
             outer_results.append(result_dict)
             
             all_best_params.append(best_params)
             
             if verbose >= 1:
-                test_metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items() 
-                                            if isinstance(v, (int, float, np.number)) and not np.isnan(float(v))])
+                metric_items = []
+                for k, v in test_metrics.items():
+                    if isinstance(v, (int, float, np.number)) and not np.isnan(float(v)):
+                        display_key = k.replace('test_tuned_', '').replace('test_', '')
+                        metric_items.append(f"{display_key}={v:.4f}")
+                test_metrics_str = ", ".join(metric_items)
                 logging.info(f"[CV_SKLEARN] Test metrics: {test_metrics_str}")
                 logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1} COMPLETED")
         
@@ -4630,9 +5133,18 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'selected_feature_details': best_feature_details,
                 'selected_feature_index_map': best_feature_index_map,
                 'n_selected_features': len(best_features),
-                'test_f1': 0.0,
-                'test_auc': 0.5,
-                'test_accuracy': 0.0
+                'feature_selection_step_status': final_feature_selection_steps,
+                'feature_selection_fallback_used': final_feature_selection_fallback,
+                'feature_selection_initial_features': final_feature_selection_initial,
+                'feature_selection_final_strategy': final_feature_selection_strategy,
+                'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
+                'test_tuned_f1': 0.0,
+                'test_tuned_accuracy': 0.0,
+                'test_tuned_precision': 0.0,
+                'test_tuned_recall': 0.0,
+                'test_tuned_balanced_accuracy': 0.0,
+                'test_roc_auc': 0.5,
+                'test_pr_auc': 0.0
             })
             
             all_best_params.append(best_params)
@@ -4645,13 +5157,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         if outer_results:
             # Calculate averages for primary metrics
-            avg_f1 = np.mean([r['test_f1'] for r in outer_results])
-            avg_auc = np.mean([r['test_auc'] for r in outer_results])
-            avg_accuracy = np.mean([r['test_accuracy'] for r in outer_results])
+            avg_f1 = np.mean([r['test_tuned_f1'] for r in outer_results])
+            avg_auc = np.mean([r['test_roc_auc'] for r in outer_results])
+            avg_accuracy = np.mean([r['test_tuned_accuracy'] for r in outer_results])
             balanced_accuracy_values = [
-                r['test_balanced_accuracy'] for r in outer_results
-                if isinstance(r.get('test_balanced_accuracy'), (int, float, np.number))
-                and not np.isnan(float(r.get('test_balanced_accuracy')))
+                r['test_tuned_balanced_accuracy'] for r in outer_results
+                if isinstance(r.get('test_tuned_balanced_accuracy'), (int, float, np.number))
+                and not np.isnan(float(r.get('test_tuned_balanced_accuracy')))
             ]
             avg_balanced_accuracy = np.mean(balanced_accuracy_values) if balanced_accuracy_values else None
             avg_features = np.mean([r['n_selected_features'] for r in outer_results])
@@ -4683,7 +5195,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 if len(values) > 0:
                     avg_value = np.mean(values)
                     std_value = np.std(values)
-                    metric_display = metric_name.replace('test_', '')
+                    metric_display = metric_name.replace('test_tuned_', '').replace('test_', '')
                     logging.info(f"[CV_SKLEARN] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
             
             logging.info(f"[CV_SKLEARN] Average selected features: {avg_features:.1f}")
@@ -5026,26 +5538,26 @@ def main(verbose: int = 2):
     results_df = pd.DataFrame(outer_results)
     
     # Calculate summary statistics
-    mean_f1 = results_df['test_f1'].mean()
-    std_f1 = results_df['test_f1'].std()
-    mean_auc = results_df['test_auc'].mean()
-    std_auc = results_df['test_auc'].std()
-    mean_accuracy = results_df['test_accuracy'].mean()
-    std_accuracy = results_df['test_accuracy'].std()
-    if 'test_balanced_accuracy' in results_df.columns:
-        mean_balanced_accuracy = results_df['test_balanced_accuracy'].mean()
-        std_balanced_accuracy = results_df['test_balanced_accuracy'].std()
+    mean_f1 = results_df['test_tuned_f1'].mean()
+    std_f1 = results_df['test_tuned_f1'].std()
+    mean_auc = results_df['test_roc_auc'].mean()
+    std_auc = results_df['test_roc_auc'].std()
+    mean_accuracy = results_df['test_tuned_accuracy'].mean()
+    std_accuracy = results_df['test_tuned_accuracy'].std()
+    if 'test_tuned_balanced_accuracy' in results_df.columns:
+        mean_balanced_accuracy = results_df['test_tuned_balanced_accuracy'].mean()
+        std_balanced_accuracy = results_df['test_tuned_balanced_accuracy'].std()
     else:
         mean_balanced_accuracy = None
         std_balanced_accuracy = None
     
     if verbose >= 1:
         logging.info(f"[MAIN] FINAL RESULTS:")
-        logging.info(f"[MAIN] F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
-        logging.info(f"[MAIN] AUC Score: {mean_auc:.4f} ± {std_auc:.4f}")
-        logging.info(f"[MAIN] Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+        logging.info(f"[MAIN] Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
+        logging.info(f"[MAIN] Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
+        logging.info(f"[MAIN] Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
         if mean_balanced_accuracy is not None:
-            logging.info(f"[MAIN] Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
+            logging.info(f"[MAIN] Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
     
     # Most common hyperparameters
     param_counts = {}
