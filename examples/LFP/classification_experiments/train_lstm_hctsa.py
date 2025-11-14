@@ -2207,6 +2207,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             'steps': {
                 'variance_filter': {'status': 'pending'},
                 'univariate_scoring': {'status': 'pending'},
+                'top_k_selection': {'status': 'pending'},
                 'correlation_filter': {'status': 'pending'},
                 'final_selection': {'status': 'pending'},
             }
@@ -2513,6 +2514,14 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             
             # Step 3: Select top features
             top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features * 2, len(high_variance_indices))]
+            self._update_step_report(
+                'top_k_selection',
+                'success',
+                input_features=univariate_input,
+                output_features=int(len(top_indices)),
+                selection_budget=int(self.n_features),
+                selection_multiplier=2
+            )
             
             # Step 4: Remove correlated features (with error handling)
             correlation_input = int(len(top_indices))
