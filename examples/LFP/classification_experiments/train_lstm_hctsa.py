@@ -129,6 +129,13 @@ try:
     tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
     
     logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
+    
+    # Disable Keras progress bars globally to keep console output clean
+    try:
+        tf.keras.utils.disable_interactive_logging()
+        logging.debug("TensorFlow interactive logging disabled (no progress bars).")
+    except AttributeError:
+        logging.debug("TensorFlow interactive logging disable not available in this version.")
             
 except Exception as e:
     logging.info(f"TensorFlow initialization warning: {e}")
@@ -181,7 +188,7 @@ from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
 # TensorBoard Hyperparameter Visualization
 # ===================================================================
 
-class HyperparameterTensorBoardLogger:
+class HyperparameterTuningLogger:
     """
     TensorBoard logger specifically designed for hyperparameter tuning visualization.
     Creates comprehensive visualizations of hyperparameter combinations and their performance.
@@ -384,7 +391,7 @@ class HyperparameterTensorBoardLogger:
 # Enhanced TensorBoard Callback with Hyperparameter Logging
 # ===================================================================
 
-class HyperparameterAwareTensorBoard(TensorBoard):
+class HyperparameterTensorBoardCallback(TensorBoard):
     """
     Enhanced TensorBoard callback that includes hyperparameter information in logs.
     """
@@ -425,6 +432,46 @@ class HyperparameterAwareTensorBoard(TensorBoard):
 # ==================================================================
 # Streamlined Training Progress Logger
 # ==================================================================
+PROGRESS_METRIC_ALIASES = {
+    # Explicit train metrics
+    'loss': 'train_loss',
+    'accuracy': 'train_accuracy',
+    'precision': 'train_precision',
+    'recall': 'train_recall',
+    'f1_score': 'train_f1',
+    'balanced_accuracy': 'train_balanced_accuracy',
+    'pr_auc': 'train_pr_auc',
+    'roc_auc': 'train_roc_auc',
+    
+    # Masked variants (train)
+    'MASKED_accuracy': 'train_accuracy',
+    'MASKED_f1_score': 'train_f1',
+    'MASKED_precision': 'train_precision',
+    'MASKED_recall': 'train_recall',
+    'MASKED_balanced_accuracy': 'train_balanced_accuracy',
+    'MASKED_pr_auc': 'train_pr_auc',
+    'MASKED_roc_auc': 'train_roc_auc',
+    
+    # Validation aliases
+    'val_loss': 'val_loss',
+    'val_accuracy': 'val_accuracy',
+    'val_precision': 'val_precision',
+    'val_recall': 'val_recall',
+    'val_f1_score': 'val_f1',
+    'val_balanced_accuracy': 'val_balanced_accuracy',
+    'val_pr_auc': 'val_pr_auc',
+    'val_roc_auc': 'val_roc_auc',
+    
+    # Masked validation aliases
+    'val_MASKED_accuracy': 'val_accuracy',
+    'val_MASKED_f1_score': 'val_f1',
+    'val_MASKED_precision': 'val_precision',
+    'val_MASKED_recall': 'val_recall',
+    'val_MASKED_balanced_accuracy': 'val_balanced_accuracy',
+    'val_MASKED_pr_auc': 'val_pr_auc',
+    'val_MASKED_roc_auc': 'val_roc_auc',
+}
+
 class ProgressTrainingLogger(Callback):
     """
     Streamlined training progress logger with fold information.
@@ -481,7 +528,8 @@ class ProgressTrainingLogger(Callback):
             
             # Core metrics display
             core_metrics = []
-            for metric in ['loss', 'MASKED_accuracy', 'val_loss', 'val_MASKED_accuracy']:
+            for metric in ['train_loss', 'train_balanced_accuracy', 'train_f1',
+                           'val_loss', 'val_balanced_accuracy', 'val_f1']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -498,7 +546,11 @@ class ProgressTrainingLogger(Callback):
         """Format all metrics in logs dictionary."""
         if not logs:
             return {}
-        return {key: self.safe_format(val) for key, val in logs.items()}
+        formatted = {}
+        for key, val in logs.items():
+            alias = PROGRESS_METRIC_ALIASES.get(key, key)
+            formatted[alias] = self.safe_format(val)
+        return formatted
 
     def safe_format(self, value, precision=4):
         """Safely format numeric values with error handling."""
@@ -641,7 +693,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
-                               patience=10, monitor='loss', save_models=False, progress_frequency=10,
+                               patience=10, monitor='loss', save_models=False, progress_frequency=1,
                                has_validation_data=False, is_refit=False):
     """
     Create callbacks for nested cross-validation training.
@@ -720,7 +772,7 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         ), 
         
         # Enhanced TensorBoard with hyperparameter visualization
-        HyperparameterAwareTensorBoard(
+        HyperparameterTensorBoardCallback(
             log_dir=paths['tensorboard_dir'],
             hyperparams=hyperparameters or {},
             histogram_freq=1,  # Enable histograms for better insights
@@ -755,9 +807,9 @@ def setup_hyperparameter_experiment(experiment_dir, param_grid):
         param_grid: Parameter grid for hyperparameter tuning
         
     Returns:
-        HyperparameterTensorBoardLogger instance
+        HyperparameterTuningLogger instance
     """
-    hparam_logger = HyperparameterTensorBoardLogger(experiment_dir, "lstm_hctsa_tuning")
+    hparam_logger = HyperparameterTuningLogger(experiment_dir, "lstm_hctsa_tuning")
     hparam_logger.setup_hparams_experiment(param_grid)
     return hparam_logger
 
@@ -859,6 +911,21 @@ def extract_final_history_metrics(history_dict):
     metric_mapping = {
         'loss': 'train_loss',
         'val_loss': 'val_loss',
+        'accuracy': 'train_accuracy',
+        'val_accuracy': 'val_accuracy',
+        'f1_score': 'train_f1',
+        'val_f1_score': 'val_f1',
+        'roc_auc': 'train_roc_auc',
+        'val_roc_auc': 'val_roc_auc',
+        'precision': 'train_precision',
+        'val_precision': 'val_precision',
+        'recall': 'train_recall',
+        'val_recall': 'val_recall',
+        'pr_auc': 'train_pr_auc',
+        'val_pr_auc': 'val_pr_auc',
+        'balanced_accuracy': 'train_balanced_accuracy',
+        'val_balanced_accuracy': 'val_balanced_accuracy',
+        # Backward-compatibility with older MASKED_* naming
         'MASKED_accuracy': 'train_accuracy',
         'val_MASKED_accuracy': 'val_accuracy',
         'MASKED_f1_score': 'train_f1',
@@ -2824,17 +2891,19 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else -1
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
-        model.compile(optimizer=optimizer,
-                      loss=self.weighted_masked_binary_crossentropy_loss,
-                      metrics=[
-                          MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
-                          MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
-                          MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
-                          MonitoringMaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
-                          MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='MASKED_balanced_accuracy'), 
-                          MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
-                          MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
-                    ])
+        model.compile(
+            optimizer=optimizer,
+            loss=self.weighted_masked_binary_crossentropy_loss,
+            metrics=[
+                MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='accuracy'),
+                MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='f1_score'),
+                MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='precision'),
+                MonitoringMaskedRecall(y_mask_value=y_mask_val, name='recall'),
+                MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='balanced_accuracy'),
+                MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='roc_auc'),
+                MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='pr_auc'),
+            ],
+        )
 
         logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
         logging.debug(f"[BUILD_MODEL] Model summary:")
@@ -2895,7 +2964,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         fit_kwargs = {
             'epochs': self.epochs,
             'batch_size': self.batch_size,
-            'verbose': 1,
+            'verbose': 0,  # rely on ProgressTrainingLogger for clean output
             'callbacks': final_callbacks,
             # 'class_weight': class_weights,  # NOTE: excluded for sequence-to-sequence tasks to prevent shape mismatch          
         }
@@ -2937,8 +3006,11 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
         
         # Try GPU training first, fallback to CPU if issues occur
-        if tf.config.list_physical_devices('GPU'):
-            logging.info("Training on GPU with validation data pipeline optimization")
+        available_gpus = tf.config.list_physical_devices('GPU')
+        using_gpu = bool(available_gpus)
+        logging.info(f"[LSTM FIT] Training device: {'GPU' if using_gpu else 'CPU'}")
+
+        if using_gpu:
             try:
                 with tf.device('/device:GPU:0'):
                     if 'validation_data' in fit_kwargs:
@@ -2959,7 +3031,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                     history = self.model.fit(X, y, **fit_kwargs).history
                     logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
         else:
-            logging.info("Training on CPU")
             with tf.device('/CPU:0'):
                 history = self.model.fit(X, y, **fit_kwargs).history
                 logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
@@ -3039,7 +3110,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             if self.input_shape[0] == 1:  # Was reshaped during training
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
-        y_pred = self.model.predict(X)
+        y_pred = self.model.predict(X, verbose=0)
         
         # Handle different output shapes
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
@@ -3066,7 +3137,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             if self.input_shape[0] == 1:  # Was reshaped during training
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
-        proba = self.model.predict(X)
+        proba = self.model.predict(X, verbose=0)
         
         # Handle different output shapes
         if len(proba.shape) == 3 and proba.shape[-1] == 1:
@@ -3706,7 +3777,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
         callbacks = create_nested_cv_callbacks(
             experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
-            patience=10, monitor='loss', save_models=False, progress_frequency=10,
+            patience=10, monitor='loss', save_models=False, progress_frequency=1,
             has_validation_data=has_validation_data, is_refit=(inner_fold is None))
             
         # Create the LSTM classifier with simplified configuration and subject tracking
@@ -5704,12 +5775,12 @@ def main(verbose: int = 2):
         std_balanced_accuracy = None
     
     if verbose >= 1:
-        logging.info(f"[MAIN] FINAL RESULTS:")
-        logging.info(f"[MAIN] Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
-        logging.info(f"[MAIN] Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
-        logging.info(f"[MAIN] Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+        logging.info(f"[MAIN] FINAL TEST RESULTS:")
+        logging.info(f"[MAIN] Test Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
+        logging.info(f"[MAIN] Test Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
+        logging.info(f"[MAIN] Test Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
         if mean_balanced_accuracy is not None:
-            logging.info(f"[MAIN] Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
+            logging.info(f"[MAIN] Test Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
     
     # Most common hyperparameters
     param_counts = {}
