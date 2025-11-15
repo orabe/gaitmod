@@ -21,28 +21,73 @@ from typing import List, Tuple, Dict, Any, Optional
 # ===================================================================
 
 class Colors:
-    """ANSI Color codes for terminal output"""
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m' 
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    RESET = '\033[0m'
+    """
+    Placeholder for backward compatibility with the previous colored logging.
+    ANSI codes are intentionally empty so console output remains conventional.
+    """
+    RED = ''
+    GREEN = ''
+    YELLOW = ''
+    BLUE = ''
+    MAGENTA = ''
+    CYAN = ''
+    BOLD = ''
+    UNDERLINE = ''
+    RESET = ''
 
 def red_text(text):
-    """Format text in red color"""
-    return f"{Colors.RED}{text}{Colors.RESET}"
+    """Return plain text to keep logs conventional."""
+    return text
 
 def format_error_message(message):
-    """Format error message in red color"""
-    return red_text(message)
+    """Return a plain error message (no ANSI codes)."""
+    return message
 
 def format_warning_message(message):
-    """Format warning message in red color"""
-    return red_text(message)
+    """Return a plain warning message (no ANSI codes)."""
+    return message
+
+
+# Prefixes used to identify detailed log lines that should stay off the console
+# unless the user explicitly asks for verbose output.
+DETAILED_CONSOLE_PREFIXES = (
+    "[BUILD_MODEL]",
+    "[BUILD_PIPELINE]",
+    "[CALLBACKS]",
+    "[CV_SKLEARN]",
+    "[FEATURE_SELECTOR]",
+    "[FILTER]",
+    "[FIT]",
+    "[GROUP]",
+    "[HISTORY]",
+    "[HPARAMS]",
+    "[LSTM FIT]",
+    "[MASK SEARCH]",
+    "[PAD]",
+    "[PARAM_GRID]",
+    "[PARSE]",
+    "[X_data_mask]",
+)
+
+
+class ConsoleVerbosityFilter(logging.Filter):
+    """Filter out noisy informational logs unless verbose mode is requested."""
+
+    def __init__(self, verbose_level: int):
+        super().__init__()
+        self.verbose_level = verbose_level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.verbose_level >= 3:
+            return True
+        if record.levelno >= logging.WARNING:
+            return True
+
+        message = (record.getMessage() or "").lstrip()
+        if not message:
+            return True
+
+        return not any(message.startswith(prefix) for prefix in DETAILED_CONSOLE_PREFIXES)
 
 import h5py
 import matplotlib.pyplot as plt
@@ -265,7 +310,9 @@ class HyperparameterTensorBoardLogger:
                 clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
                 
                 # Convert complex types to strings for logging
-                if isinstance(value, (list, dict)):
+                if value is None:
+                    clean_hparams[clean_key] = "None"
+                elif isinstance(value, (list, dict)):
                     clean_hparams[clean_key] = str(value)
                 elif isinstance(value, (np.ndarray,)):
                     clean_hparams[clean_key] = str(value.tolist())
@@ -4465,7 +4512,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     
                     # Enhanced logging with multiple metrics
                     if verbose >= 2:
-                        metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in fold_scores.items()])
+                        numeric_metrics = []
+                        for k, v in fold_scores.items():
+                            if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool):
+                                try:
+                                    val = float(v)
+                                except (TypeError, ValueError):
+                                    continue
+                                if np.isfinite(val):
+                                    numeric_metrics.append(f"{k}={val:.4f}")
+                        metrics_str = ", ".join(numeric_metrics) if numeric_metrics else "no numeric metrics"
                         feature_count = len(selected_features) if selected_features else 0
                         logging.info(f"[CV_SKLEARN]     Scores: {metrics_str}, Features: {feature_count if feature_count else 'N/A'}")
                     
@@ -5396,6 +5452,8 @@ def setup_logging(verbose_level=2, log_dir=None):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
+    if verbose_level < 3:
+        console_handler.addFilter(ConsoleVerbosityFilter(verbose_level))
     logging.root.addHandler(console_handler)
     
     log_file = None
@@ -5408,6 +5466,8 @@ def setup_logging(verbose_level=2, log_dir=None):
         file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
+        if verbose_level < 3:
+            file_handler.addFilter(ConsoleVerbosityFilter(verbose_level))
         logging.root.addHandler(file_handler)
         
         logging.info(f"Logging initialized. Log file: {log_file}")
@@ -5712,7 +5772,7 @@ def main(verbose: int = 2):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
-    parser.add_argument("--verbose", type=int, default=3, choices=[0, 1, 2, 3],
+    parser.add_argument("--verbose", type=int, default=2, choices=[0, 1, 2, 3],
                         help="Verbosity level (0=errors only, 1=warnings+, 2=info+, 3=debug+)")
     parser.add_argument("--n_jobs", type=int, default=None,
                         help="Number of parallel jobs (default: auto-detect)")
