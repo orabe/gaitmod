@@ -511,7 +511,8 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
             'variance_threshold': 'vt',
             'correlation_threshold': 'ct',
             'recurrent_activations': 'ra',
-            'activations': 'act'
+            'activations': 'act',
+            'selection_method': 'fs'
         }
         
         param_parts = []
@@ -550,7 +551,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         # Ensure the path isn't too long (limit to ~100 characters)
         if len(param_str) > 100:
             # Keep only the most important parameters
-            priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
+            priority_keys = ['fs', 'bs', 'ep', 'lr', 'do', 'hd', 'nf']
             priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
             param_str = "_".join(priority_parts[:6])  # Limit to 6 most important params
     else:
@@ -1172,7 +1173,8 @@ def _create_hyperparameter_string(hyperparams):
         'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
         'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
         'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
-        'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act'
+        'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act',
+        'selection_method': 'fs'
     }
     
     param_parts = []
@@ -1206,7 +1208,7 @@ def _create_hyperparameter_string(hyperparams):
     param_str = "_".join(param_parts)
     # Ensure the path isn't too long
     if len(param_str) > 100:
-        priority_keys = ['bs', 'ep', 'lr', 'do', 'hd', 'nf']
+        priority_keys = ['fs', 'bs', 'ep', 'lr', 'do', 'hd', 'nf']
         priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
         param_str = "_".join(priority_parts[:6])
     
@@ -1833,7 +1835,7 @@ def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
 
 class MonitoringMaskedAccuracy(tf.keras.metrics.Metric):
     """Real-time masked accuracy monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_accuracy', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_accuracy', **kwargs):
         super(MonitoringMaskedAccuracy, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.total = self.add_weight(name='total', initializer='zeros')
@@ -1868,7 +1870,7 @@ class MonitoringMaskedAccuracy(tf.keras.metrics.Metric):
         
 class MonitoringMaskedF1Score(tf.keras.metrics.Metric):
     """Real-time masked F1 score monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_f1_score', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_f1_score', **kwargs):
         super(MonitoringMaskedF1Score, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
@@ -1912,7 +1914,7 @@ class MonitoringMaskedF1Score(tf.keras.metrics.Metric):
             
 class MonitoringMaskedPrecision(tf.keras.metrics.Metric):
     """Real-time masked precision monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_precision', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_precision', **kwargs):
         super(MonitoringMaskedPrecision, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
@@ -1948,7 +1950,7 @@ class MonitoringMaskedPrecision(tf.keras.metrics.Metric):
         
 class MonitoringMaskedRecall(tf.keras.metrics.Metric):
     """Real-time masked recall monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_recall', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_recall', **kwargs):
         super(MonitoringMaskedRecall, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
@@ -1983,7 +1985,7 @@ class MonitoringMaskedRecall(tf.keras.metrics.Metric):
         
 class MonitoringMaskedBalancedAccuracy(tf.keras.metrics.Metric):
     """Real-time masked balanced accuracy metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_balanced_accuracy', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_balanced_accuracy', **kwargs):
         super(MonitoringMaskedBalancedAccuracy, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
         self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
@@ -2026,7 +2028,7 @@ class MonitoringMaskedBalancedAccuracy(tf.keras.metrics.Metric):
         
 class MonitoringMaskedROC_AUC(tf.keras.metrics.AUC):
     """Real-time masked ROC AUC monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=2, name='monitoring_masked_roc_auc', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_roc_auc', **kwargs):
         super(MonitoringMaskedROC_AUC, self).__init__(name=name, **kwargs)
         self.y_mask_value = y_mask_value
 
@@ -2051,7 +2053,7 @@ class MonitoringMaskedPR_AUC(tf.keras.metrics.AUC):
     Real-time masked Precision-Recall Area Under Curve monitoring metric for TensorFlow/Keras models.
     Computes PR AUC while ignoring masked/padded values in sequences.
     """
-    def __init__(self, y_mask_value=2, name='monitoring_masked_pr_auc', **kwargs):
+    def __init__(self, y_mask_value=-1, name='monitoring_masked_pr_auc', **kwargs):
         # Initialize AUC with curve='PR' for Precision-Recall curve
         super(MonitoringMaskedPR_AUC, self).__init__(name=name, curve='PR', **kwargs)
         self.y_mask_value = y_mask_value
@@ -2548,7 +2550,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             self.feature_scores_ = np.zeros(n_features)
             
             univariate_input = int(len(high_variance_indices))
-            scoring_method = 'mutual_info_classif' if self.x_mask_value is not None else 'f_classif'
+            scoring_method = self.selection_method or 'mutual_info'
             try:
                 univariate_scores = self._calculate_univariate_scores(X_filtered, y)
                 self._update_step_report(
@@ -2673,7 +2675,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  recurrent_activations=['sigmoid'],
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
-                 loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': 2}, 
+                 loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': -1}, 
                  use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None,
                  threshold_range=(0.1, 0.9), n_thresholds=81):
@@ -2772,7 +2774,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[BUILD_MODEL] Optimizer: {self.optimizer}(lr={self.lr})")
         
         # Configure compilation
-        y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else 2
+        y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else -1
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
         model.compile(optimizer=optimizer,
@@ -3075,7 +3077,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return np.ravel(proba_pos)
     
     @staticmethod
-    def eval_masked_accuracy_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_accuracy_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked accuracy score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3086,7 +3088,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
     
     @staticmethod
-    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked balanced accuracy score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3101,7 +3103,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
     
     @staticmethod
-    def eval_masked_f1_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_f1_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked F1 score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3115,7 +3117,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return f1_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
-    def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=2):
+    def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=-1):
         """Evaluation-time masked ROC AUC score for sklearn compatibility."""
         y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
         
@@ -3131,7 +3133,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
 
     @staticmethod
-    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=2):
+    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=-1):
         """
         Evaluation-time masked PR AUC score for sklearn compatibility.
         Calculate PR AUC with masking support for sequence data.
@@ -3169,7 +3171,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return average_precision_score(y_true_valid, y_pred_proba_valid)
         
     @staticmethod
-    def eval_masked_precision_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_precision_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked precision score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3183,7 +3185,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return precision_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
 
     @staticmethod
-    def eval_masked_recall_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_recall_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked recall score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3197,7 +3199,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return recall_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
     
     @staticmethod
-    def eval_masked_specificity_score(y_true, y_pred, y_mask_val=2):
+    def eval_masked_specificity_score(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked specificity score for sklearn compatibility."""
         # Flatten arrays for consistent processing
         y_true_flat = y_true.ravel()
@@ -3217,7 +3219,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return 0.0
 
     @staticmethod
-    def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=2):
+    def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=-1):
         """Evaluation-time masked confusion matrix for sklearn compatibility."""
         from sklearn.metrics import confusion_matrix
         # Flatten arrays for consistent processing
@@ -3258,7 +3260,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
     
     @staticmethod
-    def eval_masked_confusion_matrix_components(y_true, y_pred, y_mask_val=2):
+    def eval_masked_confusion_matrix_components(y_true, y_pred, y_mask_val=-1):
         """
         Evaluation-time masked confusion matrix components for sklearn compatibility.
         
@@ -3709,28 +3711,28 @@ def build_pipeline(model_type='lstm', mask_values=None,
             'accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_accuracy_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),
             'balanced_accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_balanced_accuracy_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),            
             'f1': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_f1_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),
             'roc_auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_roc_auc_score(
                     y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 needs_proba=True,
                 greater_is_better=True
@@ -3738,7 +3740,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
             'pr_auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_pr_auc_score(
                     y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 needs_proba=True,
                 greater_is_better=True
@@ -3746,21 +3748,21 @@ def build_pipeline(model_type='lstm', mask_values=None,
             'precision': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_precision_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),
             'recall': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_recall_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),         
             'specificity': make_scorer(
                 lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_specificity_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else 2
+                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                 ),
                 greater_is_better=True
             ),        
@@ -3800,8 +3802,8 @@ def get_default_param_grid(model_type, mask_values=None):
     
     param_grid = {}
     
-    # Feature selection parameters - HCTSA-specific feature engineering
-    param_grid.update({
+    # Feature selection and scaler parameters
+    base_feature_params = {
         'feature_selector__n_features': [
             # 50,     # Minimal: Top 50 most informative features (fast training, risk of underfitting)
             # 75,     # Moderate: Good balance between info retention and noise reduction
@@ -3815,21 +3817,28 @@ def get_default_param_grid(model_type, mask_values=None):
         ],
         'feature_selector__selection_method': [
             'mann_whitney',
-            'anova',
+            # 'anova',
             'mutual_info',
-            'cliffs_delta', 
-            'pr_auc',
-            'roc_auc',
+            # 'cliffs_delta', 
+            # 'pr_auc',
+            # 'roc_auc',
         ],
         'feature_selector__scoring_weights': [
-            # {'mann_whitney': 0.7, 'roc_auc': 0.3},
+            None,
+            # {'mann_whitney': 1.0, 'roc_auc': 0.5},
+            # {'roc_auc': 1.0},
         ],
         'feature_selector__correlation_threshold': [
             0.85,   # Strict: Aggressive redundancy removal (current: prevents multicollinearity issues)
             # 0.90,   # Moderate: Standard correlation filtering (balanced approach)
             # 0.95,   # Lenient: Minimal correlation filtering (keeps complementary info)
         ],
-    })
+    }
+    
+    if model_type == 'lstm':
+        base_feature_params['scaler__scaler_type'] = ['robust']
+    
+    param_grid.update(base_feature_params)
     
     # Scaling parameters - Critical for HCTSA's heterogeneous feature distributions
     if model_type == 'lstm':
@@ -3941,13 +3950,18 @@ def get_default_param_grid(model_type, mask_values=None):
         
         # Create complete parameter grid by combining architecture configs with other params
         from itertools import product
+        from sklearn.model_selection import ParameterGrid
+        feature_combos = list(ParameterGrid(base_feature_params))
         complete_params = []
-        for arch_config in architecture_configs:
-            for other_combo in product(*other_params.values()):
-                param_dict = arch_config.copy()
-                for key, value in zip(other_params.keys(), other_combo):
-                    param_dict[key] = value
-                complete_params.append(param_dict)
+        for fs_combo in feature_combos:
+            for arch_config in architecture_configs:
+                for other_combo in product(*other_params.values()):
+                    param_dict = {}
+                    param_dict.update(fs_combo)
+                    param_dict.update(arch_config)
+                    for key, value in zip(other_params.keys(), other_combo):
+                        param_dict[key] = value
+                    complete_params.append(param_dict)
         
         # Instead of using ParameterGrid, return the pre-computed combinations
         # This ensures proper length matching for LSTM architecture parameters
