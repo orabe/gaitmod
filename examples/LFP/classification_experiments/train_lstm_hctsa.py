@@ -2184,12 +2184,14 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                  variance_threshold=1e-8,
                  correlation_threshold=0.95,
                  x_mask_value=None,
-                 selection_method=None):
+                 selection_method='mutual_info',
+                 scoring_weights=None):
         self.n_features = n_features
         self.variance_threshold = variance_threshold
         self.correlation_threshold = correlation_threshold
         self.x_mask_value = x_mask_value
         self.selection_method = selection_method
+        self.scoring_weights = scoring_weights or {}
         
         # Store feature selection results
         self.selected_features_ = None
@@ -2283,6 +2285,78 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         
         return np.array(variances)
     
+    def _compute_metric_scores(self, X_flat, y_flat, metric):
+        if metric == 'anova':
+            try:
+                selector = SelectKBest(score_func=f_classif, k='all')
+                selector.fit(X_flat, y_flat)
+                return selector.scores_
+            except Exception:
+                return np.zeros(X_flat.shape[1])
+        if metric == 'mutual_info':
+            try:
+                return mutual_info_classif(X_flat, y_flat, random_state=42)
+            except Exception:
+                return np.zeros(X_flat.shape[1])
+        if metric == 'mann_whitney':
+            scores = np.zeros(X_flat.shape[1])
+            for i in range(X_flat.shape[1]):
+                g0 = X_flat[y_flat == 0, i]
+                g1 = X_flat[y_flat == 1, i]
+                mask0 = np.isfinite(g0)
+                mask1 = np.isfinite(g1)
+                if mask0.sum() < 2 or mask1.sum() < 2:
+                    continue
+                try:
+                    score, _ = stats.mannwhitneyu(g0[mask0], g1[mask1], alternative='two-sided')
+                    scores[i] = score
+                except Exception:
+                    scores[i] = 0.0
+            return scores
+        if metric == 'roc_auc':
+            scores = np.zeros(X_flat.shape[1])
+            for i in range(X_flat.shape[1]):
+                col = X_flat[:, i]
+                mask = np.isfinite(col)
+                if len(np.unique(y_flat[mask])) < 2:
+                    continue
+                try:
+                    scores[i] = roc_auc_score(y_flat[mask], col[mask])
+                except Exception:
+                    scores[i] = 0.0
+            return scores
+        if metric == 'pr_auc':
+            scores = np.zeros(X_flat.shape[1])
+            for i in range(X_flat.shape[1]):
+                col = X_flat[:, i]
+                mask = np.isfinite(col)
+                if len(np.unique(y_flat[mask])) < 2:
+                    continue
+                try:
+                    scores[i] = average_precision_score(y_flat[mask], col[mask])
+                except Exception:
+                    scores[i] = 0.0
+            return scores
+        if metric == 'cliffs_delta':
+            scores = np.zeros(X_flat.shape[1])
+            for i in range(X_flat.shape[1]):
+                g0 = X_flat[y_flat == 0, i]
+                g1 = X_flat[y_flat == 1, i]
+                mask0 = np.isfinite(g0)
+                mask1 = np.isfinite(g1)
+                g0 = g0[mask0]
+                g1 = g1[mask1]
+                if g0.size < 2 or g1.size < 2:
+                    continue
+                try:
+                    res = stats.mannwhitneyu(g1, g0, alternative='greater', method='auto')
+                    delta = 2 * res.statistic / (len(g1) * len(g0)) - 1
+                    scores[i] = delta
+                except Exception:
+                    scores[i] = 0.0
+            return scores
+        return np.zeros(X_flat.shape[1])
+
     def _calculate_univariate_scores(self, X, y):
         """Calculate univariate feature scores."""
         # Handle both 2D and 3D data
@@ -2303,40 +2377,24 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             y_flat = y
             n_features = X.shape[1]
 
-        if self.x_mask_value is not None:
-            # For masked data, calculate scores per feature
-            scores = []
-            for i in range(n_features):
-                feature_values = X_flat[:, i]
-                valid_mask = feature_values != self.x_mask_value
-                
-                # Also filter y using the same mask
-                y_valid = y_flat[valid_mask]
-                
-                if np.sum(valid_mask) > 10 and len(np.unique(y_valid)) > 1:  # Minimum samples and binary classes
-                    try:
-                        # Use mutual information for robustness
-                        score = mutual_info_classif(
-                            feature_values[valid_mask].reshape(-1, 1),
-                            y_valid,
-                            random_state=42
-                        )[0]
-                        scores.append(score)
-                    except:
-                        scores.append(0.0)
-                else:
-                    scores.append(0.0)
-            
-            return np.array(scores)
-        else:
-            # Standard univariate selection
-            try:
-                selector = SelectKBest(score_func=f_classif, k='all')
-                selector.fit(X_flat, y_flat)
-                return selector.scores_
-            except:
-                # Fallback to zeros if scoring fails
-                return np.zeros(n_features)
+        metrics = self.scoring_weights or {self.selection_method or 'mutual_info': 1.0}
+        combined_scores = np.zeros(n_features)
+        total_weight = 0.0
+
+        for metric_name, weight in metrics.items():
+            metric_scores = self._compute_metric_scores(X_flat, y_flat, metric_name)
+            if metric_scores is None:
+                continue
+            metric_scores = np.nan_to_num(metric_scores, nan=0.0, posinf=0.0, neginf=0.0)
+            if np.all(metric_scores == 0):
+                continue
+            metric_scores = (metric_scores - np.min(metric_scores)) / (np.ptp(metric_scores) + 1e-12)
+            combined_scores += weight * metric_scores
+            total_weight += weight
+
+        if total_weight == 0:
+            return np.zeros(n_features)
+        return combined_scores / total_weight
     
     def _remove_correlated_features(self, X, selected_indices):
         """Remove highly correlated features."""
@@ -3755,11 +3813,22 @@ def get_default_param_grid(model_type, mask_values=None):
             0.01,   # Moderate: Balanced noise filtering (current: good for HCTSA feature scales)
             # 0.1,    # Lenient: Keeps more features with low variance (risk of noise inclusion)
         ],
+        'feature_selector__selection_method': [
+            'mann_whitney',
+            'anova',
+            'mutual_info',
+            'cliffs_delta', 
+            'pr_auc',
+            'roc_auc',
+        ],
+        'feature_selector__scoring_weights': [
+            # {'mann_whitney': 0.7, 'roc_auc': 0.3},
+        ],
         'feature_selector__correlation_threshold': [
             0.85,   # Strict: Aggressive redundancy removal (current: prevents multicollinearity issues)
             # 0.90,   # Moderate: Standard correlation filtering (balanced approach)
             # 0.95,   # Lenient: Minimal correlation filtering (keeps complementary info)
-        ]
+        ],
     })
     
     # Scaling parameters - Critical for HCTSA's heterogeneous feature distributions
