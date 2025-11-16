@@ -21,28 +21,73 @@ from typing import List, Tuple, Dict, Any, Optional
 # ===================================================================
 
 class Colors:
-    """ANSI Color codes for terminal output"""
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m' 
-    BLUE = '\033[94m'
-    MAGENTA = '\033[95m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-    RESET = '\033[0m'
+    """
+    Placeholder for backward compatibility with the previous colored logging.
+    ANSI codes are intentionally empty so console output remains conventional.
+    """
+    RED = ''
+    GREEN = ''
+    YELLOW = ''
+    BLUE = ''
+    MAGENTA = ''
+    CYAN = ''
+    BOLD = ''
+    UNDERLINE = ''
+    RESET = ''
 
 def red_text(text):
-    """Format text in red color"""
-    return f"{Colors.RED}{text}{Colors.RESET}"
+    """Return plain text to keep logs conventional."""
+    return text
 
 def format_error_message(message):
-    """Format error message in red color"""
-    return red_text(message)
+    """Return a plain error message (no ANSI codes)."""
+    return message
 
 def format_warning_message(message):
-    """Format warning message in red color"""
-    return red_text(message)
+    """Return a plain warning message (no ANSI codes)."""
+    return message
+
+
+# Prefixes used to identify detailed log lines that should stay off the console
+# unless the user explicitly asks for verbose output.
+DETAILED_CONSOLE_PREFIXES = (
+    "[BUILD_MODEL]",
+    "[BUILD_PIPELINE]",
+    "[CALLBACKS]",
+    "[CV_SKLEARN]",
+    "[FEATURE_SELECTOR]",
+    "[FILTER]",
+    "[FIT]",
+    "[GROUP]",
+    "[HISTORY]",
+    "[HPARAMS]",
+    "[LSTM FIT]",
+    "[MASK SEARCH]",
+    "[PAD]",
+    "[PARAM_GRID]",
+    "[PARSE]",
+    "[X_data_mask]",
+)
+
+
+class ConsoleVerbosityFilter(logging.Filter):
+    """Filter out noisy informational logs unless verbose mode is requested."""
+
+    def __init__(self, verbose_level: int):
+        super().__init__()
+        self.verbose_level = verbose_level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.verbose_level >= 3:
+            return True
+        if record.levelno >= logging.WARNING:
+            return True
+
+        message = (record.getMessage() or "").lstrip()
+        if not message:
+            return True
+
+        return not any(message.startswith(prefix) for prefix in DETAILED_CONSOLE_PREFIXES)
 
 import h5py
 import matplotlib.pyplot as plt
@@ -84,6 +129,13 @@ try:
     tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
     
     logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
+    
+    # Disable Keras progress bars globally to keep console output clean
+    try:
+        tf.keras.utils.disable_interactive_logging()
+        logging.debug("TensorFlow interactive logging disabled (no progress bars).")
+    except AttributeError:
+        logging.debug("TensorFlow interactive logging disable not available in this version.")
             
 except Exception as e:
     logging.info(f"TensorFlow initialization warning: {e}")
@@ -136,7 +188,7 @@ from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
 # TensorBoard Hyperparameter Visualization
 # ===================================================================
 
-class HyperparameterTensorBoardLogger:
+class HyperparameterTuningLogger:
     """
     TensorBoard logger specifically designed for hyperparameter tuning visualization.
     Creates comprehensive visualizations of hyperparameter combinations and their performance.
@@ -265,7 +317,9 @@ class HyperparameterTensorBoardLogger:
                 clean_key = key.replace('classifier__', '').replace('feature_selector__', '').replace('scaler__', '')
                 
                 # Convert complex types to strings for logging
-                if isinstance(value, (list, dict)):
+                if value is None:
+                    clean_hparams[clean_key] = "None"
+                elif isinstance(value, (list, dict)):
                     clean_hparams[clean_key] = str(value)
                 elif isinstance(value, (np.ndarray,)):
                     clean_hparams[clean_key] = str(value.tolist())
@@ -337,7 +391,7 @@ class HyperparameterTensorBoardLogger:
 # Enhanced TensorBoard Callback with Hyperparameter Logging
 # ===================================================================
 
-class HyperparameterAwareTensorBoard(TensorBoard):
+class HyperparameterTensorBoardCallback(TensorBoard):
     """
     Enhanced TensorBoard callback that includes hyperparameter information in logs.
     """
@@ -378,6 +432,46 @@ class HyperparameterAwareTensorBoard(TensorBoard):
 # ==================================================================
 # Streamlined Training Progress Logger
 # ==================================================================
+PROGRESS_METRIC_ALIASES = {
+    # Explicit train metrics
+    'loss': 'train_loss',
+    'accuracy': 'train_accuracy',
+    'precision': 'train_precision',
+    'recall': 'train_recall',
+    'f1_score': 'train_f1',
+    'balanced_accuracy': 'train_balanced_accuracy',
+    'pr_auc': 'train_pr_auc',
+    'roc_auc': 'train_roc_auc',
+    
+    # Masked variants (train)
+    'MASKED_accuracy': 'train_accuracy',
+    'MASKED_f1_score': 'train_f1',
+    'MASKED_precision': 'train_precision',
+    'MASKED_recall': 'train_recall',
+    'MASKED_balanced_accuracy': 'train_balanced_accuracy',
+    'MASKED_pr_auc': 'train_pr_auc',
+    'MASKED_roc_auc': 'train_roc_auc',
+    
+    # Validation aliases
+    'val_loss': 'val_loss',
+    'val_accuracy': 'val_accuracy',
+    'val_precision': 'val_precision',
+    'val_recall': 'val_recall',
+    'val_f1_score': 'val_f1',
+    'val_balanced_accuracy': 'val_balanced_accuracy',
+    'val_pr_auc': 'val_pr_auc',
+    'val_roc_auc': 'val_roc_auc',
+    
+    # Masked validation aliases
+    'val_MASKED_accuracy': 'val_accuracy',
+    'val_MASKED_f1_score': 'val_f1',
+    'val_MASKED_precision': 'val_precision',
+    'val_MASKED_recall': 'val_recall',
+    'val_MASKED_balanced_accuracy': 'val_balanced_accuracy',
+    'val_MASKED_pr_auc': 'val_pr_auc',
+    'val_MASKED_roc_auc': 'val_roc_auc',
+}
+
 class ProgressTrainingLogger(Callback):
     """
     Streamlined training progress logger with fold information.
@@ -434,7 +528,8 @@ class ProgressTrainingLogger(Callback):
             
             # Core metrics display
             core_metrics = []
-            for metric in ['loss', 'MASKED_accuracy', 'val_loss', 'val_MASKED_accuracy']:
+            for metric in ['train_loss', 'train_balanced_accuracy', 'train_f1',
+                           'val_loss', 'val_balanced_accuracy', 'val_f1']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -451,7 +546,11 @@ class ProgressTrainingLogger(Callback):
         """Format all metrics in logs dictionary."""
         if not logs:
             return {}
-        return {key: self.safe_format(val) for key, val in logs.items()}
+        formatted = {}
+        for key, val in logs.items():
+            alias = PROGRESS_METRIC_ALIASES.get(key, key)
+            formatted[alias] = self.safe_format(val)
+        return formatted
 
     def safe_format(self, value, precision=4):
         """Safely format numeric values with error handling."""
@@ -594,7 +693,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
-                               patience=10, monitor='loss', save_models=False, progress_frequency=10,
+                               patience=10, monitor='loss', save_models=False, progress_frequency=1,
                                has_validation_data=False, is_refit=False):
     """
     Create callbacks for nested cross-validation training.
@@ -673,7 +772,7 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         ), 
         
         # Enhanced TensorBoard with hyperparameter visualization
-        HyperparameterAwareTensorBoard(
+        HyperparameterTensorBoardCallback(
             log_dir=paths['tensorboard_dir'],
             hyperparams=hyperparameters or {},
             histogram_freq=1,  # Enable histograms for better insights
@@ -708,9 +807,9 @@ def setup_hyperparameter_experiment(experiment_dir, param_grid):
         param_grid: Parameter grid for hyperparameter tuning
         
     Returns:
-        HyperparameterTensorBoardLogger instance
+        HyperparameterTuningLogger instance
     """
-    hparam_logger = HyperparameterTensorBoardLogger(experiment_dir, "lstm_hctsa_tuning")
+    hparam_logger = HyperparameterTuningLogger(experiment_dir, "lstm_hctsa_tuning")
     hparam_logger.setup_hparams_experiment(param_grid)
     return hparam_logger
 
@@ -812,6 +911,21 @@ def extract_final_history_metrics(history_dict):
     metric_mapping = {
         'loss': 'train_loss',
         'val_loss': 'val_loss',
+        'accuracy': 'train_accuracy',
+        'val_accuracy': 'val_accuracy',
+        'f1_score': 'train_f1',
+        'val_f1_score': 'val_f1',
+        'roc_auc': 'train_roc_auc',
+        'val_roc_auc': 'val_roc_auc',
+        'precision': 'train_precision',
+        'val_precision': 'val_precision',
+        'recall': 'train_recall',
+        'val_recall': 'val_recall',
+        'pr_auc': 'train_pr_auc',
+        'val_pr_auc': 'val_pr_auc',
+        'balanced_accuracy': 'train_balanced_accuracy',
+        'val_balanced_accuracy': 'val_balanced_accuracy',
+        # Backward-compatibility with older MASKED_* naming
         'MASKED_accuracy': 'train_accuracy',
         'val_MASKED_accuracy': 'val_accuracy',
         'MASKED_f1_score': 'train_f1',
@@ -2777,17 +2891,19 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else -1
         logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
         
-        model.compile(optimizer=optimizer,
-                      loss=self.weighted_masked_binary_crossentropy_loss,
-                      metrics=[
-                          MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='MASKED_accuracy'), 
-                          MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='MASKED_f1_score'), 
-                          MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='MASKED_precision'), 
-                          MonitoringMaskedRecall(y_mask_value=y_mask_val, name='MASKED_recall'), 
-                          MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='MASKED_balanced_accuracy'), 
-                          MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='MASKED_roc_auc'),
-                          MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='MASKED_pr_auc')
-                    ])
+        model.compile(
+            optimizer=optimizer,
+            loss=self.weighted_masked_binary_crossentropy_loss,
+            metrics=[
+                MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='accuracy'),
+                MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='f1_score'),
+                MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='precision'),
+                MonitoringMaskedRecall(y_mask_value=y_mask_val, name='recall'),
+                MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='balanced_accuracy'),
+                MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='roc_auc'),
+                MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='pr_auc'),
+            ],
+        )
 
         logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
         logging.debug(f"[BUILD_MODEL] Model summary:")
@@ -2848,7 +2964,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         fit_kwargs = {
             'epochs': self.epochs,
             'batch_size': self.batch_size,
-            'verbose': 1,
+            'verbose': 0,  # rely on ProgressTrainingLogger for clean output
             'callbacks': final_callbacks,
             # 'class_weight': class_weights,  # NOTE: excluded for sequence-to-sequence tasks to prevent shape mismatch          
         }
@@ -2890,8 +3006,11 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
         
         # Try GPU training first, fallback to CPU if issues occur
-        if tf.config.list_physical_devices('GPU'):
-            logging.info("Training on GPU with validation data pipeline optimization")
+        available_gpus = tf.config.list_physical_devices('GPU')
+        using_gpu = bool(available_gpus)
+        logging.info(f"[LSTM FIT] Training device: {'GPU' if using_gpu else 'CPU'}")
+
+        if using_gpu:
             try:
                 with tf.device('/device:GPU:0'):
                     if 'validation_data' in fit_kwargs:
@@ -2912,7 +3031,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                     history = self.model.fit(X, y, **fit_kwargs).history
                     logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
         else:
-            logging.info("Training on CPU")
             with tf.device('/CPU:0'):
                 history = self.model.fit(X, y, **fit_kwargs).history
                 logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
@@ -2992,7 +3110,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             if self.input_shape[0] == 1:  # Was reshaped during training
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
-        y_pred = self.model.predict(X)
+        y_pred = self.model.predict(X, verbose=0)
         
         # Handle different output shapes
         if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
@@ -3019,7 +3137,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             if self.input_shape[0] == 1:  # Was reshaped during training
                 X = X.reshape(X.shape[0], 1, X.shape[1])
         
-        proba = self.model.predict(X)
+        proba = self.model.predict(X, verbose=0)
         
         # Handle different output shapes
         if len(proba.shape) == 3 and proba.shape[-1] == 1:
@@ -3659,7 +3777,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
         callbacks = create_nested_cv_callbacks(
             experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
-            patience=10, monitor='loss', save_models=False, progress_frequency=10,
+            patience=10, monitor='loss', save_models=False, progress_frequency=1,
             has_validation_data=has_validation_data, is_refit=(inner_fold is None))
             
         # Create the LSTM classifier with simplified configuration and subject tracking
@@ -3929,7 +4047,7 @@ def get_default_param_grid(model_type, mask_values=None):
                 15,     # Moderate patience: Good balance for biomedical data
             ],
             'classifier__epochs': [
-                3,    # Sufficient for small datasets with early stopping
+                100,    # Sufficient for small datasets with early stopping
             ],
             
             # Batch Size - Small batches for better generalization on small datasets
@@ -4465,7 +4583,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     
                     # Enhanced logging with multiple metrics
                     if verbose >= 2:
-                        metrics_str = ", ".join([f"{k}={v:.4f}" for k, v in fold_scores.items()])
+                        numeric_metrics = []
+                        for k, v in fold_scores.items():
+                            if isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool):
+                                try:
+                                    val = float(v)
+                                except (TypeError, ValueError):
+                                    continue
+                                if np.isfinite(val):
+                                    numeric_metrics.append(f"{k}={val:.4f}")
+                        metrics_str = ", ".join(numeric_metrics) if numeric_metrics else "no numeric metrics"
                         feature_count = len(selected_features) if selected_features else 0
                         logging.info(f"[CV_SKLEARN]     Scores: {metrics_str}, Features: {feature_count if feature_count else 'N/A'}")
                     
@@ -5396,6 +5523,8 @@ def setup_logging(verbose_level=2, log_dir=None):
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
+    if verbose_level < 3:
+        console_handler.addFilter(ConsoleVerbosityFilter(verbose_level))
     logging.root.addHandler(console_handler)
     
     log_file = None
@@ -5408,6 +5537,8 @@ def setup_logging(verbose_level=2, log_dir=None):
         file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
+        if verbose_level < 3:
+            file_handler.addFilter(ConsoleVerbosityFilter(verbose_level))
         logging.root.addHandler(file_handler)
         
         logging.info(f"Logging initialized. Log file: {log_file}")
@@ -5424,7 +5555,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     return log_file
 
 
-def main(verbose: int = 2):
+def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_all: bool = False):
     
     # Initialize TensorFlow
     initialize_tf()
@@ -5443,8 +5574,16 @@ def main(verbose: int = 2):
     logging.info(f"Verbose level: {verbose}")
     logging.info(f"Experiment directory: {experiment_dir}")
     
-    # Auto-detect optimal number of parallel jobs
-    n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
+    # Determine number of parallel jobs
+    if force_n_jobs_all:
+        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
+        n_jobs = -1
+    elif n_jobs_override is not None:
+        logging.info(f"Using manual n_jobs={n_jobs_override}")
+        n_jobs = n_jobs_override
+    else:
+        n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
+
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
@@ -5460,7 +5599,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
+    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
     channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
@@ -5644,12 +5783,12 @@ def main(verbose: int = 2):
         std_balanced_accuracy = None
     
     if verbose >= 1:
-        logging.info(f"[MAIN] FINAL RESULTS:")
-        logging.info(f"[MAIN] Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
-        logging.info(f"[MAIN] Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
-        logging.info(f"[MAIN] Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+        logging.info(f"[MAIN] FINAL TEST RESULTS:")
+        logging.info(f"[MAIN] Test Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
+        logging.info(f"[MAIN] Test Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
+        logging.info(f"[MAIN] Test Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
         if mean_balanced_accuracy is not None:
-            logging.info(f"[MAIN] Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
+            logging.info(f"[MAIN] Test Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
     
     # Most common hyperparameters
     param_counts = {}
@@ -5712,7 +5851,7 @@ def main(verbose: int = 2):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
-    parser.add_argument("--verbose", type=int, default=3, choices=[0, 1, 2, 3],
+    parser.add_argument("--verbose", type=int, default=2, choices=[0, 1, 2, 3],
                         help="Verbosity level (0=errors only, 1=warnings+, 2=info+, 3=debug+)")
     parser.add_argument("--n_jobs", type=int, default=None,
                         help="Number of parallel jobs (default: auto-detect)")
@@ -5726,17 +5865,8 @@ if __name__ == "__main__":
     # Setup logging based on verbosity level (console only for CLI usage)
     setup_logging(verbose_level=args.verbose)
     
-    # Override n_jobs if specified
-    if args.force_n_jobs_all:
-        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
-        # Temporarily modify the get_optimal_n_jobs function
-        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
-            return -1
-        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
-    elif args.n_jobs is not None:
-        logging.info(f"Using manual n_jobs={args.n_jobs}")
-        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
-            return args.n_jobs
-        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
-    
-    main(verbose=args.verbose)
+    main(
+        verbose=args.verbose,
+        n_jobs_override=args.n_jobs,
+        force_n_jobs_all=args.force_n_jobs_all
+    )
