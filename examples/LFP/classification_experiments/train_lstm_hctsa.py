@@ -4047,7 +4047,7 @@ def get_default_param_grid(model_type, mask_values=None):
                 15,     # Moderate patience: Good balance for biomedical data
             ],
             'classifier__epochs': [
-                3,    # Sufficient for small datasets with early stopping
+                100,    # Sufficient for small datasets with early stopping
             ],
             
             # Batch Size - Small batches for better generalization on small datasets
@@ -5555,7 +5555,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     return log_file
 
 
-def main(verbose: int = 2):
+def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_all: bool = False):
     
     # Initialize TensorFlow
     initialize_tf()
@@ -5574,8 +5574,16 @@ def main(verbose: int = 2):
     logging.info(f"Verbose level: {verbose}")
     logging.info(f"Experiment directory: {experiment_dir}")
     
-    # Auto-detect optimal number of parallel jobs
-    n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
+    # Determine number of parallel jobs
+    if force_n_jobs_all:
+        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
+        n_jobs = -1
+    elif n_jobs_override is not None:
+        logging.info(f"Using manual n_jobs={n_jobs_override}")
+        n_jobs = n_jobs_override
+    else:
+        n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
+
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
@@ -5591,7 +5599,7 @@ def main(verbose: int = 2):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 40)
     
-    MAX_SUBJECTS = 3  # Use None for all subjects, or e.g., 3 for testing
+    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
     channel_name = 'channel_0'
     base_path = os.path.join("../hctsa", channel_name)
     
@@ -5857,17 +5865,8 @@ if __name__ == "__main__":
     # Setup logging based on verbosity level (console only for CLI usage)
     setup_logging(verbose_level=args.verbose)
     
-    # Override n_jobs if specified
-    if args.force_n_jobs_all:
-        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
-        # Temporarily modify the get_optimal_n_jobs function
-        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
-            return -1
-        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
-    elif args.n_jobs is not None:
-        logging.info(f"Using manual n_jobs={args.n_jobs}")
-        def override_get_optimal_n_jobs(model_type='lstm', conservative=True):
-            return args.n_jobs
-        sys.modules[__name__].get_optimal_n_jobs = override_get_optimal_n_jobs
-    
-    main(verbose=args.verbose)
+    main(
+        verbose=args.verbose,
+        n_jobs_override=args.n_jobs,
+        force_n_jobs_all=args.force_n_jobs_all
+    )
