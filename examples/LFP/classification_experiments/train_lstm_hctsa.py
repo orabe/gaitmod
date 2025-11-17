@@ -15,6 +15,59 @@ from itertools import product
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
+# Initialize TensorFlow
+from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
+initialize_tf()
+
+try:
+    import tensorflow as tf
+    
+    # TensorFlow configuration for stability and performance  
+    # DISABLE eager execution for better performance with data pipelines
+    tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
+    tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
+    
+    # Configure memory growth for GPU
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logging.info(f"TensorFlow GPU memory growth enabled for {len(gpus)} GPU(s)")
+    
+    # Additional performance optimizations
+    tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
+    tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
+    
+    logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
+    
+    # Disable Keras progress bars globally to keep console output clean
+    try:
+        tf.keras.utils.disable_interactive_logging()
+        logging.debug("TensorFlow interactive logging disabled (no progress bars).")
+    except AttributeError:
+        logging.debug("TensorFlow interactive logging disable not available in this version.")
+            
+except Exception as e:
+    logging.info(f"TensorFlow initialization warning: {e}")
+    # tensorflow already imported above
+
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import save_model, load_model, Sequential
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from tensorflow.keras.metrics import Precision, Recall, AUC
+from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
+from tensorflow.keras.losses import binary_crossentropy
+from tensorflow.keras import backend as K
+
+try:
+    from tensorboard.plugins.hparams import api as hp
+    HPARAMS_AVAILABLE = True
+except ImportError:
+    HPARAMS_AVAILABLE = False
+    logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
+    
 # ===================================================================
 # Color Formatting Utilities
 # ===================================================================
@@ -5506,60 +5559,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     return log_file
 
 
-def main():
-        # Initialize TensorFlow
-    from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
-    initialize_tf()
-    
-    try:
-        import tensorflow as tf
-        
-        # TensorFlow configuration for stability and performance  
-        # DISABLE eager execution for better performance with data pipelines
-        tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
-        tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
-        
-        # Configure memory growth for GPU
-        gpus = tf.config.experimental.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-            logging.info(f"TensorFlow GPU memory growth enabled for {len(gpus)} GPU(s)")
-        
-        # Additional performance optimizations
-        tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
-        tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
-        
-        logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
-        
-        # Disable Keras progress bars globally to keep console output clean
-        try:
-            tf.keras.utils.disable_interactive_logging()
-            logging.debug("TensorFlow interactive logging disabled (no progress bars).")
-        except AttributeError:
-            logging.debug("TensorFlow interactive logging disable not available in this version.")
-                
-    except Exception as e:
-        logging.info(f"TensorFlow initialization warning: {e}")
-        # tensorflow already imported above
-
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
-    from tensorflow.keras.models import save_model, load_model, Sequential
-    from tensorflow.keras.utils import plot_model
-    from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
-    from tensorflow.keras.optimizers import Adam, RMSprop, SGD
-    from tensorflow.keras.metrics import Precision, Recall, AUC
-    from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
-    from tensorflow.keras.losses import binary_crossentropy
-    from tensorflow.keras import backend as K
-
-    try:
-        from tensorboard.plugins.hparams import api as hp
-        HPARAMS_AVAILABLE = True
-    except ImportError:
-        HPARAMS_AVAILABLE = False
-        logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
-            
+def main():            
     verbose = 2
     n_jobs_override = None
     force_n_jobs_all = False
@@ -5630,7 +5630,11 @@ def main():
     logging.info("-" * 80)
 
     segment_cache = HCTSASegmentCache(segment_cache_dir)
-    subject_channel_map = SUBJECT_CHANNEL_PRIOR.copy()
+    subject_channel_map_raw = SUBJECT_CHANNEL_PRIOR.copy()
+    subject_channel_map = {}
+    for subj, ch in subject_channel_map_raw.items():
+        canonical_ch = segment_cache._canonical_channel_label(ch)
+        subject_channel_map[subj] = canonical_ch
     
     if verbose >= 1 and subject_channel_map:
         channel_counts = Counter(subject_channel_map.values())
