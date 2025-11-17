@@ -3,7 +3,6 @@ import yaml
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 import mne
-import tensorflow as tf
 import pickle
 from typing import List, Tuple
 import subprocess
@@ -128,7 +127,7 @@ def load_pkl(file_path):
     return data
 
 
-def load_hctsa_data(base_path: str, data_variant: str = 'N', verbose: bool = True):
+def load_hctsa_data(base_path: str, data_variant: str = '', verbose: bool = True):
     """Load HCTSA data with validation.
     Args:
         base_path (str): Path to HCTSA data directory.
@@ -520,6 +519,7 @@ def _reset_tf_session():
 
 # Initialize TensorFlow configuration
 def initialize_tf():
+    import tensorflow as tf
     _enable_memory_growth() # Enable memory growth for GPUs before initializing TensorFlow
     _log_device_details()
     _configure_tf_logs()
