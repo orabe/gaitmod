@@ -150,9 +150,12 @@ def save_results(results: Dict[str, Dict[str, Dict[str, float]]], output_dir: Pa
     if combined_path.exists():
         with open(combined_path, 'r', encoding='utf-8') as fp:
             combined = json.load(fp)
-    combined['beta_channel_selection'] = results
+    new_combined = {'beta_channel_selection': results}
+    for key, value in combined.items():
+        if key != 'beta_channel_selection':
+            new_combined[key] = value
     with open(combined_path, 'w', encoding='utf-8') as fp:
-        json.dump(combined, fp, indent=2)
+        json.dump(new_combined, fp, indent=2)
     logging.info("Updated combined channel selection file at %s", combined_path)
 
 def main():

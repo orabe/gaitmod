@@ -9,6 +9,7 @@ import subprocess
 import h5py
 import pandas as pd
 from pathlib import Path
+import tensorflow as tf
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -519,7 +520,6 @@ def _reset_tf_session():
 
 # Initialize TensorFlow configuration
 def initialize_tf():
-    import tensorflow as tf
     _enable_memory_growth() # Enable memory growth for GPUs before initializing TensorFlow
     _log_device_details()
     _configure_tf_logs()
