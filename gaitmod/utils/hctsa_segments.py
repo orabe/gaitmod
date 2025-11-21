@@ -4,6 +4,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ from gaitmod.utils.utils import load_hctsa_data
 
 
 def parse_segment_identifier(name: str) -> Dict[str, Any]:
+    """Extract subject, trial, epoch, and channel info from a segment name."""
     patterns = [
         r'(?P<subject>.+?)_trial(?P<trial>\d+)_epoch(?P<epoch>\d+)_ch(?P<channel>\d+)',
         r'(?P<subject>.+?)_trial(?P<trial>\d+)_epoch(?P<epoch>\d+)',
@@ -36,6 +38,7 @@ class HCTSASegmentCache:
     """
 
     def __init__(self, root_dir: Union[str, Path]):
+        """Initialize cache root directory and metadata files."""
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.index_file = self.root_dir / "segments_index.csv"
@@ -44,6 +47,7 @@ class HCTSASegmentCache:
 
     # -------------------- index helpers --------------------
     def _empty_index(self) -> pd.DataFrame:
+        """Return an empty segment index with all required columns."""
         columns = [
             'segment_path', 'channel', 'channel_canonical', 'subject', 'trial', 'epoch',
             'label', 'length', 'keywords', 'group', 'name',
@@ -52,6 +56,7 @@ class HCTSASegmentCache:
         return pd.DataFrame(columns=columns)
 
     def load_index(self) -> pd.DataFrame:
+        """Load the cached index, normalizing canonical channel labels."""
         if not self.index_file.exists():
             return self._empty_index()
         df = pd.read_csv(self.index_file)
@@ -61,15 +66,18 @@ class HCTSASegmentCache:
         return df
 
     def _write_index(self, df: pd.DataFrame):
+        """Persist the segment index to disk."""
         df.to_csv(self.index_file, index=False)
 
     def _persist_operations(self, operations_df: Optional[pd.DataFrame]):
+        """Store operations metadata once so channels share the same file."""
         if operations_df is None or operations_df.empty:
             return
         if not self.operations_file.exists():
             operations_df.to_csv(self.operations_file, index=False)
 
     def load_operations(self) -> pd.DataFrame:
+        """Load the operations metadata describing feature names."""
         if not self.operations_file.exists():
             raise FileNotFoundError(
                 f"No operations metadata found at {self.operations_file}. "
@@ -78,12 +86,14 @@ class HCTSASegmentCache:
         return pd.read_csv(self.operations_file)
 
     def has_channel(self, channel_name: str) -> bool:
+        """Return True if the canonical channel already exists in the cache."""
         index_df = self.load_index()
         if index_df.empty:
             return False
         return channel_name in set(index_df['channel_canonical'].unique())
 
     def _update_manifest(self, channel_name: str, num_segments: int, normalized: bool, feature_dim: int):
+        """Record high-level channel metadata (counts, feature dimension)."""
         manifest: Dict[str, Any] = {}
         if self.manifest_file.exists():
             with open(self.manifest_file, 'r', encoding='utf-8') as fp:
@@ -101,6 +111,7 @@ class HCTSASegmentCache:
 
     # -------------------- export helpers --------------------
     def _normalize_channel_name(self, override: Optional[str], fallback: str) -> str:
+        """Convert parsed channel identifiers into canonical channel_* form."""
         if override is None:
             return fallback
         override = str(override)
@@ -113,12 +124,14 @@ class HCTSASegmentCache:
         return override
 
     def _canonical_channel_label(self, channel_name: str) -> str:
+        """Strip descriptive suffix (e.g., -LFP...) to obtain channel_* label."""
         match = re.match(r"(channel_\d+)", channel_name)
         if match:
             return match.group(1)
         return channel_name
 
     def _segment_relative_path(self, subject: str, trial: int, epoch: int, channel_folder: str) -> Path:
+        """Build the on-disk relative path for a segment."""
         return Path(subject) / channel_folder / f"trial_{trial:03d}" / f"epoch_{epoch:03d}.npz"
 
     def build_channel_from_arrays(
@@ -132,6 +145,7 @@ class HCTSASegmentCache:
         overwrite: bool = False,
         verbose: int = 1,
     ):
+        """Write per-segment feature vectors for a single channel to cache."""
         if TS_DataMat.shape[0] != len(timeseries_df) or TS_DataMat.shape[0] != len(labels):
             raise ValueError("TS_DataMat, timeseries_df, and labels must align on first dimension.")
 
@@ -140,7 +154,7 @@ class HCTSASegmentCache:
         if self.has_channel(canonical_channel_name) and not overwrite:
             if verbose >= 1:
                 logging.info("[SEGMENTS] Channel %s already cached at %s; skipping export.", channel_name, self.root_dir)
-            return
+            return None, None
 
         labels = np.asarray(labels).ravel()
         records: List[Dict[str, Any]] = []
@@ -180,16 +194,15 @@ class HCTSASegmentCache:
         self._persist_operations(operations_df)
         self._update_manifest(canonical_channel_name, len(records), normalized=normalized, feature_dim=TS_DataMat.shape[1])
 
-        if verbose >= 1:
-            logging.info(
-                "[SEGMENTS] Exported %d segments for %s with feature_dim=%d",
-                len(records),
-                channel_name,
-                TS_DataMat.shape[1]
-            )
+        subject_counts: Dict[str, int] = {}
+        for rec in records:
+            subject_counts[rec['subject']] = subject_counts.get(rec['subject'], 0) + 1
+
+        return subject_counts, TS_DataMat.shape[1]
 
     # -------------------- loading helpers --------------------
     def load_segment_features(self, relative_path: str) -> np.ndarray:
+        """Load a previously cached segment (.npz) into memory."""
         file_path = self.root_dir / relative_path
         if not file_path.exists():
             raise FileNotFoundError(f"Segment file missing: {file_path}")
@@ -197,6 +210,7 @@ class HCTSASegmentCache:
             return data['features']
 
     def load_channel_data(self, channel_name: str) -> Tuple[np.ndarray, pd.DataFrame, pd.DataFrame, np.ndarray]:
+        """Reconstruct TS_DataMat/timeseries for a single channel from cache."""
         index_df = self.load_index()
         channel_df = index_df[index_df['channel_canonical'] == channel_name].copy()
         if channel_df.empty:
@@ -231,6 +245,22 @@ class HCTSASegmentCache:
         self,
         subject_channel_map: Dict[str, str],
     ) -> Tuple[np.ndarray, pd.DataFrame, pd.DataFrame, np.ndarray]:
+        """
+        Assemble data per subject/channel combination.
+
+        Parameters
+        ----------
+        subject_channel_map : Dict[str, str]
+            Mapping of subject IDs to canonical channel labels (e.g., {"PW_EM59": "channel_0"}).
+
+        Returns
+        -------
+        Tuple containing:
+            - TS_DataMat: stacked feature matrix (segments x features)
+            - timeseries_df: metadata DataFrame for each segment
+            - operations_df: operations metadata
+            - labels: numpy array of binary labels
+        """
         index_df = self.load_index()
         if index_df.empty:
             raise ValueError("Segment cache index is empty.")
@@ -277,6 +307,7 @@ def export_channels_to_segment_cache(
     overwrite: bool = False,
     verbose: int = 1,
 ):
+    """Batch export multiple channels from the HCTSA root into the cache."""
     cache = HCTSASegmentCache(segment_cache_dir)
     hctsa_root = Path(hctsa_root)
     variant = data_variant.upper()
@@ -284,7 +315,10 @@ def export_channels_to_segment_cache(
         variant = ''
     normalized_flag = variant != ''
 
+    export_summary: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(dict)
+
     for channel in channels:
+        print(f"[SEGMENTS] Exporting channel {channel} to segment cache...")
         channel_path = hctsa_root / channel
         if not channel_path.exists():
             logging.warning("Channel %s skipped (path not found: %s)", channel, channel_path)
@@ -294,7 +328,7 @@ def export_channels_to_segment_cache(
             data_variant=variant,
             verbose=verbose >= 2
         )
-        cache.build_channel_from_arrays(
+        subject_counts, feature_dim = cache.build_channel_from_arrays(
             channel_name=channel,
             TS_DataMat=TS_DataMat,
             timeseries_df=timeseries,
@@ -304,6 +338,26 @@ def export_channels_to_segment_cache(
             overwrite=overwrite,
             verbose=verbose
         )
+        if subject_counts:
+            for subject, count in subject_counts.items():
+                export_summary[subject][channel] = {
+                    'segments': count,
+                    'feature_dim': feature_dim
+                }
+
+    if export_summary:
+        logging.info("=" * 80)
+        logging.info("[SEGMENTS] Export summary by subject and channel")
+        for subject in sorted(export_summary.keys()):
+            logging.info(f"Subject {subject}:")
+            for channel, stats in sorted(export_summary[subject].items()):
+                logging.info(
+                    "  Channel %s -> segments=%d, feature_dim=%d",
+                    channel,
+                    stats['segments'],
+                    stats['feature_dim']
+                )
+            logging.info("-" * 60)
 
 
 def main():
@@ -314,7 +368,7 @@ def main():
     segment_cache_dir = Path("data/hctsa_segments")
     channels = sorted(p.name for p in hctsa_root.glob('channel_*') if p.is_dir())
     variant = '' # Options: '', 'N', 'F', 'raw'
-    overwrite = False
+    overwrite = True
     verbose = 1
 
     logging.basicConfig(

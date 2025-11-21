@@ -5638,7 +5638,7 @@ def main():
     
     if verbose >= 1 and subject_channel_map:
         channel_counts = Counter(subject_channel_map.values())
-        channel_summary = ", ".join(f"{ch}: {count}" for ch, count in channel_counts.items())
+        channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
         logging.info(
             "[MAIN] Using subject-specific channel selection (default channel=%s). Assignments: %s",
             channel_name,
