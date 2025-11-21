@@ -1,4 +1,3 @@
-import argparse
 import gc
 import hashlib
 import json
@@ -16,6 +15,59 @@ from itertools import product
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
+# Initialize TensorFlow
+from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
+initialize_tf()
+
+try:
+    import tensorflow as tf
+    
+    # TensorFlow configuration for stability and performance  
+    # DISABLE eager execution for better performance with data pipelines
+    tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
+    tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
+    
+    # Configure memory growth for GPU
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logging.info(f"TensorFlow GPU memory growth enabled for {len(gpus)} GPU(s)")
+    
+    # Additional performance optimizations
+    tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
+    tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
+    
+    logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
+    
+    # Disable Keras progress bars globally to keep console output clean
+    try:
+        tf.keras.utils.disable_interactive_logging()
+        logging.debug("TensorFlow interactive logging disabled (no progress bars).")
+    except AttributeError:
+        logging.debug("TensorFlow interactive logging disable not available in this version.")
+            
+except Exception as e:
+    logging.info(f"TensorFlow initialization warning: {e}")
+    # tensorflow already imported above
+
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import save_model, load_model, Sequential
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
+from tensorflow.keras.optimizers import Adam, RMSprop, SGD
+from tensorflow.keras.metrics import Precision, Recall, AUC
+from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
+from tensorflow.keras.losses import binary_crossentropy
+from tensorflow.keras import backend as K
+
+try:
+    from tensorboard.plugins.hparams import api as hp
+    HPARAMS_AVAILABLE = True
+except ImportError:
+    HPARAMS_AVAILABLE = False
+    logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
+    
 # ===================================================================
 # Color Formatting Utilities
 # ===================================================================
@@ -109,54 +161,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
-try:
-    import tensorflow as tf
-    
-    # TensorFlow configuration for stability and performance  
-    # DISABLE eager execution for better performance with data pipelines
-    tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
-    tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
-    
-    # Configure memory growth for GPU
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logging.info(f"TensorFlow GPU memory growth enabled for {len(gpus)} GPU(s)")
-    
-    # Additional performance optimizations
-    tf.config.threading.set_inter_op_parallelism_threads(0)  # Use all available cores
-    tf.config.threading.set_intra_op_parallelism_threads(0)  # Use all available cores
-    
-    logging.info(f"TensorFlow {tf.__version__} configured: eager_execution=False, memory_growth=True")
-    
-    # Disable Keras progress bars globally to keep console output clean
-    try:
-        tf.keras.utils.disable_interactive_logging()
-        logging.debug("TensorFlow interactive logging disabled (no progress bars).")
-    except AttributeError:
-        logging.debug("TensorFlow interactive logging disable not available in this version.")
-            
-except Exception as e:
-    logging.info(f"TensorFlow initialization warning: {e}")
-    # tensorflow already imported above
-
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import save_model, load_model, Sequential
-from tensorflow.keras.utils import plot_model
-from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
-from tensorflow.keras.optimizers import Adam, RMSprop, SGD
-from tensorflow.keras.metrics import Precision, Recall, AUC
-from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
-from tensorflow.keras.losses import binary_crossentropy
-from tensorflow.keras import backend as K
-
-try:
-    from tensorboard.plugins.hparams import api as hp
-    HPARAMS_AVAILABLE = True
-except ImportError:
-    HPARAMS_AVAILABLE = False
-    logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
 
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score, ParameterGrid
@@ -181,7 +185,7 @@ except ImportError:
     XGBOOST_AVAILABLE = False
     XGBClassifier = None
 
-from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
+from gaitmod.utils.hctsa_segments import HCTSASegmentCache
 
 
 # ===================================================================
@@ -5362,7 +5366,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'test_tuned_precision': 0.0,
                 'test_tuned_recall': 0.0,
                 'test_tuned_balanced_accuracy': 0.0,
-                'test_roc_auc': 0.5,
+                'test_roc_auc': 0.0,
                 'test_pr_auc': 0.0
             })
             
@@ -5555,14 +5559,18 @@ def setup_logging(verbose_level=2, log_dir=None):
     return log_file
 
 
-def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_all: bool = False):
+def main():            
+    verbose = 2
+    n_jobs_override = None
+    force_n_jobs_all = False
+    channel_name = None
+    segment_cache_dir = os.path.join("data", "hctsa_segments")
     
-    # Initialize TensorFlow
-    initialize_tf()
-    
+        
     # Setup hierarchical experiment logging structure
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    experiment_dir = f"logs/nested_cv_{timestamp}"
+    channel_selection_method = 'beta'
+    experiment_dir = f"logs/nested_cv_{timestamp}_{channel_selection_method}"
     os.makedirs(experiment_dir, exist_ok=True)
     
     # Create main experiment log
@@ -5587,27 +5595,58 @@ def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_a
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
-    
-    # Remove the duplicate logging configuration since setup_logging already handles it
-    
-    logging.info("="*60)
+    logging.info("="*80)
     logging.info("NESTED CROSS-VALIDATION PIPELINE")
-    logging.info("="*60)
+    logging.info("="*80)
     
-    # Step 1-6: Preprocessing Pipeline (Executed Once)
-    logging.info("")
-    logging.info("1. PREPROCESSING PIPELINE")
-    logging.info("-" * 40)
     
     MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
-    channel_name = 'channel_0'
-    base_path = os.path.join("../hctsa", channel_name)
     
-    # Load HCTSA data
-    TS_DataMat, timeseries, operations, labels = load_hctsa_data(
-        base_path=base_path,
-        normalized=False,
-        verbose=verbose
+    if channel_selection_method == 'beta':
+        SUBJECT_CHANNEL_PRIOR = {
+            "PW_EM59": "channel_2-LFP_L0-2",
+            "PW_FH57": "channel_2-LFP_L0-2",
+            "PW_HK59": "channel_2-LFP_L0-2",
+            "PW_HZ58": "channel_2-LFP_L0-2",
+            "PW_SN61": "channel_2-LFP_L0-2",
+            "PW_SN66": "channel_5-LFP_R0-2",
+            "PW_US68": "channel_1-LFP_L1-3",
+        }
+    
+    elif channel_selection_method == 'logRegF1':
+        SUBJECT_CHANNEL_PRIOR = {
+            "PW_EM59": "channel_0-LFP_L0-3",
+            "PW_FH57": "channel_1-LFP_L1-3",
+            "PW_HK59": "channel_0-LFP_L0-3",
+            "PW_HZ58": "channel_1-LFP_L1-3",
+            "PW_SN61": "channel_2-LFP_L0-2",
+            "PW_SN66": "channel_0-LFP_L0-3",
+            "PW_US68": "channel_4-LFP_R1-3",
+        }
+    
+    # Step 1-6: Preprocessing Pipeline
+    logging.info("")
+    logging.info("1. PREPROCESSING PIPELINE")
+    logging.info("-" * 80)
+
+    segment_cache = HCTSASegmentCache(segment_cache_dir)
+    subject_channel_map_raw = SUBJECT_CHANNEL_PRIOR.copy()
+    subject_channel_map = {}
+    for subj, ch in subject_channel_map_raw.items():
+        canonical_ch = segment_cache._canonical_channel_label(ch)
+        subject_channel_map[subj] = canonical_ch
+    
+    if verbose >= 1 and subject_channel_map:
+        channel_counts = Counter(subject_channel_map.values())
+        channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
+        logging.info(
+            "[MAIN] Using subject-specific channel selection (default channel=%s). Assignments: %s",
+            channel_name,
+            channel_summary
+        )
+        
+    TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
+        subject_channel_map=subject_channel_map
     )
     
     # Filter invalid features
@@ -5659,7 +5698,7 @@ def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_a
     X_list, y_list, groups, trial_metadata = group_epochs_by_trial(
         TS_DataMat, labels, epoch_mapping, verbose=verbose
     ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
-    
+
     # SLICE DATA TO SPECIFIED NUMBER OF SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
     
@@ -5690,8 +5729,8 @@ def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_a
     
     if verbose >= 1:
         logging.info(f"[MAIN] Unpadded trial data prepared {subject_info_msg}:")
-        logging.info(f"[MAIN] Number of trials: {len(X_list)}")
         logging.info(f"[MAIN] Number of subjects: {len(np.unique(groups))}")
+        logging.info(f"[MAIN] Number of trials: {len(X_list)}")
         logging.info(f"[MAIN] Trial lengths: min={min(len(x) for x in X_list)}, max={max(len(x) for x in X_list)}, avg={np.mean([len(x) for x in X_list]):.1f}")
         logging.info(f"[MAIN] Feature dimensions per trial: {X_list[0].shape[1] if X_list else 'N/A'}")
         logging.info(f"[MAIN] Groups shape: {groups.shape} with unique values: {np.unique(groups)}")
@@ -5849,24 +5888,4 @@ def main(verbose: int = 2, n_jobs_override: Optional[int] = None, force_n_jobs_a
 
 
 if __name__ == "__main__":
-    
-    parser = argparse.ArgumentParser(description="LSTM HCTSA Nested Cross-Validation")
-    parser.add_argument("--verbose", type=int, default=2, choices=[0, 1, 2, 3],
-                        help="Verbosity level (0=errors only, 1=warnings+, 2=info+, 3=debug+)")
-    parser.add_argument("--n_jobs", type=int, default=None,
-                        help="Number of parallel jobs (default: auto-detect)")
-    parser.add_argument("--force_n_jobs_all", action="store_true",
-                        help="Force n_jobs=-1 (use all cores - RISKY for LSTM!)")
-    parser.add_argument("--save_models", action="store_true",
-                        help="Save model checkpoints (disabled by default for speed)")
-    
-    args = parser.parse_args()
-    
-    # Setup logging based on verbosity level (console only for CLI usage)
-    setup_logging(verbose_level=args.verbose)
-    
-    main(
-        verbose=args.verbose,
-        n_jobs_override=args.n_jobs,
-        force_n_jobs_all=args.force_n_jobs_all
-    )
+    main()

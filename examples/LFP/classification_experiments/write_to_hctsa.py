@@ -9,6 +9,9 @@ from gaitmod.utils.utils import load_pkl, sync_data
 def load_data(patient_epochs_path, subjects_event_idx_dict_path):
     """Load the preprocessed data from the pickles."""
     patient_epochs = load_pkl(patient_epochs_path)
+    for subject, epochs in patient_epochs.items():
+        channel_map = [f"channel_{idx} -> {name}" for idx, name in enumerate(epochs.ch_names)]
+        print(f"{subject}: {channel_map}")
     subjects_event_idx_dict = load_pkl(subjects_event_idx_dict_path)
 
     patient_names = np.array(list(patient_epochs.keys()))

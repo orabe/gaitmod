@@ -3,13 +3,13 @@ import yaml
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
 import mne
-import tensorflow as tf
 import pickle
 from typing import List, Tuple
 import subprocess
 import h5py
 import pandas as pd
 from pathlib import Path
+import tensorflow as tf
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -128,7 +128,7 @@ def load_pkl(file_path):
     return data
 
 
-def load_hctsa_data(base_path: str, data_variant: str = 'N', verbose: bool = True):
+def load_hctsa_data(base_path: str, data_variant: str = '', verbose: bool = True):
     """Load HCTSA data with validation.
     Args:
         base_path (str): Path to HCTSA data directory.
