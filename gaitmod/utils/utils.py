@@ -1,4 +1,6 @@
 import os
+# Ensure TensorFlow C++ backend hides INFO and WARNING logs before imports
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
 import yaml
 from sklearn.model_selection import StratifiedKFold
 import numpy as np

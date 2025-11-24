@@ -1,19 +1,27 @@
+import os
+import warnings
+
 import gc
 import hashlib
 import json
 import logging
 import multiprocessing
-import os
 import pickle
 import re
 import sys
 import time
 import uuid
-import warnings
 from io import StringIO
 from itertools import product
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
+
+warnings.filterwarnings('ignore')
+
+# Add TensorFlow stability fixes
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 # Initialize TensorFlow
 from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
@@ -100,6 +108,37 @@ def format_warning_message(message):
     return message
 
 
+def log_section_separator(message: Optional[str] = None,
+                          border_char: str = '-',
+                          length: int = 70,
+                          prefix: Optional[str] = None,
+                          blank_line: bool = True):
+    """
+    Draw a visually distinctive separator in the logs to highlight key stages.
+    
+    Args:
+        message: Optional text to display between separator lines.
+        border_char: Character used for the separator bar.
+        length: Length of the separator bar.
+        prefix: Prefix to prepend to each log line (e.g., module tag).
+        blank_line: Whether to insert an empty line before the separator.
+    """
+    if blank_line:
+        logging.info("")
+    border = border_char * length
+    if prefix:
+        logging.info(f"{prefix} {border}")
+    else:
+        logging.info(border)
+    if message:
+        if prefix:
+            logging.info(f"{prefix} {message}")
+            logging.info(f"{prefix} {border}")
+        else:
+            logging.info(message)
+            logging.info(border)
+
+
 # Prefixes used to identify detailed log lines that should stay off the console
 # unless the user explicitly asks for verbose output.
 DETAILED_CONSOLE_PREFIXES = (
@@ -154,12 +193,7 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     psutil = None
 
-warnings.filterwarnings('ignore')
 
-# Add TensorFlow stability fixes
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 
 from sklearn.pipeline import Pipeline
@@ -532,8 +566,9 @@ class ProgressTrainingLogger(Callback):
             
             # Core metrics display
             core_metrics = []
-            for metric in ['train_loss', 'train_balanced_accuracy', 'train_f1',
-                           'val_loss', 'val_balanced_accuracy', 'val_f1']:
+            for metric in ['train_loss', 'val_loss',
+                           'train_balanced_accuracy', 'val_balanced_accuracy',
+                           'train_f1', 'val_f1']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -564,6 +599,74 @@ class ProgressTrainingLogger(Callback):
             return str(value)
         except (ValueError, TypeError, OverflowError):
             return "N/A"
+
+
+class LoggingEarlyStopping(EarlyStopping):
+    """
+    Early stopping callback that routes all status updates through the Python logger
+    instead of printing directly to stdout.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs['verbose'] = 0  # suppress built-in prints
+        super().__init__(*args, **kwargs)
+        self.best_epoch = None
+
+    def on_epoch_end(self, epoch, logs=None):
+        """Track the epoch index that achieved the best monitored score."""
+        improved = False
+        logs = logs or {}
+        current = logs.get(self.monitor)
+        if current is not None:
+            try:
+                current_value = float(current)
+                improved = self.monitor_op(current_value - self.min_delta, self.best)
+            except (TypeError, ValueError):
+                improved = False
+        super().on_epoch_end(epoch, logs)
+        if improved:
+            self.best_epoch = epoch
+
+    def on_train_end(self, logs=None):
+        """Log when early stopping actually halts training."""
+        super().on_train_end(logs)
+        if self.stopped_epoch > 0:
+            logging.info("Epoch %3d: EarlyStopping triggered (patience=%d)",
+                         self.stopped_epoch + 1, self.patience)
+            if self.restore_best_weights and self.best_epoch is not None:
+                logging.info("Restored model weights from epoch %3d", self.best_epoch + 1)
+
+
+class LoggingReduceLROnPlateau(ReduceLROnPlateau):
+    """
+    ReduceLROnPlateau variant that logs learning-rate adjustments via logging.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs['verbose'] = 0  # silence default stdout prints
+        super().__init__(*args, **kwargs)
+
+    def on_epoch_end(self, epoch, logs=None):
+        """Invoke parent implementation and report learning-rate changes."""
+        initial_lr = self._current_learning_rate()
+        super().on_epoch_end(epoch, logs)
+        updated_lr = self._current_learning_rate()
+        if initial_lr is not None and updated_lr is not None and updated_lr < initial_lr:
+            logging.info("Epoch %3d: ReduceLROnPlateau adjusted learning rate to %.6g",
+                         epoch + 1, updated_lr)
+
+    def _current_learning_rate(self):
+        """Fetch the optimizer learning rate as a float, if possible."""
+        optimizer = getattr(self.model, 'optimizer', None)
+        if optimizer is None:
+            return None
+        lr_attr = getattr(optimizer, 'lr', None) or getattr(optimizer, 'learning_rate', None)
+        if lr_attr is None:
+            return None
+        try:
+            return float(tf.keras.backend.get_value(lr_attr))
+        except Exception:  # pragma: no cover - defensive
+            return None
         
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
@@ -756,21 +859,19 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
             append=False
         ),
         
-        # Early stopping
-        EarlyStopping(
+        # Early stopping with logging
+        LoggingEarlyStopping(
             monitor=effective_monitor,
             patience=patience,
             restore_best_weights=True,
-            verbose=1,
             mode='min' if 'loss' in effective_monitor else 'max'
         ), 
         
-        # Learning rate reduction
-        ReduceLROnPlateau(
+        # Learning rate reduction with logging
+        LoggingReduceLROnPlateau(
             monitor=effective_monitor,
             factor=0.5,
             patience=patience//2,
-            verbose=1,
             mode='min' if 'loss' in effective_monitor else 'max',
             min_lr=1e-7
         ), 
@@ -1046,7 +1147,9 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
         'refit': False,  # This is inner CV, not refit
-        'trained_epochs': results_dict.get('trained_epochs')
+        'configured_epochs': results_dict.get('configured_epochs'),
+        'trained_epochs': results_dict.get('trained_epochs'),
+        'restored_epoch': results_dict.get('restored_epoch')
     }
     
     # For inner fold, use data_info directly from results_dict
@@ -1084,7 +1187,9 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
         'refit': True,  # This is the final refit on all training data
-        'trained_epochs': results_dict.get('trained_epochs')
+        'configured_epochs': results_dict.get('configured_epochs'),
+        'trained_epochs': results_dict.get('trained_epochs'),
+        'restored_epoch': results_dict.get('restored_epoch')
     }
     
     # For refit, construct data_info from individual fields
@@ -1380,6 +1485,7 @@ def build_feature_mapping(selected_features, feature_names=None):
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
                                      selected_features, hyperparams, train_info, val_info,
                                      feature_names=None, trained_epochs=None,
+                                     configured_epochs=None, restored_epoch=None,
                                      feature_selection_report=None):
     """
     Create a comprehensive results dictionary for storage.
@@ -1398,6 +1504,12 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
     Returns:
         Dictionary with all results organized for storage
     """
+    def _safe_int(value):
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError, OverflowError):
+            return None
+    
     
     # Extract essential threshold optimization data (removing verbose details)
     essential_threshold_results = {}
@@ -1463,7 +1575,9 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
             'val_shape': val_info.get('shape', None), 
             'val_class_distribution': val_info.get('class_dist', {}),
         },
-        'trained_epochs': int(trained_epochs) if trained_epochs is not None else None,
+        'trained_epochs': _safe_int(trained_epochs),
+        'configured_epochs': _safe_int(configured_epochs),
+        'restored_epoch': _safe_int(restored_epoch),
     }
 
 # ===================================================================
@@ -2848,6 +2962,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.input_shape = None
         self.X_mask_ = None
         self.y_mask_ = None
+        self.training_metadata_ = {}
                 
     def build_model(self, input_shape):
         """Build the LSTM model with the given input shape."""
@@ -3041,12 +3156,57 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Store the training history for each fold (for backward compatibility)
         self.history_.append(history)
+
+        # Capture training metadata (epochs executed, restored epoch, etc.)
+        self._capture_training_metadata(history, final_callbacks)
         
         # Clear validation data after training to prevent issues
         if hasattr(self, '_validation_data'):
             delattr(self, '_validation_data')
         
         return self
+
+    def _capture_training_metadata(self, history, callbacks):
+        """
+        Record key epoch counts from the most recent training run.
+        """
+        def _safe_int(value):
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+        metadata = {
+            'configured_epochs': _safe_int(self.epochs),
+            'trained_epochs': None,
+            'restored_epoch': None,
+            'early_stopping_epoch': None,
+            'early_stopping_triggered': False,
+        }
+
+        losses = None
+        if isinstance(history, dict):
+            losses = history.get('loss') or history.get('train_loss')
+        if isinstance(losses, (list, tuple, np.ndarray)):
+            metadata['trained_epochs'] = len(losses)
+
+        callbacks = callbacks or []
+        for cb in callbacks:
+            if isinstance(cb, LoggingEarlyStopping):
+                stopped_epoch = getattr(cb, 'stopped_epoch', -1)
+                if stopped_epoch is not None and stopped_epoch >= 0:
+                    metadata['early_stopping_epoch'] = stopped_epoch + 1
+                    metadata['early_stopping_triggered'] = stopped_epoch > 0
+                best_epoch = getattr(cb, 'best_epoch', None)
+                if best_epoch is not None:
+                    metadata['restored_epoch'] = best_epoch + 1
+                break
+
+        if metadata['restored_epoch'] is None:
+            metadata['restored_epoch'] = metadata['trained_epochs']
+
+        self.training_metadata_ = metadata
+        return metadata
     
     def calculate_class_weights(self, y):
         # Flatten the array and filter out padding values
@@ -4200,9 +4360,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     # Outer loop: Leave-One-Subject-Out
     for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
         if verbose >= 1:
-            logging.info(f"\n[CV_SKLEARN] {'='*70}")
-            logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
-            logging.info(f"[CV_SKLEARN] {'='*70}")
+                log_section_separator(
+                    message=f"OUTER FOLD {outer_fold + 1}/{n_outer_folds}",
+                    border_char='=',
+                    length=70
+                )
         
         # Step 1: Split trials into train/test (pre-padded)
         X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
@@ -4231,6 +4393,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         if verbose >= 1:
             logging.info(f"[CV_SKLEARN] Parameter combinations: {len(param_combinations)}")
+            log_section_separator(
+                message=f"PARAMETER GRID ({len(param_combinations)} combinations)",
+                border_char='*',
+                length=70
+            )
         
         # Step 3: Inner CV with hyperparameter testing and pre-computed padding
         inner_cv = LeaveOneGroupOut()
@@ -4251,7 +4418,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
             if verbose >= 2:
-                logging.info(f"[CV_SKLEARN] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
+                log_section_separator(
+                    message=f"Hyperparameter set {param_idx + 1}/{len(param_combinations)}",
+                    border_char='*',
+                    length=70,
+                    blank_line=False
+                )
                         
             # Storage for this parameter combination
             inner_scores = []
@@ -4277,7 +4449,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                    else f"Subject_{val_subject_number}")
                 
                 if verbose >= 2:
-                    logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
+                    log_section_separator(
+                        message=f"Inner fold {inner_fold + 1}/{n_inner_folds} | val subject: {val_subject_name}",
+                        border_char='-',
+                        length=70
+                    )
                 
                 try:
                     selected_features = []
@@ -4511,14 +4687,27 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
                     
-                    trained_epochs = 0
+                    trained_epochs = None
+                    restored_epoch = None
+                    configured_epochs = None
                     if model_type == 'lstm':
-                        lstm_histories = getattr(inner_pipeline.named_steps['classifier'], 'history_', [])
-                        if lstm_histories:
-                            last_history = lstm_histories[-1]
-                            if isinstance(last_history, dict):
-                                trained_epochs = len(last_history.get('loss', []))
-                    inner_fold_details.append({'trained_epochs': trained_epochs})
+                        lstm_classifier = inner_pipeline.named_steps.get('classifier')
+                        if lstm_classifier is not None:
+                            training_meta = getattr(lstm_classifier, 'training_metadata_', {}) or {}
+                            trained_epochs = training_meta.get('trained_epochs')
+                            restored_epoch = training_meta.get('restored_epoch')
+                            configured_epochs = training_meta.get('configured_epochs')
+                            if trained_epochs is None:
+                                lstm_histories = getattr(lstm_classifier, 'history_', [])
+                                if lstm_histories:
+                                    last_history = lstm_histories[-1]
+                                    if isinstance(last_history, dict):
+                                        trained_epochs = len(last_history.get('loss', []))
+                    inner_fold_details.append({
+                        'trained_epochs': trained_epochs,
+                        'restored_epoch': restored_epoch,
+                        'configured_epochs': configured_epochs
+                    })
                     
                     # Store selected features and capture step status for this inner fold
                     feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
@@ -4563,6 +4752,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             val_info=val_info,
                             feature_names=feature_names,
                             trained_epochs=trained_epochs,
+                            configured_epochs=configured_epochs,
+                            restored_epoch=restored_epoch,
                             feature_selection_report=selection_report
                         )
                         
@@ -4899,6 +5090,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             # Train on full outer training set
             threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
             refit_trained_epochs = None
+            refit_restored_epoch = None
+            refit_configured_epochs = None
             test_metrics = {}
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
                 preprocessing_steps = final_pipeline.steps[:-1]
@@ -4933,6 +5126,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
 
                 # Fit the LSTM classifier with fixed epoch schedule
                 lstm_classifier.fit(X_train_final, y_outer_train)
+                training_meta = getattr(lstm_classifier, 'training_metadata_', {}) or {}
+                refit_trained_epochs = training_meta.get('trained_epochs', refit_trained_epochs)
+                refit_restored_epoch = training_meta.get('restored_epoch', refit_trained_epochs)
+                refit_configured_epochs = training_meta.get('configured_epochs', refit_epochs)
 
                 # Use stable thresholds computed on aggregated validation data from inner CV
                 # This avoids optimism bias from refitting thresholds on training data
@@ -5232,9 +5429,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         logging.warning(format_warning_message(
                             f"[FEATURE_SELECTOR] Steps failed during final retraining: {', '.join(failed_steps)}"
                         ))
+            def _safe_epoch_value(value):
+                try:
+                    return int(value) if value is not None else None
+                except (TypeError, ValueError, OverflowError):
+                    return None
             
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
+
                 # Gather comprehensive training and test information
                 train_info = {
                     'n_samples': len(y_outer_train),
@@ -5263,7 +5466,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         'final_strategy': final_feature_selection_strategy,
                         'final_strategy_details': final_feature_selection_strategy_details,
                     },
-                    'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
+                    'trained_epochs': _safe_epoch_value(refit_trained_epochs),
+                    'configured_epochs': _safe_epoch_value(refit_configured_epochs),
+                    'restored_epoch': _safe_epoch_value(refit_restored_epoch),
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
@@ -5319,7 +5524,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
-                'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
+                'configured_epochs': _safe_epoch_value(refit_configured_epochs),
+                'trained_epochs': _safe_epoch_value(refit_trained_epochs),
+                'restored_epoch': _safe_epoch_value(refit_restored_epoch),
                 'test_tuned_f1': test_f1,
                 'test_roc_auc': test_auc,
                 'test_tuned_accuracy': test_accuracy
@@ -5361,6 +5568,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
+                'configured_epochs': None,
+                'trained_epochs': None,
+                'restored_epoch': None,
                 'test_tuned_f1': 0.0,
                 'test_tuned_accuracy': 0.0,
                 'test_tuned_precision': 0.0,
@@ -5552,7 +5762,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     
     # Suppress TensorFlow logging unless in debug mode
     if verbose_level < 3:
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
         tf_logger = logging.getLogger('tensorflow')
         tf_logger.setLevel(logging.ERROR)
     
@@ -5569,7 +5779,7 @@ def main():
         
     # Setup hierarchical experiment logging structure
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    channel_selection_method = 'beta'
+    channel_selection_method = 'logRegF1'
     experiment_dir = f"logs/nested_cv_{timestamp}_{channel_selection_method}"
     os.makedirs(experiment_dir, exist_ok=True)
     
@@ -5652,7 +5862,7 @@ def main():
     # Filter invalid features
     if verbose >= 1:
         logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING")
-        logging.info("[MAIN] " + "-" * 40)
+        logging.info("[MAIN] " + "#" * 70)
             
     TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
         TS_DataMat,
@@ -5690,7 +5900,7 @@ def main():
     # Parse metadata and group by trials
     if verbose >= 1:
         logging.info("\n[MAIN] 2. SEQUENCE FORMATTING")
-        logging.info("[MAIN] " + "-" * 40)
+        logging.info("[MAIN] " + "#" * 70)
     
     timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
     epoch_mapping, subject_names = parse_epoch_metadata(timeseries, verbose=verbose)
