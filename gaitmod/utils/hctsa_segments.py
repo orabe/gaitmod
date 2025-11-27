@@ -364,7 +364,7 @@ def main():
     """
     Manually configure export settings below and run this script directly.
     """
-    hctsa_root = Path("../hctsa")
+    hctsa_root = Path("data/hctsa")
     segment_cache_dir = Path("data/hctsa_segments")
     channels = sorted(p.name for p in hctsa_root.glob('channel_*') if p.is_dir())
     variant = '' # Options: '', 'N', 'F', 'raw'
