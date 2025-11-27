@@ -14,6 +14,7 @@ from io import StringIO
 from itertools import product
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
+from datetime import timedelta
 
 # Initialize TensorFlow
 from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
@@ -4122,6 +4123,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           subject_names=None,
                           model_type='lstm',
                           refit_scoring_metric='f1',
+                          selection_score_metric: str = 'val_tuned_f1',
+                          selection_score_aggregation: str = 'median',
                           experiment_dir=None,
                           n_jobs=1, 
                           verbose: int = 1,
@@ -4144,11 +4147,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         subject_names: List of subject names
         model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
         refit_scoring_metric: Primary scoring metric
+        selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
         n_jobs: Number of parallel jobs
         verbose: Verbosity level
         hparam_logger: Hyperparameter logger
         feature_names: Optional list/sequence of feature names aligned with features
+        selection_score_aggregation: Aggregation strategy for inner-fold scores ('median' or 'mean')
         
     Returns:
         tuple: (outer_results, all_best_params, experiment_dir)
@@ -4162,10 +4167,36 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         except AttributeError:
             feature_names = list(feature_names)
     
+    selection_score_metric = (selection_score_metric or 'val_tuned_f1')
+    selection_score_aggregation = (selection_score_aggregation or 'median').lower()
+    if selection_score_aggregation not in {'median', 'mean'}:
+        raise ValueError(f"Invalid selection_score_aggregation='{selection_score_aggregation}'. "
+                         "Expected 'median' or 'mean'.")
+    
+    def _extract_selection_score(score_dict):
+        """Safely fetch the configured selection metric from a fold score dict."""
+        if not isinstance(score_dict, dict):
+            if verbose >= 2:
+                logging.warning(f"[CV_SKLEARN] Invalid fold score container for selection metric: {type(score_dict)}")
+            return 0.0
+        raw_score = score_dict.get(selection_score_metric, None)
+        if raw_score is None:
+            if verbose >= 2:
+                logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' missing; using 0.0")
+            return 0.0
+        try:
+            return float(raw_score)
+        except (TypeError, ValueError):
+            if verbose >= 2:
+                logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' non-numeric ({raw_score}); using 0.0")
+            return 0.0
+    
     if verbose >= 1:
         logging.info(f"\n[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
         logging.info(f"[CV_SKLEARN] Model type: {model_type}")
         logging.info(f"[CV_SKLEARN] Refit metric: {refit_scoring_metric}")
+        logging.info(f"[CV_SKLEARN] Hyperparameter selection metric: {selection_score_metric}")
+        logging.info(f"[CV_SKLEARN] Hyperparameter selection aggregation: {selection_score_aggregation}")
         logging.info(f"[CV_SKLEARN] Experiment directory: {experiment_dir}")
         logging.info(f"[CV_SKLEARN] {'-'*80}")
     
@@ -4401,8 +4432,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
                             logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('val_tuned_f1', 0.0):.4f}")
                         
-                        # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('val_tuned_f1', 0.0)
+                        # Primary score for hyperparameter selection
+                        score = _extract_selection_score(fold_scores)
 
                         # Store confusion matrix components at the F1-optimal threshold
                         try:
@@ -4505,8 +4536,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             fold_scores['val_tuned_confusion_matrix_components'] = None
                         fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
-                        # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('val_tuned_f1', 0.0)
+                        # Primary score for hyperparameter selection
+                        score = _extract_selection_score(fold_scores)
                     
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
@@ -4565,6 +4596,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             trained_epochs=trained_epochs,
                             feature_selection_report=selection_report
                         )
+                        comprehensive_results['selection_parameters'] = {
+                            'selection_score_metric': selection_score_metric,
+                            'selection_score_aggregation': selection_score_aggregation,
+                            'refit_scoring_metric': refit_scoring_metric,
+                        }
                         
                         # Save results immediately to prevent data loss
                         json_path = save_evaluation_results(
@@ -4617,9 +4653,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     inner_selected_features.append([])
                     inner_all_metrics.append({})  # Add empty metrics for failed folds
             
-            # Compute average validation score for this parameter combination
-            avg_score = np.mean(inner_scores) if inner_scores else 0.0
-            param_scores.append(avg_score)
+            # Compute robust validation score for this parameter combination
+            if inner_scores:
+                if selection_score_aggregation == 'median':
+                    selection_score = float(np.median(inner_scores))
+                else:  # mean
+                    selection_score = float(np.mean(inner_scores))
+            else:
+                selection_score = 0.0
+            param_scores.append(selection_score)
             
             # Aggregate multi-metric results across inner folds
             if inner_all_metrics:
@@ -4655,7 +4697,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     else:
                         aggregated_metrics[metric_name] = metric_values[-1] if metric_values else 0.0
             else:
-                aggregated_metrics = {'f1': avg_score}
+                aggregated_metrics = {selection_score_metric: selection_score}
             
             param_all_metrics.append(aggregated_metrics)
             
@@ -4783,7 +4825,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             
             if hparam_logger:
                 trial_results = {
-                    'cv_score': float(avg_score),
+                    'cv_score': float(selection_score),
                     'cv_std': float(np.std(inner_scores)) if len(inner_scores) > 1 else 0.0,
                 }
 
@@ -4824,7 +4866,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     hparam_trials.append(trial_record)
             
             if verbose >= 1:
-                logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
+                logging.info(
+                    f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: "
+                    f"{selection_score_aggregation.title()} {selection_score_metric}: {selection_score:.4f}"
+                )
                 logging.info(f"[CV_SKLEARN]   Aggregated features: {len(aggregated_features)}")
                 if aggregated_metrics:
                     metrics_summary = ", ".join([f"{k}={v:.4f}" for k, v in aggregated_metrics.items() if isinstance(v, (int, float))])
@@ -5283,6 +5328,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'best_inner_cv_score': best_score,
                     'test_subject_id': test_subject_number,
                     'test_subject_name': test_subject_name,
+                    'selection_parameters': {
+                        'selection_score_metric': selection_score_metric,
+                        'selection_score_aggregation': selection_score_aggregation,
+                        'refit_scoring_metric': refit_scoring_metric,
+                    }
                 }
                 
                 # Save comprehensive sklearn refit results immediately
@@ -5560,6 +5610,7 @@ def setup_logging(verbose_level=2, log_dir=None):
 
 
 def main():            
+    script_start_time = time.time()
     verbose = 2
     n_jobs_override = None
     force_n_jobs_all = False
@@ -5866,6 +5917,9 @@ def main():
     if verbose >= 1:
         logging.info(f"[MAIN] Results saved to {summary_dir}/")
     
+    total_runtime_seconds = time.time() - script_start_time
+    total_runtime_formatted = str(timedelta(seconds=int(total_runtime_seconds)))
+
     with open(f"{summary_dir}/final_summary.json", 'w') as f:
         json.dump({
             'mean_f1': mean_f1,
@@ -5878,11 +5932,14 @@ def main():
             'std_balanced_accuracy': std_balanced_accuracy,
             'most_common_params': dict(most_common_params) if most_common_params else {},
             'n_subjects': len(np.unique(groups)),
-            'n_trials': len(X_list)
+            'n_trials': len(X_list),
+            'total_runtime_seconds': total_runtime_seconds,
+            'total_runtime_formatted': total_runtime_formatted
         }, f, indent=2)
     
     if verbose >= 1:
         logging.info(f"[MAIN] Nested cross-validation complete!")
+        logging.info(f"[MAIN] Total runtime: {total_runtime_formatted} ({total_runtime_seconds:.2f} seconds)")
     
     return results_df, all_best_params
 
