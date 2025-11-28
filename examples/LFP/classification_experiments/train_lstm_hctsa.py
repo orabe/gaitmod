@@ -1,8 +1,8 @@
+import argparse
 import gc
 import hashlib
 import json
 import logging
-import multiprocessing
 import os
 import pickle
 import re
@@ -10,14 +10,13 @@ import sys
 import time
 import uuid
 import warnings
-from io import StringIO
+from datetime import timedelta
 from itertools import product
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional
-from datetime import timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 # Initialize TensorFlow
-from gaitmod.utils.utils import load_pkl, initialize_tf, disable_xla
+from gaitmod.utils.utils import initialize_tf
 initialize_tf()
 
 try:
@@ -143,17 +142,8 @@ class ConsoleVerbosityFilter(logging.Filter):
         return not any(message.startswith(prefix) for prefix in DETAILED_CONSOLE_PREFIXES)
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
-
-try:
-    import psutil
-    PSUTIL_AVAILABLE = True
-except ImportError:
-    PSUTIL_AVAILABLE = False
-    psutil = None
 
 warnings.filterwarnings('ignore')
 
@@ -477,6 +467,70 @@ PROGRESS_METRIC_ALIASES = {
     'val_MASKED_roc_auc': 'val_roc_auc',
 }
 
+MONITOR_HISTORY_ALIASES = {
+    'f1': 'f1_score',
+    'val_f1': 'val_f1_score',
+    'train_f1': 'f1_score',
+    'f1_score': 'f1_score',
+    'val_f1_score': 'val_f1_score',
+}
+
+
+def determine_effective_monitor_key(base_monitor, has_validation_data):
+    """
+    Determine the actual training history key that should be monitored for callbacks.
+    """
+    if not base_monitor:
+        return None
+    normalized = base_monitor.strip()
+    if has_validation_data:
+        if normalized.startswith('val_'):
+            effective = normalized
+        elif 'loss' in normalized:
+            effective = 'val_loss'
+        else:
+            effective = f"val_{normalized}"
+    else:
+        effective = normalized
+    return MONITOR_HISTORY_ALIASES.get(effective, effective)
+
+
+def summarize_training_history(history_dict, monitor_key, has_validation_data):
+    """
+    Compute trained epochs and best/restored epoch information from a history dict.
+    """
+    trained_epochs = 0
+    restored_epoch = None
+    if isinstance(history_dict, dict):
+        loss_history = history_dict.get('loss')
+        if isinstance(loss_history, (list, tuple)):
+            trained_epochs = len(loss_history)
+        else:
+            for values in history_dict.values():
+                if isinstance(values, (list, tuple)):
+                    trained_epochs = len(values)
+                    break
+
+        if monitor_key:
+            metric_values = history_dict.get(monitor_key)
+            if metric_values and isinstance(metric_values, (list, tuple)):
+                values_arr = np.asarray(metric_values, dtype=float)
+                if values_arr.size > 0 and np.isfinite(values_arr).any():
+                    try:
+                        if 'loss' in monitor_key:
+                            best_idx = int(np.nanargmin(values_arr))
+                        else:
+                            best_idx = int(np.nanargmax(values_arr))
+                        restored_epoch = best_idx + 1
+                    except ValueError:
+                        restored_epoch = None
+
+    if restored_epoch is None and not has_validation_data and trained_epochs:
+        restored_epoch = trained_epochs
+
+    return trained_epochs, restored_epoch
+
+
 class ProgressTrainingLogger(Callback):
     """
     Streamlined training progress logger with fold information.
@@ -731,13 +785,10 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     unique_id = paths['unique_id']
     
     # Adaptive monitor selection based on validation data availability
+    effective_monitor = determine_effective_monitor_key(monitor, has_validation_data)
     if has_validation_data:
-        # Use validation loss when validation data is available (inner CV)
-        effective_monitor = 'val_loss' if 'loss' in monitor else f'val_{monitor}'
         logging.info(f"[CALLBACKS] Using validation monitor: {effective_monitor} (validation data available)")
     else:
-        # Use training loss when no validation data (final retraining)
-        effective_monitor = monitor
         logging.info(f"[CALLBACKS] Using training monitor: {effective_monitor} (no validation data)")
     
     callbacks = [
@@ -801,7 +852,7 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
             verbose=1
         ))
     
-    return callbacks
+    return callbacks, effective_monitor
 
 def setup_hyperparameter_experiment(experiment_dir, param_grid):
     """
@@ -1047,7 +1098,9 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
         'refit': False,  # This is inner CV, not refit
-        'trained_epochs': results_dict.get('trained_epochs')
+        'trained_epochs': results_dict.get('trained_epochs'),
+        'configured_epochs': results_dict.get('configured_epochs'),
+        'restored_epoch': results_dict.get('restored_epoch'),
     }
     
     # For inner fold, use data_info directly from results_dict
@@ -1085,7 +1138,9 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'hyperparameters': hyperparams.copy() if hyperparams else {},
         'refit': True,  # This is the final refit on all training data
-        'trained_epochs': results_dict.get('trained_epochs')
+        'trained_epochs': results_dict.get('trained_epochs'),
+        'configured_epochs': results_dict.get('configured_epochs'),
+        'restored_epoch': results_dict.get('restored_epoch'),
     }
     
     # For refit, construct data_info from individual fields
@@ -1381,6 +1436,7 @@ def build_feature_mapping(selected_features, feature_names=None):
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
                                      selected_features, hyperparams, train_info, val_info,
                                      feature_names=None, trained_epochs=None,
+                                     configured_epochs=None, restored_epoch=None,
                                      feature_selection_report=None):
     """
     Create a comprehensive results dictionary for storage.
@@ -1395,6 +1451,8 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         train_info: Training set information
         val_info: Validation set information
         feature_selection_report: Optional step-wise status dictionary produced by FeatureSelector
+        configured_epochs: Planned number of epochs for this training run
+        restored_epoch: Epoch corresponding to restored/best weights (if early stopping applied)
         
     Returns:
         Dictionary with all results organized for storage
@@ -1465,6 +1523,8 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
             'val_class_distribution': val_info.get('class_dist', {}),
         },
         'trained_epochs': int(trained_epochs) if trained_epochs is not None else None,
+        'configured_epochs': int(configured_epochs) if configured_epochs is not None else None,
+        'restored_epoch': int(restored_epoch) if restored_epoch is not None else None,
     }
 
 # ===================================================================
@@ -3778,11 +3838,14 @@ def build_pipeline(model_type='lstm', mask_values=None,
             classifier = RandomForestClassifier(random_state=42)
             logging.info(f"[BUILD_PIPELINE] Created RandomForestClassifier (XGBoost fallback)")
     elif model_type == 'lstm':
+        patience_value = 10
+        if params is not None:
+            patience_value = params.get('classifier__patience', 10)
 
-        callbacks = create_nested_cv_callbacks(
+        callbacks, effective_monitor = create_nested_cv_callbacks(
             experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
             outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
-            patience=10, monitor='loss', save_models=False, progress_frequency=1,
+            patience=patience_value, monitor='f1', save_models=False, progress_frequency=1,
             has_validation_data=has_validation_data, is_refit=(inner_fold is None))
             
         # Create the LSTM classifier with simplified configuration and subject tracking
@@ -3808,6 +3871,9 @@ def build_pipeline(model_type='lstm', mask_values=None,
                 callbacks=callbacks
             )
             logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_values")
+        
+        classifier._effective_monitor = effective_monitor
+        classifier._has_validation_data = has_validation_data
         
         logging.info(f"[BUILD_PIPELINE] LSTMClassifier created with subject tracking - callbacks will be handled externally")
         if outer_fold is not None:
@@ -4072,8 +4138,6 @@ def get_default_param_grid(model_type, mask_values=None):
         }
         
         # Create complete parameter grid by combining architecture configs with other params
-        from itertools import product
-        from sklearn.model_selection import ParameterGrid
         feature_combos = list(ParameterGrid(base_feature_params))
         complete_params = []
         for fs_combo in feature_combos:
@@ -4129,7 +4193,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           n_jobs=1, 
                           verbose: int = 1,
                           hparam_logger=None,
-                          feature_names=None):
+                          feature_names=None,
+                          outer_test_subjects=None):
     """
     Nested cross-validation with pre-computed padding to optimize efficiency.
     
@@ -4153,6 +4218,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         verbose: Verbosity level
         hparam_logger: Hyperparameter logger
         feature_names: Optional list/sequence of feature names aligned with features
+        outer_test_subjects: Optional iterable of subject names to evaluate
         selection_score_aggregation: Aggregation strategy for inner-fold scores ('median' or 'mean')
         
     Returns:
@@ -4172,6 +4238,18 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     if selection_score_aggregation not in {'median', 'mean'}:
         raise ValueError(f"Invalid selection_score_aggregation='{selection_score_aggregation}'. "
                          "Expected 'median' or 'mean'.")
+    
+    subject_name_filter = None
+    if outer_test_subjects:
+        name_filter_tmp = set()
+        for subj in outer_test_subjects:
+            if not subj:
+                continue
+            subj_str = str(subj).strip()
+            if not subj_str:
+                continue
+            name_filter_tmp.add(subj_str.lower())
+        subject_name_filter = name_filter_tmp or None
     
     def _extract_selection_score(score_dict):
         """Safely fetch the configured selection metric from a fold score dict."""
@@ -4197,6 +4275,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         logging.info(f"[CV_SKLEARN] Refit metric: {refit_scoring_metric}")
         logging.info(f"[CV_SKLEARN] Hyperparameter selection metric: {selection_score_metric}")
         logging.info(f"[CV_SKLEARN] Hyperparameter selection aggregation: {selection_score_aggregation}")
+        if subject_name_filter:
+            logging.info(f"[CV_SKLEARN] Evaluating only outer test subjects: {sorted(subject_name_filter)}")
         logging.info(f"[CV_SKLEARN] Experiment directory: {experiment_dir}")
         logging.info(f"[CV_SKLEARN] {'-'*80}")
     
@@ -4228,11 +4308,14 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     outer_results = []
     all_best_params = []
     
+    processed_outer_folds = 0
+    
     # Outer loop: Leave-One-Subject-Out
     for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
+        fold_number = outer_fold + 1
         if verbose >= 1:
             logging.info(f"\n[CV_SKLEARN] {'='*70}")
-            logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1}/{n_outer_folds}")
+            logging.info(f"[CV_SKLEARN] OUTER FOLD {fold_number}/{n_outer_folds}")
             logging.info(f"[CV_SKLEARN] {'='*70}")
         
         # Step 1: Split trials into train/test (pre-padded)
@@ -4243,6 +4326,17 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         test_subject_number = groups[outer_test_idx][0]
         test_subject_name = (subject_names[test_subject_number] if subject_names and test_subject_number < len(subject_names) 
                             else f"Subject_{test_subject_number}")
+        
+        if subject_name_filter:
+            subject_allowed = False
+            if subject_name_filter and test_subject_name.lower() in subject_name_filter:
+                subject_allowed = True
+            if not subject_allowed:
+                if verbose >= 2:
+                    logging.info(f"[CV_SKLEARN] Skipping outer fold {fold_number} (subject filter)")
+                continue
+        
+        processed_outer_folds += 1
         
         if verbose >= 1:
             logging.info(f"[CV_SKLEARN] Test subject: {test_subject_name} ({test_subject_number})")
@@ -4311,6 +4405,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 try:
+                    # Track actual tensors seen by the classifier for logging
+                    train_shape_for_logging = X_inner_train.shape
+                    val_shape_for_logging = X_inner_val.shape
+
                     selected_features = []
                     selection_report = None
                     # Step 4: Create pre-padded inner training and validation data
@@ -4335,7 +4433,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     )
                     inner_pipeline.set_params(**params)
                     
-                    trained_epochs = None
+                    trained_epochs = 0
+                    restored_epoch = None
+                    configured_epochs = None
                     
                     # Step 7: Fit and evaluate pipeline with proper validation data handling
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
@@ -4355,13 +4455,18 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             transformer.fit(X_train_transformed, y_inner_train)
                             X_train_transformed = transformer.transform(X_train_transformed)
                         
+                        train_shape_for_logging = X_train_transformed.shape
+                        
                         # Step 7b: Transform validation data using fitted preprocessing pipeline
                         X_val_transformed = X_inner_val
                         for step_name, transformer in preprocessing_steps:
                             X_val_transformed = transformer.transform(X_val_transformed)
                         
+                        val_shape_for_logging = X_val_transformed.shape
+                        
                         # Step 7c: Fit LSTM classifier with validation data
                         lstm_classifier = inner_pipeline.steps[-1][1]  # Get the classifier
+                        configured_epochs = getattr(lstm_classifier, 'epochs', None)
                         
                         # Set validation data for the LSTM classifier
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
@@ -4375,7 +4480,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         history_metrics = {}
                         lstm_histories = getattr(lstm_classifier, 'history_', [])
                         if lstm_histories:
-                            history_metrics = extract_final_history_metrics(lstm_histories[-1])
+                            last_history = lstm_histories[-1]
+                            history_metrics = extract_final_history_metrics(last_history)
+                            trained_epochs, restored_epoch = summarize_training_history(
+                                last_history,
+                                getattr(lstm_classifier, '_effective_monitor', None),
+                                getattr(lstm_classifier, '_has_validation_data', True)
+                            )
+                        else:
+                            trained_epochs = 0
+                            restored_epoch = None
                         
                         # Step 7d: Evaluate on validation data using threshold optimization
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
@@ -4458,6 +4572,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # For other models, flatten to 2D
                         X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
                         X_inner_val_2d = X_inner_val.reshape(X_inner_val.shape[0], -1)
+                        train_shape_for_logging = X_inner_train_2d.shape
+                        val_shape_for_logging = X_inner_val_2d.shape
                         
                         inner_pipeline.fit(X_inner_train_2d, y_inner_train)
                         y_val_pred = inner_pipeline.predict(X_inner_val_2d)
@@ -4542,14 +4658,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
                     
-                    trained_epochs = 0
-                    if model_type == 'lstm':
-                        lstm_histories = getattr(inner_pipeline.named_steps['classifier'], 'history_', [])
-                        if lstm_histories:
-                            last_history = lstm_histories[-1]
-                            if isinstance(last_history, dict):
-                                trained_epochs = len(last_history.get('loss', []))
-                    inner_fold_details.append({'trained_epochs': trained_epochs})
+                    inner_fold_details.append({
+                        'trained_epochs': trained_epochs,
+                        'configured_epochs': configured_epochs,
+                        'restored_epoch': restored_epoch
+                    })
                     
                     # Store selected features and capture step status for this inner fold
                     feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
@@ -4573,13 +4686,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         # Gather comprehensive training and validation information
                         train_info = {
                             'n_samples': len(y_inner_train),
-                            'shape': X_inner_train.shape if hasattr(X_inner_train, 'shape') else None,
+                            'shape': train_shape_for_logging,
                             'class_dist': dict(zip(*np.unique(y_inner_train, return_counts=True))),
                         }
                         
                         val_info = {
                             'n_samples': len(y_inner_val),
-                            'shape': X_inner_val.shape if hasattr(X_inner_val, 'shape') else None,
+                            'shape': val_shape_for_logging,
                             'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
                         }
                         
@@ -4594,6 +4707,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             val_info=val_info,
                             feature_names=feature_names,
                             trained_epochs=trained_epochs,
+                            configured_epochs=configured_epochs,
+                            restored_epoch=restored_epoch,
                             feature_selection_report=selection_report
                         )
                         comprehensive_results['selection_parameters'] = {
@@ -4918,6 +5033,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             logging.info(f"\n[CV_SKLEARN] Final retraining on full training set...")
         
         try:
+            train_shape_for_logging = X_outer_train.shape if hasattr(X_outer_train, 'shape') else None
+            test_shape_for_logging = X_outer_test.shape if hasattr(X_outer_test, 'shape') else None
+            
             # Create final pipeline with best parameters and subject information
             final_pipeline, final_scoring_functions = build_pipeline(
                 model_type=model_type,
@@ -4944,6 +5062,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             # Train on full outer training set
             threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
             refit_trained_epochs = None
+            refit_restored_epoch = None
+            refit_configured_epochs = None
             test_metrics = {}
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
                 preprocessing_steps = final_pipeline.steps[:-1]
@@ -4961,6 +5081,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 lstm_classifier._validation_data = None
                 lstm_classifier.epochs = refit_epochs
                 refit_trained_epochs = refit_epochs
+                refit_configured_epochs = refit_epochs
                 
                 if verbose >= 1:
                     logging.info(f"[CV_SKLEARN] Final training (no early stopping): epochs={refit_epochs}, train={X_outer_train.shape}, test={X_outer_test.shape}")
@@ -4970,14 +5091,23 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 for step_name, transformer in preprocessing_steps:
                     transformer.fit(X_train_final, y_outer_train)
                     X_train_final = transformer.transform(X_train_final)
+                train_shape_for_logging = X_train_final.shape
                 
                 # Transform test data using fitted preprocessing pipeline  
                 X_test_final = X_outer_test
                 for step_name, transformer in preprocessing_steps:
                     X_test_final = transformer.transform(X_test_final)
+                test_shape_for_logging = X_test_final.shape
 
                 # Fit the LSTM classifier with fixed epoch schedule
                 lstm_classifier.fit(X_train_final, y_outer_train)
+                lstm_histories = getattr(lstm_classifier, 'history_', [])
+                if lstm_histories:
+                    _, refit_restored_epoch = summarize_training_history(
+                        lstm_histories[-1],
+                        getattr(lstm_classifier, '_effective_monitor', None),
+                        getattr(lstm_classifier, '_has_validation_data', False)
+                    )
 
                 # Use stable thresholds computed on aggregated validation data from inner CV
                 # This avoids optimism bias from refitting thresholds on training data
@@ -5118,6 +5248,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # For other models
                 X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
                 X_outer_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
+                train_shape_for_logging = X_outer_train_2d.shape
+                test_shape_for_logging = X_outer_test_2d.shape
                 
                 final_pipeline.fit(X_outer_train_2d, y_outer_train)
                 y_test_pred = final_pipeline.predict(X_outer_test_2d)
@@ -5283,13 +5415,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Gather comprehensive training and test information
                 train_info = {
                     'n_samples': len(y_outer_train),
-                    'shape': X_outer_train.shape if hasattr(X_outer_train, 'shape') else None,
+                    'shape': train_shape_for_logging,
                     'class_dist': dict(zip(*np.unique(y_outer_train, return_counts=True))),
                 }
                 
                 test_info = {
                     'n_samples': len(y_outer_test),
-                    'shape': X_outer_test.shape if hasattr(X_outer_test, 'shape') else None,
+                    'shape': test_shape_for_logging,
                     'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
                 }
                 
@@ -5309,6 +5441,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         'final_strategy_details': final_feature_selection_strategy_details,
                     },
                     'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
+                    'configured_epochs': int(refit_configured_epochs) if refit_configured_epochs is not None else None,
+                    'restored_epoch': int(refit_restored_epoch) if refit_restored_epoch is not None else None,
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
@@ -5479,65 +5613,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         except Exception as summary_error:
             logging.warning(format_warning_message(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}"))
     
+    if processed_outer_folds == 0:
+        raise ValueError("No outer folds were processed. Check outer fold/subject filters.")
+    
     return outer_results, all_best_params, experiment_dir  
 
 
-def get_optimal_n_jobs(model_type='lstm', conservative=True):
-    """
-    Determine optimal number of parallel jobs based on system resources and model type.
-    
-    Args:
-        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb')
-        conservative: If True, use conservative estimates
-        
-    Returns:
-        int: Optimal number of jobs
-    """
-    try:
-        if not PSUTIL_AVAILABLE:
-            raise ImportError("psutil not available")
-        cpu_count = psutil.cpu_count(logical=True)
-        memory_gb = psutil.virtual_memory().total / (1024**3)
-        available_memory_gb = psutil.virtual_memory().available / (1024**3)
-        
-        logging.info(f"[SYSTEM] CPU cores: {cpu_count}, Total memory: {memory_gb:.1f}GB, Available: {available_memory_gb:.1f}GB")
-        
-        # For LSTM models, be very conservative due to memory requirements
-        if model_type.lower() == 'lstm':
-            if conservative:
-                n_jobs = min(2, max(1, cpu_count // 4))  # Use at most 25% of cores
-            else:
-                n_jobs = min(4, max(1, cpu_count // 2))  # Use at most 50% of cores
-        
-        # For tree-based models, can be more aggressive
-        elif model_type.lower() in ['rf', 'xgb']:
-            if conservative:
-                n_jobs = min(4, max(1, cpu_count // 2))
-            else:
-                n_jobs = min(cpu_count - 1, max(1, int(cpu_count * 0.75)))
-        
-        # For SVM and others, moderate approach
-        else:
-            if conservative:
-                n_jobs = min(2, max(1, cpu_count // 3))
-            else:
-                n_jobs = min(4, max(1, cpu_count // 2))
-        
-        # Memory-based adjustments (rough estimates)
-        if available_memory_gb < 4:
-            n_jobs = 1
-        elif available_memory_gb < 8:
-            n_jobs = min(n_jobs, 2)
-        
-        logging.info(f"[SYSTEM] Recommended n_jobs for {model_type}: {n_jobs}")
-        return n_jobs
-        
-    except ImportError:
-        logging.warning(format_warning_message("[SYSTEM] psutil not available, using conservative default"))
-        return 1 if model_type.lower() == 'lstm' else 2
-    except Exception as e:
-        logging.warning(format_warning_message(f"[SYSTEM] Error detecting system resources: {e}"))
-        return 1
 
 def setup_logging(verbose_level=2, log_dir=None):
     """
@@ -5609,19 +5690,56 @@ def setup_logging(verbose_level=2, log_dir=None):
     return log_file
 
 
-def main():            
+def parse_outer_subject_selection(selection_str):
+    """
+    Parse a comma-separated string of outer test subject names.
+
+    Args:
+        selection_str (str or None): e.g., "PW_EM59,PW_SN61" to run only those subjects.
+
+    Returns:
+        list[str] or None: List of trimmed subject names (as provided), or None if not provided.
+    """
+    if not selection_str:
+        return None
+    
+    filters = [token.strip() for token in selection_str.split(',') if token.strip()]
+    return filters if filters else None
+
+
+def main(argv=None):            
     script_start_time = time.time()
+    
+    parser = argparse.ArgumentParser(description="LSTM HCTSA nested cross-validation training")
+    parser.add_argument(
+        "--outer-subjects",
+        type=str,
+        default=None,
+        help="Comma-separated list of outer subjects to run (e.g., 'PW_EM59,PW_SN61')"
+    )
+    parser.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="Optional run identifier; when provided, results go to logs/nested_cv_<run-id>_<channel>"
+    )
+    args = parser.parse_args(argv)
+    
     verbose = 2
-    n_jobs_override = None
-    force_n_jobs_all = False
-    channel_name = None
+    n_jobs = 2
     segment_cache_dir = os.path.join("data", "hctsa_segments")
+    
+    outer_subject_selection_str = args.outer_subjects
+    outer_subject_filters = parse_outer_subject_selection(outer_subject_selection_str)
     
         
     # Setup hierarchical experiment logging structure
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
     channel_selection_method = 'beta'
-    experiment_dir = f"logs/nested_cv_{timestamp}_{channel_selection_method}"
+    if args.run_id:
+        run_id = args.run_id
+    else:
+        run_id = time.strftime("%Y%m%d_%H%M%S")
+    experiment_dir = f"logs/nested_cv_{run_id}_{channel_selection_method}"
     os.makedirs(experiment_dir, exist_ok=True)
     
     # Create main experiment log
@@ -5632,27 +5750,15 @@ def main():
     logging.info("="*80)
     logging.info(f"Verbose level: {verbose}")
     logging.info(f"Experiment directory: {experiment_dir}")
+    if outer_subject_filters:
+        logging.info(f"[MAIN] Outer subject filter applied: {outer_subject_filters}")
     
-    # Determine number of parallel jobs
-    if force_n_jobs_all:
-        logging.warning(format_warning_message("Forcing n_jobs=-1 - this may cause memory issues with LSTM!"))
-        n_jobs = -1
-    elif n_jobs_override is not None:
-        logging.info(f"Using manual n_jobs={n_jobs_override}")
-        n_jobs = n_jobs_override
-    else:
-        n_jobs = get_optimal_n_jobs(model_type='lstm', conservative=True)
-
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
     logging.info("="*80)
     logging.info("NESTED CROSS-VALIDATION PIPELINE")
     logging.info("="*80)
-    
-    
-    MAX_SUBJECTS = None  # Use None for all subjects, or e.g., 3 for testing
-    
     if channel_selection_method == 'beta':
         SUBJECT_CHANNEL_PRIOR = {
             "PW_EM59": "channel_2-LFP_L0-2",
@@ -5690,11 +5796,7 @@ def main():
     if verbose >= 1 and subject_channel_map:
         channel_counts = Counter(subject_channel_map.values())
         channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
-        logging.info(
-            "[MAIN] Using subject-specific channel selection (default channel=%s). Assignments: %s",
-            channel_name,
-            channel_summary
-        )
+        logging.info("[MAIN] Using subject-specific channel selection. Assignments: %s", channel_summary)
         
     TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
         subject_channel_map=subject_channel_map
@@ -5750,34 +5852,10 @@ def main():
         TS_DataMat, labels, epoch_mapping, verbose=verbose
     ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
 
-    # SLICE DATA TO SPECIFIED NUMBER OF SUBJECTS FOR FASTER TESTING
     unique_subjects = np.unique(groups)
-    
-    if MAX_SUBJECTS is not None and MAX_SUBJECTS < len(unique_subjects):
-        selected_subjects = unique_subjects[:MAX_SUBJECTS]  # Take first N subjects
-        
-        if verbose >= 1:
-            logging.info(f"[MAIN] SLICING DATA TO {MAX_SUBJECTS} SUBJECTS FOR TESTING")
-            logging.info(f"[MAIN] Original subjects: {len(unique_subjects)} ({unique_subjects})")
-            logging.info(f"[MAIN] Selected subjects: {len(selected_subjects)} ({selected_subjects})")
-        
-        # Filter data to only include selected subjects
-        subject_mask = np.isin(groups, selected_subjects)
-        X_list = [X_list[i] for i in range(len(X_list)) if subject_mask[i]]
-        y_list = [y_list[i] for i in range(len(y_list)) if subject_mask[i]]
-        groups = groups[subject_mask]
-        trial_metadata = [trial_metadata[i] for i in range(len(trial_metadata)) if subject_mask[i]]
-        
-        # Update subject_names to match the selected subjects
-        if subject_names:
-            subject_names = [subject_names[i] for i in selected_subjects if i < len(subject_names)]
-        
-        subject_info_msg = f"({MAX_SUBJECTS} subjects only)"
-    else:
-        if verbose >= 1:
-            logging.info(f"[MAIN] USING ALL {len(unique_subjects)} SUBJECTS")
-        subject_info_msg = f"(all {len(unique_subjects)} subjects)"
-    
+    if verbose >= 1:
+        logging.info(f"[MAIN] USING ALL {len(unique_subjects)} SUBJECTS")
+    subject_info_msg = f"(all {len(unique_subjects)} subjects)"
     if verbose >= 1:
         logging.info(f"[MAIN] Unpadded trial data prepared {subject_info_msg}:")
         logging.info(f"[MAIN] Number of subjects: {len(np.unique(groups))}")
@@ -5843,105 +5921,20 @@ def main():
         n_jobs=n_jobs,
         verbose=verbose,
         hparam_logger=hparam_logger,
-        feature_names=feature_names
+        feature_names=feature_names,
+        outer_test_subjects=outer_subject_filters
     )
 
-    # Step 19: Final Evaluation
+    # Step 19: Final Evaluation (logged only; aggregation handled separately)
     if verbose >= 1:
         logging.info("\n[MAIN] 4. FINAL EVALUATION")
         logging.info("[MAIN] " + "-" * 40)
     
-    # Create summary directory for final results
-    summary_dir = os.path.join(experiment_dir, "summary")
-    os.makedirs(summary_dir, exist_ok=True)
-    
-    # Convert results to DataFrame
-    results_df = pd.DataFrame(outer_results)
-    
-    # Calculate summary statistics
-    mean_f1 = results_df['test_tuned_f1'].mean()
-    std_f1 = results_df['test_tuned_f1'].std()
-    mean_auc = results_df['test_roc_auc'].mean()
-    std_auc = results_df['test_roc_auc'].std()
-    mean_accuracy = results_df['test_tuned_accuracy'].mean()
-    std_accuracy = results_df['test_tuned_accuracy'].std()
-    if 'test_tuned_balanced_accuracy' in results_df.columns:
-        mean_balanced_accuracy = results_df['test_tuned_balanced_accuracy'].mean()
-        std_balanced_accuracy = results_df['test_tuned_balanced_accuracy'].std()
-    else:
-        mean_balanced_accuracy = None
-        std_balanced_accuracy = None
-    
-    if verbose >= 1:
-        logging.info(f"[MAIN] FINAL TEST RESULTS:")
-        logging.info(f"[MAIN] Test Tuned F1 Score: {mean_f1:.4f} ± {std_f1:.4f}")
-        logging.info(f"[MAIN] Test Tuned ROC AUC: {mean_auc:.4f} ± {std_auc:.4f}")
-        logging.info(f"[MAIN] Test Tuned Accuracy: {mean_accuracy:.4f} ± {std_accuracy:.4f}")
-        if mean_balanced_accuracy is not None:
-            logging.info(f"[MAIN] Test Tuned Balanced Accuracy: {mean_balanced_accuracy:.4f} ± {std_balanced_accuracy:.4f}")
-    
-    # Most common hyperparameters
-    param_counts = {}
-    for params in all_best_params:
-        # Convert lists to tuples to make them hashable
-        hashable_params = {}
-        for key, value in params.items():
-            if isinstance(value, list):
-                hashable_params[key] = tuple(value)
-            else:
-                hashable_params[key] = value
-        param_key = tuple(sorted(hashable_params.items()))
-        param_counts[param_key] = param_counts.get(param_key, 0) + 1
-    
-    if param_counts:
-        most_common_params = max(param_counts, key=param_counts.get)
-        # Convert tuples back to lists for display
-        display_params = {}
-        for key, value in dict(most_common_params).items():
-            if isinstance(value, tuple):
-                display_params[key] = list(value)
-            else:
-                display_params[key] = value
-        if verbose >= 1:
-            logging.info(f"[MAIN] Most common best parameters: {display_params}")
-    else:
-        most_common_params = {}
-        display_params = {}
-        if verbose >= 1:
-            logging.info(f"[MAIN] No best parameters collected (likely due to failed CV folds)")
-            logging.info(f"[MAIN] all_best_params length: {len(all_best_params)}")
-    
-    # Save results
-    results_df.to_csv(f"{summary_dir}/nested_cv_results.csv", index=False)
-    
-    if verbose >= 1:
-        logging.info(f"[MAIN] Results saved to {summary_dir}/")
-    
     total_runtime_seconds = time.time() - script_start_time
     total_runtime_formatted = str(timedelta(seconds=int(total_runtime_seconds)))
-
-    with open(f"{summary_dir}/final_summary.json", 'w') as f:
-        json.dump({
-            'mean_f1': mean_f1,
-            'std_f1': std_f1,
-            'mean_auc': mean_auc,
-            'std_auc': std_auc,
-            'mean_accuracy': mean_accuracy,
-            'std_accuracy': std_accuracy,
-            'mean_balanced_accuracy': mean_balanced_accuracy,
-            'std_balanced_accuracy': std_balanced_accuracy,
-            'most_common_params': dict(most_common_params) if most_common_params else {},
-            'n_subjects': len(np.unique(groups)),
-            'n_trials': len(X_list),
-            'total_runtime_seconds': total_runtime_seconds,
-            'total_runtime_formatted': total_runtime_formatted
-        }, f, indent=2)
-    
     if verbose >= 1:
         logging.info(f"[MAIN] Nested cross-validation complete!")
-        logging.info(f"[MAIN] Total runtime: {total_runtime_formatted} ({total_runtime_seconds:.2f} seconds)")
-    
-    return results_df, all_best_params
+        logging.info(f"[MAIN] Total runtime: {total_runtime_formatted}")
 
 
 if __name__ == "__main__":
