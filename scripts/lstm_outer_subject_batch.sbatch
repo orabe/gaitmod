@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# SLURM batch script for training on a subject subset.
+#
+# Usage:
+#   sbatch --export=SUBJECTS="PW_EM59,PW_SN61" scripts/lstm_outer_subject_batch.sbatch
+#   sbatch scripts/lstm_outer_subject_batch.sbatch
+
+#SBATCH --job-name=outer_subjects
+#SBATCH --partition=gpu-2h
+#SBATCH --gpus-per-node=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem=64G
+#SBATCH --output=logs/slurm/lstm_outer_%j.out
+#SBATCH --error=logs/slurm/lstm_outer_%j.err
+
+set -euo pipefail
+
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$PROJECT_ROOT"
+
+mkdir -p "$PROJECT_ROOT/logs/slurm"
+export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
+
+# --- Environment setup ------------------------------------------------------
+# Customize this block to activate your preferred Python environment.
+# shellcheck disable=SC2015
+if [[ -f "$HOME/.bashrc" ]]; then
+    source "$HOME/.bashrc"
+fi
+if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    conda activate gaitmod-cluster
+else
+    echo "[SLURM] conda not found on PATH; please load/activate your environment before submitting." >&2
+    exit 1
+fi
+# ----------------------------------------------------------------------------
+
+SUBJECTS="${SUBJECTS:-}"
+
+CMD=(python examples/LFP/classification_experiments/train_lstm_hctsa.py)
+if [[ -n "${RUN_ID:-}" ]]; then
+    CMD+=(--run-id "$RUN_ID")
+fi
+if [[ -n "$SUBJECTS" ]]; then
+    CMD+=(--outer-subjects "$SUBJECTS")
+fi
+
+echo "[SLURM] Running: ${CMD[*]}"
+"${CMD[@]}"
