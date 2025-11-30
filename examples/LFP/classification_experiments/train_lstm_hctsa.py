@@ -17,14 +17,23 @@ from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import psutil
+from joblib import Parallel, delayed
+
+def log_memory_usage():
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_gb = mem_info.rss / (1024**3)
+    logging.info(f"[MEMORY] Current RAM usage: {mem_gb:.2f} GB")
+
 # Initialize TensorFlow
 from gaitmod.utils.utils import initialize_tf
 initialize_tf()
 
 try:
+    # TensorFlow configuration for stability and performance  
     import tensorflow as tf
     
-    # TensorFlow configuration for stability and performance  
     # DISABLE eager execution for better performance with data pipelines
     tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
     tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
@@ -5805,7 +5814,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     
     verbose = 2
-    n_jobs = 2
+    n_jobs = 1  # Optimal for LSTM with GPU
     segment_cache_dir = os.path.join("data", "hctsa_segments")
     
     outer_subject_selection_str = args.outer_subjects
