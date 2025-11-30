@@ -201,6 +201,34 @@ def load_hyperparameter_config(config_path: Optional[str] = None) -> Dict[str, A
         return json.load(f)
 
 
+GLOBAL_HPARAM_CONFIG = load_hyperparameter_config()
+GLOBAL_SETTINGS = GLOBAL_HPARAM_CONFIG.get('global_settings', {})
+EXPERIMENT_NAME = GLOBAL_SETTINGS.get('experiment_name', 'nested_cv')
+CALLBACK_SETTINGS = GLOBAL_SETTINGS.get('callbacks', {})
+THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('threshold_search', {})
+MASK_SETTINGS = GLOBAL_SETTINGS.get('masking', {})
+CHANNEL_SELECTION_SETTINGS = GLOBAL_SETTINGS.get('channel_selection', {})
+CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
+DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
+
+DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
+DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_thresholds', 81))
+DEFAULT_THRESHOLD_METRICS = THRESHOLD_SETTINGS.get('metrics', [
+    'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy'
+]) or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+
+DEFAULT_PROGRESS_FREQUENCY = CALLBACK_SETTINGS.get('progress_frequency', 1)
+DEFAULT_REDUCE_LR_FACTOR = CALLBACK_SETTINGS.get('reduce_lr_factor', 0.5)
+DEFAULT_REDUCE_LR_MIN_LR = CALLBACK_SETTINGS.get('reduce_lr_min_lr', 1e-7)
+DEFAULT_REDUCE_LR_PATIENCE_RATIO = CALLBACK_SETTINGS.get('reduce_lr_patience_ratio', 0.5)
+DEFAULT_CALLBACK_MONITOR = CALLBACK_SETTINGS.get('monitor', 'loss')
+DEFAULT_CALLBACK_PATIENCE = CALLBACK_SETTINGS.get('patience', 10)
+
+DEFAULT_GLOBAL_X_MASK_VALUE = MASK_SETTINGS.get('global_x_mask_value', 1e6)
+DEFAULT_Y_MASK_VALUE = MASK_SETTINGS.get('y_mask_value', -1)
+
+
 # ===================================================================
 # TensorBoard Hyperparameter Visualization
 # ===================================================================
@@ -641,6 +669,44 @@ class ProgressTrainingLogger(Callback):
             return str(value)
         except (ValueError, TypeError, OverflowError):
             return "N/A"
+
+
+class LearningRateLoggingCallback(Callback):
+    """Callback that logs the optimizer learning rate each epoch."""
+    def __init__(self, lr_keys=('lr', 'learning_rate')):
+        super().__init__()
+        self.lr_keys = lr_keys
+
+    def on_epoch_end(self, epoch, logs=None):
+        if logs is None:
+            return
+        lr_value = self._get_current_lr()
+        if lr_value is None:
+            return
+        for key in self.lr_keys:
+            logs[key] = lr_value
+
+    def _get_current_lr(self):
+        optimizer = getattr(self.model, 'optimizer', None)
+        if optimizer is None:
+            return None
+        lr_attr = None
+        for attr in ('lr', 'learning_rate'):
+            if hasattr(optimizer, attr):
+                lr_attr = getattr(optimizer, attr)
+                break
+        if lr_attr is None:
+            return None
+        try:
+            if callable(lr_attr):
+                lr_tensor = lr_attr(self.model._train_counter)
+            else:
+                lr_tensor = lr_attr
+            if hasattr(lr_tensor, 'numpy'):
+                return float(lr_tensor.numpy())
+            return float(K.get_value(lr_tensor))
+        except Exception:
+            return None
         
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
@@ -774,7 +840,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
-                               patience=10, monitor='loss', save_models=False, progress_frequency=1,
+                               patience=None, monitor=None, save_models=False, progress_frequency=None,
                                has_validation_data=False, is_refit=False):
     """
     Create callbacks for nested cross-validation training.
@@ -806,6 +872,10 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     )
     unique_id = paths['unique_id']
     
+    patience = patience if patience is not None else DEFAULT_CALLBACK_PATIENCE
+    monitor = monitor if monitor is not None else DEFAULT_CALLBACK_MONITOR
+    progress_frequency = progress_frequency if progress_frequency is not None else DEFAULT_PROGRESS_FREQUENCY
+
     # Adaptive monitor selection based on validation data availability
     effective_monitor = determine_effective_monitor_key(monitor, has_validation_data)
     if has_validation_data:
@@ -822,6 +892,8 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
             inner_validation_subject=inner_validation_subject,
             print_frequency=progress_frequency
         ),
+
+        LearningRateLoggingCallback(),
         
         # CSV logging
         CSVLogger(
@@ -842,11 +914,11 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         # Learning rate reduction
         ReduceLROnPlateau(
             monitor=effective_monitor,
-            factor=0.5,
-            patience=patience//2,
+            factor=DEFAULT_REDUCE_LR_FACTOR,
+            patience=max(1, int(round(patience * DEFAULT_REDUCE_LR_PATIENCE_RATIO))),
             verbose=1,
             mode='min' if 'loss' in effective_monitor else 'max',
-            min_lr=1e-7
+            min_lr=DEFAULT_REDUCE_LR_MIN_LR
         ), 
         
         # Enhanced TensorBoard with hyperparameter visualization
@@ -1036,6 +1108,40 @@ def extract_final_history_metrics(history_dict):
                 continue
     return extracted
 
+
+def extract_learning_rate_history(history_dict):
+    """Extract per-epoch learning rate values from a history dictionary."""
+    if not isinstance(history_dict, dict):
+        return {}
+    lr_keys = ['lr', 'learning_rate']
+    for key in lr_keys:
+        values = history_dict.get(key)
+        if values is None:
+            continue
+        if isinstance(values, np.ndarray):
+            raw_values = values.tolist()
+        elif isinstance(values, (list, tuple)):
+            raw_values = list(values)
+        else:
+            continue
+        cleaned = []
+        for value in raw_values:
+            if value is None:
+                cleaned.append(None)
+            else:
+                try:
+                    cleaned.append(float(value))
+                except (TypeError, ValueError):
+                    cleaned.append(None)
+        return {
+            'key': key,
+            'values': cleaned,
+            'initial': cleaned[0] if cleaned else None,
+            'final': cleaned[-1] if cleaned else None,
+            'num_epochs': len(cleaned)
+        }
+    return {}
+
 BASE_METRIC_KEYS = {
     'accuracy': 'accuracy',
     'precision': 'precision',
@@ -1045,8 +1151,6 @@ BASE_METRIC_KEYS = {
     'roc_auc': 'roc_auc',
     'pr_auc': 'pr_auc'
 }
-
-THRESHOLD_BASE_METRICS = {'accuracy', 'precision', 'recall', 'balanced_accuracy', 'f1'}
 
 def standardize_metric_names(metrics_dict, stage=None, tuned=False):
     """
@@ -1131,6 +1235,9 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
         'configured_epochs': results_dict.get('configured_epochs'),
         'restored_epoch': results_dict.get('restored_epoch'),
     }
+    selection_params = results_dict.get('selection_parameters')
+    if selection_params:
+        metadata['selection_parameters'] = selection_params
     
     # For inner fold, use data_info directly from results_dict
     data_info = results_dict.get('data_info', {})
@@ -1171,6 +1278,9 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'configured_epochs': results_dict.get('configured_epochs'),
         'restored_epoch': results_dict.get('restored_epoch'),
     }
+    selection_params = results_dict.get('selection_parameters')
+    if selection_params:
+        metadata['selection_parameters'] = selection_params
     
     # For refit, construct data_info from individual fields
     data_info = {
@@ -1229,15 +1339,21 @@ def _create_result_structure(results_dict, metadata, metric_scores, data_info):
             if k != 'selection_scores'
         }
     
-    # Create comprehensive result dictionary with clean, consistent structure
+    training_dynamics = {}
+    lr_history = results_dict.get('learning_rate_history')
+    if lr_history:
+        training_dynamics['learning_rate_history'] = lr_history
+    evaluation_results = {
+        'metric_scores': metric_scores,
+        'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
+        'feature_selection': feature_selection_cleaned,
+        'data_info': data_info,
+    }
+    if training_dynamics:
+        evaluation_results['training_dynamics'] = training_dynamics
     return {
         'metadata': metadata,
-        'evaluation_results': {
-            'metric_scores': metric_scores,
-            'optimal_thresholds': results_dict.get('optimal_thresholds', {}),
-            'feature_selection': feature_selection_cleaned,
-            'data_info': data_info,
-        }
+        'evaluation_results': evaluation_results
     }
 
 def _write_result_files(result, output_dir, json_filename):
@@ -1472,6 +1588,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
                                      selected_features, hyperparams, train_info, val_info,
                                      feature_names=None, trained_epochs=None,
                                      configured_epochs=None, restored_epoch=None,
+                                     learning_rate_history=None,
                                      feature_selection_report=None):
     """
     Create a comprehensive results dictionary for storage.
@@ -1486,6 +1603,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         train_info: Training set information
         val_info: Validation set information
         feature_selection_report: Optional step-wise status dictionary produced by FeatureSelector
+        learning_rate_history: Optional dictionary describing learning-rate evolution per epoch
         configured_epochs: Planned number of epochs for this training run
         restored_epoch: Epoch corresponding to restored/best weights (if early stopping applied)
         
@@ -1560,6 +1678,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
         'trained_epochs': int(trained_epochs) if trained_epochs is not None else None,
         'configured_epochs': int(configured_epochs) if configured_epochs is not None else None,
         'restored_epoch': int(restored_epoch) if restored_epoch is not None else None,
+        'learning_rate_history': learning_rate_history if learning_rate_history else None,
     }
 
 # ===================================================================
@@ -1853,18 +1972,18 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
     
     return X_list, y_list, np.array(groups), metadata
 
-def find_unique_mask_value(data_array, max_search=10000, global_mask_value=1e6, verbose=0):
+def find_unique_mask_value(data_array, max_search=10000, global_mask_value=DEFAULT_GLOBAL_X_MASK_VALUE, verbose=0):
     """
     Find a unique mask value using a large constant approach with fallback.
     
     This implementation:
-    1. First tries a configurable large constant (default 1e6) that sits safely outside typical scaled data ranges
+    1. First tries a configurable large constant (from the hyperparameter config) that sits safely outside typical scaled data ranges
     2. Falls back to systematic search if the constant conflicts with existing data
     3. Provides percentile-based final fallback
     
     The large constant approach works because:
     - Scaled data typically stays within [-10, 10] range
-    - Mask value at 1e6 is safely outside this range
+    - The configured mask value is safely outside this range
     - Masked entries are never transformed by scalers (filtered out first)
     - This makes collisions virtually impossible even with data drift
     
@@ -1875,7 +1994,7 @@ def find_unique_mask_value(data_array, max_search=10000, global_mask_value=1e6, 
     max_search : int
         Maximum range to search (default: 10000)
     global_mask_value : float
-        Preferred mask value to try first (default: 1e6)
+        Preferred mask value to try first (default pulled from config)
     verbose : int
         Verbosity level
         
@@ -1979,7 +2098,7 @@ def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
     # Find unique X mask value starting from 0 and going upward
     if verbose >= 1:
         logging.info(f"[PAD] Searching for unique X mask value (starting from 0, upward)...")
-    X_mask = find_unique_mask_value(all_X, global_mask_value=1e6, verbose=verbose)
+    X_mask = find_unique_mask_value(all_X, verbose=verbose)
     
     # Set Y mask value to always be -1 (simple and reliable for binary labels)
     y_mask = -1
@@ -2401,7 +2520,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                  correlation_threshold=0.95,
                  x_mask_value=None,
                  selection_method='mutual_info',
-                 scoring_weights=None):
+                 scoring_weights=None):  # <-- This parameter
         self.n_features = n_features
         self.variance_threshold = variance_threshold
         self.correlation_threshold = correlation_threshold
@@ -2889,10 +3008,10 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
                  recurrent_activations=['sigmoid'],
                  dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
-                 loss='binary_crossentropy', mask_values={'X_mask': 0.0, 'y_mask': -1}, 
+                 loss='binary_crossentropy', mask_values=None, 
                  use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None,
-                 threshold_range=(0.1, 0.9), n_thresholds=81):
+                 threshold_range=None, n_thresholds=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
         
@@ -2922,13 +3041,16 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.loss = loss
         self.callbacks = callbacks if callbacks is not None else []
         
+        if mask_values is None:
+            mask_values = {'X_mask': 0.0, 'y_mask': DEFAULT_Y_MASK_VALUE}
+        
         # Masking parameters
         self.mask_values = mask_values
         self.use_class_weights = use_class_weights
         
         # Threshold optimization parameters
-        self.threshold_range = threshold_range
-        self.n_thresholds = n_thresholds
+        self.threshold_range = threshold_range or DEFAULT_THRESHOLD_RANGE
+        self.n_thresholds = n_thresholds or DEFAULT_THRESHOLD_STEPS
         
         # Subject and fold tracking parameters
         self.experiment_dir = experiment_dir
@@ -3644,7 +3766,7 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         return best_threshold, best_score, detailed_results
 
     def tune_all_thresholds(self, X_val, y_val, metrics=None, 
-                           threshold_range=(0.1, 0.9), n_thresholds=81, 
+                           threshold_range=None, n_thresholds=None, 
                            verbose=True, store_details=False):
         """
         Tune thresholds for multiple binary classification metrics using the LSTM model.
@@ -3665,8 +3787,10 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
             raise ValueError("Model must be fitted before threshold optimization")
         
         if metrics is None:
-            metrics = ['accuracy', 'f1', 'precision', 'recall', 'specificity', 'balanced_accuracy']
-        
+            metrics = DEFAULT_THRESHOLD_METRICS
+
+        threshold_range = threshold_range or self.threshold_range
+        n_thresholds = n_thresholds or self.n_thresholds
         results = {}
         all_detailed_evaluations = {}  # Store all detailed evaluations for cross-metric analysis
         
@@ -3760,8 +3884,8 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         return results
 
-    def optimize_thresholds_with_model(self, X_val, y_val, metrics=['f1', 'accuracy', 'precision', 'recall'], 
-                                      threshold_range=(0.1, 0.9), n_thresholds=81, verbose=False):
+    def optimize_thresholds_with_model(self, X_val, y_val, metrics=None, 
+                                      threshold_range=None, n_thresholds=None, verbose=False):
         """
         Unified threshold optimization method for the LSTM model - backward compatibility wrapper.
         
@@ -3776,6 +3900,9 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         Returns:
             dict: Optimized thresholds and scores for each metric (compatible with existing code)
         """
+        metrics = metrics or DEFAULT_THRESHOLD_METRICS
+        threshold_range = threshold_range or self.threshold_range
+        n_thresholds = n_thresholds or self.n_thresholds
         # Use the comprehensive threshold tuning method
         tuning_results = self.tune_all_thresholds(
             X_val, y_val, metrics=metrics, 
@@ -4323,6 +4450,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     configured_epochs = None
                     
                     # Step 7: Fit and evaluate pipeline with proper validation data handling
+                    learning_rate_history = None
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
                         # Implement proper pipeline-aware validation data handling
                         if verbose >= 2:
@@ -4372,9 +4500,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                 getattr(lstm_classifier, '_effective_monitor', None),
                                 getattr(lstm_classifier, '_has_validation_data', True)
                             )
+                            learning_rate_history = extract_learning_rate_history(last_history)
                         else:
                             trained_epochs = 0
                             restored_epoch = None
+                            learning_rate_history = None
                         
                         # Step 7d: Evaluate on validation data using threshold optimization
                         y_val_pred = lstm_classifier.predict(X_val_transformed)
@@ -4403,8 +4533,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         if verbose >= 2:
                             logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
                         
-                        # Define metrics to optimize thresholds for
-                        threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                        threshold_metrics = DEFAULT_THRESHOLD_METRICS
                         
                         # Use LSTMClassifier's integrated threshold optimization method
                         threshold_results = lstm_classifier.optimize_thresholds_with_model(
@@ -4594,6 +4723,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             trained_epochs=trained_epochs,
                             configured_epochs=configured_epochs,
                             restored_epoch=restored_epoch,
+                            learning_rate_history=learning_rate_history,
                             feature_selection_report=selection_report
                         )
                         comprehensive_results['selection_parameters'] = {
@@ -4735,7 +4865,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]   Computing stable thresholds on {len(all_val_labels)} aggregated validation samples (LSTM only)")
                     
-                    threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+                    threshold_metrics = DEFAULT_THRESHOLD_METRICS
                     
                     # Simple threshold optimization for aggregated data
                     # Extract positive class probabilities
@@ -4745,7 +4875,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         y_pred_proba_pos = all_val_proba.ravel()
                     
                     # Search thresholds
-                    thresholds = np.linspace(0.1, 0.9, 81)
+                    thresholds = np.linspace(
+                        DEFAULT_THRESHOLD_RANGE[0],
+                        DEFAULT_THRESHOLD_RANGE[1],
+                        DEFAULT_THRESHOLD_STEPS
+                    )
                     aggregated_optimal_thresholds = {}
                     aggregated_optimized_scores = {}
                     
@@ -4951,6 +5085,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             refit_configured_epochs = None
             train_metrics = {}
             test_metrics = {}
+            refit_learning_rate_history = None
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
                 preprocessing_steps = final_pipeline.steps[:-1]
                 lstm_classifier = final_pipeline.steps[-1][1]
@@ -4965,7 +5100,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Preserve logging callbacks for refit so CSV/TensorBoard logs are produced.
                 preserved_callbacks = []
                 for cb in getattr(lstm_classifier, 'callbacks', []):
-                    if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger)):
+                    if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger, LearningRateLoggingCallback)):
                         preserved_callbacks.append(cb)
 
                 if not preserved_callbacks:
@@ -4985,7 +5120,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     )
                     preserved_callbacks = [
                         cb for cb in new_callbacks
-                        if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger))
+                        if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger, LearningRateLoggingCallback))
                     ]
 
                 lstm_classifier.callbacks = preserved_callbacks
@@ -5015,6 +5150,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 lstm_histories = getattr(lstm_classifier, 'history_', [])
                 history_metrics = {}
                 last_history = None
+                refit_learning_rate_history = None
                 if lstm_histories:
                     last_history = lstm_histories[-1]
                     history_metrics = extract_final_history_metrics(last_history)
@@ -5023,6 +5159,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         getattr(lstm_classifier, '_effective_monitor', None),
                         getattr(lstm_classifier, '_has_validation_data', False)
                     )
+                    refit_learning_rate_history = extract_learning_rate_history(last_history)
                 else:
                     last_history = None
 
@@ -5382,6 +5519,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
                     'configured_epochs': int(refit_configured_epochs) if refit_configured_epochs is not None else None,
                     'restored_epoch': int(refit_restored_epoch) if refit_restored_epoch is not None else None,
+                    'learning_rate_history': refit_learning_rate_history if refit_learning_rate_history else None,
                     
                     # Model and feature information
                     'best_hyperparameters': best_params.copy() if best_params else {},
@@ -5394,6 +5532,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Data information
                     'n_train_samples': train_info['n_samples'],
                     'n_test_samples': test_info['n_samples'],
+                    'max_sequence_length': mask_values.get('max_length', None),
                     'train_class_distribution': train_info['class_dist'],
                     'test_class_distribution': test_info['class_dist'],
                     
@@ -5674,12 +5813,14 @@ def main(argv=None):
     
         
     # Setup hierarchical experiment logging structure
-    channel_selection_method = 'beta'
+    channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD or 'beta'
     if args.run_id:
         run_id = args.run_id
     else:
         run_id = time.strftime("%Y%m%d_%H%M%S")
-    experiment_dir = f"logs/nested_cv_{run_id}_{channel_selection_method}"
+    experiment_name = EXPERIMENT_NAME or 'nested_cv'
+    experiment_dir_name = f"{experiment_name}_{run_id}"
+    experiment_dir = os.path.join("logs", experiment_dir_name)
     os.makedirs(experiment_dir, exist_ok=True)
     
     # Create main experiment log
@@ -5689,6 +5830,7 @@ def main(argv=None):
     logging.info("LSTM HCTSA NESTED CV EXPERIMENT STARTED")
     logging.info("="*80)
     logging.info(f"Verbose level: {verbose}")
+    logging.info(f"Experiment name: {experiment_name}")
     logging.info(f"Experiment directory: {experiment_dir}")
     if outer_subject_filters:
         logging.info(f"[MAIN] Outer subject filter applied: {outer_subject_filters}")
@@ -5699,27 +5841,11 @@ def main(argv=None):
     logging.info("="*80)
     logging.info("NESTED CROSS-VALIDATION PIPELINE")
     logging.info("="*80)
-    if channel_selection_method == 'beta':
-        SUBJECT_CHANNEL_PRIOR = {
-            "PW_EM59": "channel_2-LFP_L0-2",
-            "PW_FH57": "channel_2-LFP_L0-2",
-            "PW_HK59": "channel_2-LFP_L0-2",
-            "PW_HZ58": "channel_2-LFP_L0-2",
-            "PW_SN61": "channel_2-LFP_L0-2",
-            "PW_SN66": "channel_5-LFP_R0-2",
-            "PW_US68": "channel_1-LFP_L1-3",
-        }
-    
-    elif channel_selection_method == 'logRegF1':
-        SUBJECT_CHANNEL_PRIOR = {
-            "PW_EM59": "channel_0-LFP_L0-3",
-            "PW_FH57": "channel_1-LFP_L1-3",
-            "PW_HK59": "channel_0-LFP_L0-3",
-            "PW_HZ58": "channel_1-LFP_L1-3",
-            "PW_SN61": "channel_2-LFP_L0-2",
-            "PW_SN66": "channel_0-LFP_L0-3",
-            "PW_US68": "channel_4-LFP_R1-3",
-        }
+    logging.info(f"[MAIN] Channel selection method: {channel_selection_method}")
+    SUBJECT_CHANNEL_PRIOR = CHANNEL_SELECTION_METHODS.get(channel_selection_method)
+    if SUBJECT_CHANNEL_PRIOR is None:
+        available_methods = ', '.join(sorted(CHANNEL_SELECTION_METHODS.keys())) or 'none'
+        raise ValueError(f"Unknown channel_selection_method '{channel_selection_method}'. Available methods: {available_methods}")
     
     # Step 1-6: Preprocessing Pipeline
     logging.info("")
