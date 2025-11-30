@@ -6,13 +6,13 @@
 #   sbatch --export=SUBJECTS="PW_EM59,PW_SN61" scripts/lstm_outer_subject_batch.sbatch
 #   sbatch scripts/lstm_outer_subject_batch.sbatch
 
-#SBATCH --job-name=outer_subjects
-#SBATCH --partition=gpu-2h
-#SBATCH --gpus-per-node=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=64G
-#SBATCH --output=logs/slurm/lstm_outer_%j.out
-#SBATCH --error=logs/slurm/lstm_outer_%j.err
+#SBATCH --job-name=PW_EM59
+#SBATCH --partition=gpu-7d
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96gb
+#SBATCH --output=logs/slurm/PW_EM59_%j.out
+#SBATCH --error=logs/slurm/PW_EM59_%j.err
 
 set -euo pipefail
 

@@ -10,12 +10,12 @@ BATCH_SCRIPT="$SCRIPT_DIR/lstm_outer_subject_batch.sbatch"
 # Define batches. Update this array to match your subject roster.
 declare -a SUBJECT_BATCHES=(
     "PW_EM59",
-    "PW_FH57",
-    "PW_HK59",
-    "PW_HZ58",
-    "PW_SN61",
-    "PW_SN66",
-    "PW_US68"
+    # "PW_FH57",
+    # "PW_HK59",
+    # "PW_HZ58",
+    # "PW_SN61",
+    # "PW_SN66",
+    # "PW_US68"
 )
 
 RUN_ID="${RUN_ID:-$(date +'%Y%m%d_%H%M%S')}"
