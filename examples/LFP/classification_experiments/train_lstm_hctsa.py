@@ -1,4 +1,5 @@
 import argparse
+import copy
 import gc
 import hashlib
 import json
@@ -11,6 +12,7 @@ import time
 import uuid
 import warnings
 from datetime import timedelta
+from functools import lru_cache
 from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -177,6 +179,26 @@ except ImportError:
     XGBClassifier = None
 
 from gaitmod.utils.hctsa_segments import HCTSASegmentCache
+
+HYPERPARAM_CONFIG_PATH = Path(__file__).with_name("hyperparameters.json")
+
+
+@lru_cache(maxsize=1)
+def load_hyperparameter_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load hyperparameter configuration from JSON file.
+    
+    Args:
+        config_path: Optional path override for the configuration file.
+        
+    Returns:
+        Dictionary describing hyperparameter grids per model type.
+    """
+    config_file = Path(config_path) if config_path else HYPERPARAM_CONFIG_PATH
+    if not config_file.exists():
+        raise FileNotFoundError(f"Hyperparameter config not found: {config_file}")
+    with config_file.open("r") as f:
+        return json.load(f)
 
 
 # ===================================================================
@@ -803,7 +825,7 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         
         # CSV logging
         CSVLogger(
-            os.path.join(paths['callbacks_dir'], f"training_{unique_id}.log"),
+            os.path.join(paths['callbacks_dir'], f"training_{unique_id}.csv"),
             separator=',',
             append=False
         ),
@@ -851,6 +873,12 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
             mode='min' if 'loss' in monitor else 'max',
             verbose=1
         ))
+    
+    for cb in callbacks:
+        try:
+            setattr(cb, '_nested_cv_paths', paths)
+        except Exception:
+            pass
     
     return callbacks, effective_monitor
 
@@ -1072,6 +1100,7 @@ def add_notuning_metrics(metrics_dict, stage):
             metrics_dict[notuning_key] = metrics_dict[base_key]
     return metrics_dict
 
+
 def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
                          outer_test_subject, inner_validation_subject, hyperparams):
     """
@@ -1159,8 +1188,14 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
         'test_class_distribution': results_dict.get('test_class_distribution', {})
     }
     
-    # Use test scores for refit results
-    metric_scores = results_dict.get('test_scores', {})
+    # Combine train and test scores for refit results
+    metric_scores = {}
+    train_scores = results_dict.get('train_scores', {})
+    if isinstance(train_scores, dict):
+        metric_scores.update(train_scores)
+    test_scores = results_dict.get('test_scores', {})
+    if isinstance(test_scores, dict):
+        metric_scores.update(test_scores)
     
     # Create result structure
     result = _create_result_structure(results_dict, metadata, metric_scores, data_info)
@@ -3987,195 +4022,45 @@ def get_default_param_grid(model_type, mask_values=None):
         dict: Parameter grid for GridSearchCV
     """
     logging.info(f"[PARAM_GRID] Generating parameter grid for model_type: {model_type}")
-    # logging.info(f"[PARAM_GRID] Mask values: {mask_values}")
+    config = copy.deepcopy(load_hyperparameter_config())
+    model_config = config.get(model_type)
+    if model_config is None:
+        raise ValueError(f"No hyperparameter configuration found for model_type='{model_type}'")
     
-    param_grid = {}
-    
-    # Feature selection and scaler parameters
-    base_feature_params = {
-        'feature_selector__n_features': [
-            # 50,     # Minimal: Top 50 most informative features (fast training, risk of underfitting)
-            # 75,     # Moderate: Good balance between info retention and noise reduction
-            # 100,    # Standard: Comprehensive set for most datasets (baseline choice)
-            150,    # Rich: Maximum info retention for complex patterns (current: best for HCTSA diversity)
-        ],
-        'feature_selector__variance_threshold': [
-            # 0.001,  # Strict: Removes near-constant features aggressively (may lose subtle patterns)
-            0.01,   # Moderate: Balanced noise filtering (current: good for HCTSA feature scales)
-            # 0.1,    # Lenient: Keeps more features with low variance (risk of noise inclusion)
-        ],
-        'feature_selector__selection_method': [
-            'mann_whitney',
-            # 'anova',
-            'mutual_info',
-            # 'cliffs_delta', 
-            # 'pr_auc',
-            # 'roc_auc',
-        ],
-        'feature_selector__scoring_weights': [
-            None,
-            # {'mann_whitney': 1.0, 'roc_auc': 0.5},
-            # {'roc_auc': 1.0},
-        ],
-        'feature_selector__correlation_threshold': [
-            0.85,   # Strict: Aggressive redundancy removal (current: prevents multicollinearity issues)
-            # 0.90,   # Moderate: Standard correlation filtering (balanced approach)
-            # 0.95,   # Lenient: Minimal correlation filtering (keeps complementary info)
-        ],
-    }
+    param_grid: Any = {}
     
     if model_type == 'lstm':
-        base_feature_params['scaler__scaler_type'] = ['robust']
-    
-    param_grid.update(base_feature_params)
-    
-    # Scaling parameters - Critical for HCTSA's heterogeneous feature distributions
-    if model_type == 'lstm':
-        param_grid.update({
-            'scaler__scaler_type': [
-                'robust',   # Robust scaler: Uses median/IQR, best for HCTSA outliers (current choice)
-                # 'standard', # Standard scaler: Mean/std normalization, assumes Gaussian distribution
-                # 'minmax',   # MinMax scaler: [0,1] bounded scaling, good for sigmoid activations
-            ]
-        })
-    
-    # Model-specific parameters
-    if model_type == 'lstm':
-        logging.info(f"[PARAM_GRID] Creating LSTM parameter grid")
+        logging.info(f"[PARAM_GRID] Creating LSTM parameter grid from config")
+        feature_params = model_config.get('feature_params', {})
+        architecture_configs = model_config.get('architecture_configs', [])
+        other_params = model_config.get('other_params', {})
         
-        # HYPERPARAMETER OPTIMIZATION STRATEGY FOR SMALL BIOMEDICAL DATASETS
-        # Dataset characteristics: N~200, 120 timesteps, 100 features, ~40% minority class
-        # Key principles:
-        # 1. Small architectures (32-96 units) to prevent overfitting
-        # 2. High dropout (0.3-0.5) for regularization  
-        # 3. Small batches (8-16) for better generalization
-        # 4. Lower learning rates (0.0005-0.002) for stability
-        # 5. Lower patience (10-15) to prevent overfitting
-        # 6. Threshold adjustment (0.4-0.5) for class imbalance
-        # 7. RMSprop optimizer (better for RNNs than Adam)
-        # 8. Tanh activation (better gradient flow for small data)
+        if not architecture_configs:
+            raise ValueError("LSTM hyperparameter config requires at least one architecture configuration")
         
-        # Architecture configurations with matched lengths (hidden_dims, activations, recurrent_activations)
-        # Each tuple defines one complete LSTM architecture
-        # OPTIMIZED FOR SMALL BIOMEDICAL DATASET (N~200, high-dim features, imbalanced classes)
-        architecture_configs = [
-            # Config 1: Conservative single-layer LSTM - Best for small datasets
-            {
-                'classifier__hidden_dims': [32],
-                'classifier__activations': ['tanh'],  # Better gradient flow for small data
-                'classifier__recurrent_activations': ['sigmoid']
-            },
-            # # Config 2: Medium single-layer LSTM 
-            # {
-            #     'classifier__hidden_dims': [64],
-            #     'classifier__activations': ['tanh'],
-            #     'classifier__recurrent_activations': ['sigmoid']
-            # },
-            # # Config 3: Larger single-layer for comparison
-            # {
-            #     'classifier__hidden_dims': [96],
-            #     'classifier__activations': ['tanh'],
-            #     'classifier__recurrent_activations': ['sigmoid']
-            # },
-            # # Config 4: Very shallow 2-layer (only if single layers don't work)
-            {
-                'classifier__hidden_dims': [32, 64],
-                'classifier__activations': ['tanh', 'tanh'],
-                'classifier__recurrent_activations': ['sigmoid', 'sigmoid']
-            },
-        ]
+        feature_combos = list(ParameterGrid(feature_params)) if feature_params else [dict()]
+        other_keys = list(other_params.keys())
+        if other_keys:
+            other_value_lists = [other_params[key] for key in other_keys]
+            other_combos = list(product(*other_value_lists))
+        else:
+            other_combos = [()]
         
-        # Other hyperparameters that don't need length matching
-        other_params = {
-            
-            # Dropout Regularization - CRITICAL for small datasets to prevent overfitting
-            'classifier__dropout': [
-                # 0.3,    # Moderate-high: Good for small biomedical datasets
-                0.4,    # High: Strong regularization for overfitting prevention
-                # 0.5,    # Very high: Maximum regularization for tiny datasets
-            ],
-            # Output Layer Configuration - Final classification head
-            'classifier__dense_units': [1],           # Single output for binary classification
-            'classifier__dense_activation': ['sigmoid'],  # Sigmoid for probability output [0,1]
-            
-            # Optimization Strategy - RMSprop is often better for RNNs/LSTMs
-            'classifier__optimizer': [
-                # 'RMSprop',      # RMSprop: Specifically designed for RNNs, handles vanishing gradients better
-                'adam',         # Adam: Good fallback, adaptive learning rates
-                # 'SGD'           # SGD: Baseline optimizer, may require more tuning
-            ],
-            
-            # Learning Rate - Lower rates for small datasets and stability
-            'classifier__lr': [
-                # 0.0005,     # Conservative: Better for small datasets and stability
-                0.001,      # Standard: Good middle ground
-                # 0.002,      # Higher: For RMSprop which can handle higher rates
-            ],
-            
-            # Early Stopping Configuration - Lower patience for small datasets
-            'classifier__patience': [
-                # 10,     # Lower patience: Prevents overfitting on small datasets
-                15,     # Moderate patience: Good balance for biomedical data
-            ],
-            'classifier__epochs': [
-                100,    # Sufficient for small datasets with early stopping
-            ],
-            
-            # Batch Size - Small batches for better generalization on small datasets
-            'classifier__batch_size': [
-                # 8,      # Very small: Maximum generalization for tiny datasets
-                16,     # Small: Good balance for datasets N~200
-                # 32,     # Medium: If you have more data than expected
-                # 128,
-            ],
-            
-            # Classification Decision Boundary - Adjusted for observed class imbalance (~40% positive)
-            'classifier__threshold': [
-                # 0.4,    # Lower threshold: Compensate for minority positive class (gait modulation)
-                # 0.45,   # Slightly lower: Balance between sensitivity and specificity
-                0.5,    # Standard: Baseline comparison
-            ]
-        }
-        
-        # Create complete parameter grid by combining architecture configs with other params
-        feature_combos = list(ParameterGrid(base_feature_params))
         complete_params = []
         for fs_combo in feature_combos:
             for arch_config in architecture_configs:
-                for other_combo in product(*other_params.values()):
+                for other_combo in other_combos:
                     param_dict = {}
                     param_dict.update(fs_combo)
                     param_dict.update(arch_config)
-                    for key, value in zip(other_params.keys(), other_combo):
-                        param_dict[key] = value
+                    if other_keys:
+                        for key, value in zip(other_keys, other_combo):
+                            param_dict[key] = value
                     complete_params.append(param_dict)
-        
-        # Instead of using ParameterGrid, return the pre-computed combinations
-        # This ensures proper length matching for LSTM architecture parameters
-        param_grid = complete_params
         logging.info(f"[PARAM_GRID] Total combinations: {len(complete_params)}")
-    elif model_type == 'rf':
-        param_grid.update({
-            'classifier__n_estimators': [100, 200],
-            'classifier__max_depth': [10, 20, None],
-            'classifier__min_samples_split': [2, 5]
-        })
-    elif model_type == 'svm':
-        param_grid.update({
-            'classifier__C': [0.1, 1, 10],
-            'classifier__gamma': ['scale', 'auto'],
-            'classifier__kernel': ['rbf', 'linear']
-        })
-    elif model_type == 'xgb':
-        param_grid.update({
-            'classifier__n_estimators': [100, 200],
-            'classifier__max_depth': [3, 6],
-            'classifier__learning_rate': [0.01, 0.1]
-        })
-    elif model_type == 'dummy':
-        param_grid.update({
-            'classifier__strategy': ['most_frequent', 'constant']
-        })
+        param_grid = complete_params
+    else:
+        param_grid.update(model_config.get('param_grid', {}))
     
     return param_grid
 
@@ -5064,6 +4949,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             refit_trained_epochs = None
             refit_restored_epoch = None
             refit_configured_epochs = None
+            train_metrics = {}
             test_metrics = {}
             if model_type == 'lstm' and len(X_outer_train.shape) == 3:
                 preprocessing_steps = final_pipeline.steps[:-1]
@@ -5076,8 +4962,33 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 refit_epochs = max(trained_epoch_candidates) if trained_epoch_candidates else lstm_classifier.epochs
                 refit_epochs = max(int(refit_epochs), 1)
                 
-                # Disable callbacks and validation for leakage-free refit
-                lstm_classifier.callbacks = []
+                # Preserve logging callbacks for refit so CSV/TensorBoard logs are produced.
+                preserved_callbacks = []
+                for cb in getattr(lstm_classifier, 'callbacks', []):
+                    if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger)):
+                        preserved_callbacks.append(cb)
+
+                if not preserved_callbacks:
+                    new_callbacks, _ = create_nested_cv_callbacks(
+                        experiment_dir=experiment_dir,
+                        outer_fold=outer_fold + 1,
+                        inner_fold=None,
+                        outer_test_subject=test_subject_name,
+                        hyperparameters=best_params,
+                        inner_validation_subject=None,
+                        patience=refit_epochs,
+                        monitor='f1',
+                        save_models=False,
+                        progress_frequency=1,
+                        has_validation_data=False,
+                        is_refit=True
+                    )
+                    preserved_callbacks = [
+                        cb for cb in new_callbacks
+                        if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger))
+                    ]
+
+                lstm_classifier.callbacks = preserved_callbacks
                 lstm_classifier._validation_data = None
                 lstm_classifier.epochs = refit_epochs
                 refit_trained_epochs = refit_epochs
@@ -5102,12 +5013,39 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 # Fit the LSTM classifier with fixed epoch schedule
                 lstm_classifier.fit(X_train_final, y_outer_train)
                 lstm_histories = getattr(lstm_classifier, 'history_', [])
+                history_metrics = {}
+                last_history = None
                 if lstm_histories:
+                    last_history = lstm_histories[-1]
+                    history_metrics = extract_final_history_metrics(last_history)
                     _, refit_restored_epoch = summarize_training_history(
-                        lstm_histories[-1],
+                        last_history,
                         getattr(lstm_classifier, '_effective_monitor', None),
                         getattr(lstm_classifier, '_has_validation_data', False)
                     )
+                else:
+                    last_history = None
+
+                if last_history:
+                    refit_paths = None
+                    for cb in preserved_callbacks:
+                        refit_paths = getattr(cb, '_nested_cv_paths', None)
+                        if refit_paths:
+                            break
+                    if refit_paths:
+                        try:
+                            save_fold_history(
+                                last_history,
+                                refit_paths,
+                                outer_fold=outer_fold + 1,
+                                inner_fold=None,
+                                subject_name=test_subject_name
+                            )
+                        except Exception as history_error:
+                            logging.warning(format_warning_message(
+                                f"[CV_SKLEARN] Failed to save refit history: {history_error}"
+                            ))
+                train_metrics = {k: v for k, v in history_metrics.items() if k.startswith('train_')}
 
                 # Use stable thresholds computed on aggregated validation data from inner CV
                 # This avoids optimism bias from refitting thresholds on training data
@@ -5427,7 +5365,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 
                 # Create comprehensive sklearn refit results dictionary
                 comprehensive_sklearn_refit_results = {
-                    # Test performance metrics
+                    # Performance metrics
+                    'train_scores': train_metrics.copy(),
                     'test_scores': test_metrics.copy(),
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
                     'threshold_optimization': best_aggregated_threshold_results.get('tuning_results', {}) if best_aggregated_threshold_results else {},
@@ -5508,7 +5447,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'test_roc_auc': test_auc,
                 'test_tuned_accuracy': test_accuracy
             }
-            # Add all test metrics to results
+            # Add all train/test metrics to results
+            result_dict.update(train_metrics)
             result_dict.update(test_metrics)
             outer_results.append(result_dict)
             
@@ -5917,6 +5857,8 @@ def main(argv=None):
         mask_values=mask_values,
         model_type='lstm',
         refit_scoring_metric='f1',
+        selection_score_metric='val_tuned_f1',
+        selection_score_aggregation='median',
         experiment_dir=experiment_dir,
         n_jobs=n_jobs,
         verbose=verbose,
