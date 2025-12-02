@@ -189,53 +189,86 @@ except ImportError:
 
 from gaitmod.utils.hctsa_segments import HCTSASegmentCache
 
-HYPERPARAM_CONFIG_PATH = Path(__file__).with_name("hyperparameters.json")
+HYPERPARAM_CONFIG_PATH: Optional[Path] = None
+GLOBAL_HPARAM_CONFIG: Dict[str, Any] = {}
+GLOBAL_SETTINGS: Dict[str, Any] = {}
+EXPERIMENT_NAME = 'nested_cv'
+CALLBACK_SETTINGS: Dict[str, Any] = {}
+THRESHOLD_SETTINGS: Dict[str, Any] = {}
+MASK_SETTINGS: Dict[str, Any] = {}
+CHANNEL_SELECTION_SETTINGS: Dict[str, Any] = {}
+CHANNEL_SELECTION_METHODS: Dict[str, Any] = {}
+DEFAULT_CHANNEL_SELECTION_METHOD = 'beta'
+
+DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
+DEFAULT_THRESHOLD_STEPS: int = 81
+DEFAULT_THRESHOLD_METRICS: List[str] = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+
+DEFAULT_PROGRESS_FREQUENCY = 1
+DEFAULT_REDUCE_LR_FACTOR = 0.5
+DEFAULT_REDUCE_LR_MIN_LR = 1e-7
+DEFAULT_REDUCE_LR_PATIENCE_RATIO = 0.5
+DEFAULT_CALLBACK_MONITOR = 'loss'
+DEFAULT_CALLBACK_PATIENCE = 10
+
+DEFAULT_GLOBAL_X_MASK_VALUE = 1e6
+DEFAULT_Y_MASK_VALUE = -1
 
 
 @lru_cache(maxsize=1)
-def load_hyperparameter_config(config_path: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Load hyperparameter configuration from JSON file.
-    
-    Args:
-        config_path: Optional path override for the configuration file.
-        
-    Returns:
-        Dictionary describing hyperparameter grids per model type.
-    """
-    config_file = Path(config_path) if config_path else HYPERPARAM_CONFIG_PATH
+def load_hyperparameter_config(config_path: str) -> Dict[str, Any]:
+    """Load hyperparameter configuration from a JSON file."""
+    if not config_path:
+        raise ValueError("Hyperparameter config path is required")
+    config_file = Path(config_path)
     if not config_file.exists():
         raise FileNotFoundError(f"Hyperparameter config not found: {config_file}")
     with config_file.open("r") as f:
         return json.load(f)
 
 
-GLOBAL_HPARAM_CONFIG = load_hyperparameter_config()
-GLOBAL_SETTINGS = GLOBAL_HPARAM_CONFIG.get('global_settings', {})
-EXPERIMENT_NAME = GLOBAL_SETTINGS.get('experiment_name', 'nested_cv')
-CALLBACK_SETTINGS = GLOBAL_SETTINGS.get('callbacks', {})
-THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('threshold_search', {})
-MASK_SETTINGS = GLOBAL_SETTINGS.get('masking', {})
-CHANNEL_SELECTION_SETTINGS = GLOBAL_SETTINGS.get('channel_selection', {})
-CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
-DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
+def configure_hyperparameter_settings(config_path: str) -> None:
+    """Load hyperparameter config from disk and update module-level defaults."""
+    global HYPERPARAM_CONFIG_PATH, GLOBAL_HPARAM_CONFIG, GLOBAL_SETTINGS
+    global EXPERIMENT_NAME, CALLBACK_SETTINGS, THRESHOLD_SETTINGS, MASK_SETTINGS
+    global CHANNEL_SELECTION_SETTINGS, CHANNEL_SELECTION_METHODS, DEFAULT_CHANNEL_SELECTION_METHOD
+    global DEFAULT_THRESHOLD_RANGE, DEFAULT_THRESHOLD_STEPS, DEFAULT_THRESHOLD_METRICS, THRESHOLD_BASE_METRICS
+    global DEFAULT_PROGRESS_FREQUENCY, DEFAULT_REDUCE_LR_FACTOR, DEFAULT_REDUCE_LR_MIN_LR
+    global DEFAULT_REDUCE_LR_PATIENCE_RATIO, DEFAULT_CALLBACK_MONITOR, DEFAULT_CALLBACK_PATIENCE
+    global DEFAULT_GLOBAL_X_MASK_VALUE, DEFAULT_Y_MASK_VALUE
 
-DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
-DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_thresholds', 81))
-DEFAULT_THRESHOLD_METRICS = THRESHOLD_SETTINGS.get('metrics', [
-    'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy'
-]) or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
-THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+    resolved_path = Path(config_path).expanduser().resolve()
+    config = load_hyperparameter_config(str(resolved_path))
 
-DEFAULT_PROGRESS_FREQUENCY = CALLBACK_SETTINGS.get('progress_frequency', 1)
-DEFAULT_REDUCE_LR_FACTOR = CALLBACK_SETTINGS.get('reduce_lr_factor', 0.5)
-DEFAULT_REDUCE_LR_MIN_LR = CALLBACK_SETTINGS.get('reduce_lr_min_lr', 1e-7)
-DEFAULT_REDUCE_LR_PATIENCE_RATIO = CALLBACK_SETTINGS.get('reduce_lr_patience_ratio', 0.5)
-DEFAULT_CALLBACK_MONITOR = CALLBACK_SETTINGS.get('monitor', 'loss')
-DEFAULT_CALLBACK_PATIENCE = CALLBACK_SETTINGS.get('patience', 10)
+    HYPERPARAM_CONFIG_PATH = resolved_path
+    GLOBAL_HPARAM_CONFIG = config
+    GLOBAL_SETTINGS = GLOBAL_HPARAM_CONFIG.get('global_settings', {})
+    EXPERIMENT_NAME = GLOBAL_SETTINGS.get('experiment_name', 'nested_cv')
 
-DEFAULT_GLOBAL_X_MASK_VALUE = MASK_SETTINGS.get('global_x_mask_value', 1e6)
-DEFAULT_Y_MASK_VALUE = MASK_SETTINGS.get('y_mask_value', -1)
+    CALLBACK_SETTINGS = GLOBAL_SETTINGS.get('callbacks', {})
+    THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('threshold_search', {})
+    MASK_SETTINGS = GLOBAL_SETTINGS.get('masking', {})
+    CHANNEL_SELECTION_SETTINGS = GLOBAL_SETTINGS.get('channel_selection', {})
+    CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
+    DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
+
+    DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
+    DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_thresholds', 81))
+    DEFAULT_THRESHOLD_METRICS = THRESHOLD_SETTINGS.get('metrics', [
+        'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy'
+    ]) or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+    THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+
+    DEFAULT_PROGRESS_FREQUENCY = CALLBACK_SETTINGS.get('progress_frequency', 1)
+    DEFAULT_REDUCE_LR_FACTOR = CALLBACK_SETTINGS.get('reduce_lr_factor', 0.5)
+    DEFAULT_REDUCE_LR_MIN_LR = CALLBACK_SETTINGS.get('reduce_lr_min_lr', 1e-7)
+    DEFAULT_REDUCE_LR_PATIENCE_RATIO = CALLBACK_SETTINGS.get('reduce_lr_patience_ratio', 0.5)
+    DEFAULT_CALLBACK_MONITOR = CALLBACK_SETTINGS.get('monitor', 'loss')
+    DEFAULT_CALLBACK_PATIENCE = CALLBACK_SETTINGS.get('patience', 10)
+
+    DEFAULT_GLOBAL_X_MASK_VALUE = MASK_SETTINGS.get('global_x_mask_value', 1e6)
+    DEFAULT_Y_MASK_VALUE = MASK_SETTINGS.get('y_mask_value', -1)
 
 
 # ===================================================================
@@ -261,6 +294,37 @@ class HyperparameterTuningLogger:
         self.hparam_definitions = {}
         self.metric_definitions = []
         self.initialized = False
+
+    def _sanitize_identifier(self, identifier: Optional[str]) -> Optional[str]:
+        """Return a filesystem-friendly identifier."""
+        if identifier is None:
+            return None
+        text = str(identifier).strip()
+        if not text:
+            return None
+        text = text.replace(' ', '_')
+        sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+        sanitized = re.sub(r"_{2,}", "_", sanitized).strip('_')
+        return sanitized or None
+
+    def _resolve_subject_dir(self, subject_identifier: Optional[str], outer_fold: Optional[int]) -> Optional[str]:
+        """Figure out which subject subdirectory to use for a trial log."""
+        sanitized_subject = self._sanitize_identifier(subject_identifier)
+        if sanitized_subject:
+            return sanitized_subject
+        if outer_fold is None:
+            return None
+        try:
+            fold_int = int(outer_fold)
+        except (TypeError, ValueError):
+            return self._sanitize_identifier(outer_fold)
+        return f"outer{fold_int:02d}"
+
+    def _build_session_dir(self, session_id: str, subject_identifier: Optional[str], outer_fold: Optional[int]) -> str:
+        subject_dir = self._resolve_subject_dir(subject_identifier, outer_fold)
+        if subject_dir:
+            return os.path.join(self.hparams_log_dir, subject_dir, session_id)
+        return os.path.join(self.hparams_log_dir, session_id)
         
     def setup_hparams_experiment(self, param_grid):
         """
@@ -345,7 +409,8 @@ class HyperparameterTuningLogger:
         except Exception as e:
             logging.error(format_error_message(f"Failed to setup hyperparameter experiment: {e}"))
             
-    def log_hyperparameter_trial(self, trial_params, trial_results, session_id=None):
+    def log_hyperparameter_trial(self, trial_params, trial_results, session_id=None,
+                                 subject_identifier=None, outer_fold=None):
         """
         Log a single hyperparameter trial with its results.
         
@@ -353,6 +418,8 @@ class HyperparameterTuningLogger:
             trial_params: Dictionary of hyperparameter values for this trial
             trial_results: Dictionary of metric results
             session_id: Optional custom session ID
+            subject_identifier: Subject/group name to organize logs per outer fold
+            outer_fold: Optional outer fold index (used when subject name unavailable)
         """
         if not HPARAMS_AVAILABLE or not self.initialized:
             return
@@ -363,7 +430,8 @@ class HyperparameterTuningLogger:
             
         try:
             # Create session directory
-            session_dir = os.path.join(self.hparams_log_dir, session_id)
+            session_dir = self._build_session_dir(session_id, subject_identifier, outer_fold)
+            os.makedirs(session_dir, exist_ok=True)
             
             # Clean and prepare hyperparameters
             clean_hparams = {}
@@ -1981,7 +2049,7 @@ def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
     
     return X_list, y_list, np.array(groups), metadata
 
-def find_unique_mask_value(data_array, max_search=10000, global_mask_value=DEFAULT_GLOBAL_X_MASK_VALUE, verbose=0):
+def find_unique_mask_value(data_array, max_search=10000, global_mask_value=None, verbose=0):
     """
     Find a unique mask value using a large constant approach with fallback.
     
@@ -2003,7 +2071,7 @@ def find_unique_mask_value(data_array, max_search=10000, global_mask_value=DEFAU
     max_search : int
         Maximum range to search (default: 10000)
     global_mask_value : float
-        Preferred mask value to try first (default pulled from config)
+        Preferred mask value to try first (default pulled from runtime config)
     verbose : int
         Verbosity level
         
@@ -2012,6 +2080,9 @@ def find_unique_mask_value(data_array, max_search=10000, global_mask_value=DEFAU
     float
         Unique mask value
     """
+    if global_mask_value is None:
+        global_mask_value = DEFAULT_GLOBAL_X_MASK_VALUE
+
     # Convert to set for fast lookup
     data_set = set(data_array.flatten())
     
@@ -4158,7 +4229,9 @@ def get_default_param_grid(model_type, mask_values=None):
         dict: Parameter grid for GridSearchCV
     """
     logging.info(f"[PARAM_GRID] Generating parameter grid for model_type: {model_type}")
-    config = copy.deepcopy(load_hyperparameter_config())
+    if not GLOBAL_HPARAM_CONFIG:
+        raise RuntimeError("Hyperparameter configuration not loaded. Pass --hyperparams-config when running the script.")
+    config = copy.deepcopy(GLOBAL_HPARAM_CONFIG)
     model_config = config.get(model_type)
     if model_config is None:
         raise ValueError(f"No hyperparameter configuration found for model_type='{model_type}'")
@@ -5000,7 +5073,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         trial_results[metric_key] = float(value)
                 
                 session_id = f"outer{outer_fold + 1:02d}_combo{param_idx + 1:03d}"
-                hparam_logger.log_hyperparameter_trial(params, trial_results, session_id=session_id)
+                hparam_logger.log_hyperparameter_trial(
+                    params,
+                    trial_results,
+                    session_id=session_id,
+                    subject_identifier=test_subject_name,
+                    outer_fold=outer_fold + 1
+                )
                 
                 if hparam_trials is not None:
                     sanitized_params = convert_numpy_types(dict(params))
@@ -5811,7 +5890,15 @@ def main(argv=None):
         default=None,
         help="Optional run identifier; when provided, results go to logs/nested_cv_<run-id>_<channel>"
     )
+    parser.add_argument(
+        "--hyperparams-config",
+        type=str,
+        required=True,
+        help="Full path to the hyperparameters JSON config file"
+    )
     args = parser.parse_args(argv)
+
+    configure_hyperparameter_settings(args.hyperparams_config)
     
     verbose = 2
     n_jobs = 1  # Optimal for LSTM with GPU
@@ -5840,6 +5927,7 @@ def main(argv=None):
     logging.info("="*80)
     logging.info(f"Verbose level: {verbose}")
     logging.info(f"Experiment name: {experiment_name}")
+    logging.info(f"Hyperparameter config: {HYPERPARAM_CONFIG_PATH}")
     logging.info(f"Experiment directory: {experiment_dir}")
     if outer_subject_filters:
         logging.info(f"[MAIN] Outer subject filter applied: {outer_subject_filters}")

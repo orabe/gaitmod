@@ -197,7 +197,7 @@ def main(args=None):
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/nested_cv_20251128_150642_beta/summary"
+    base_path = "logs/beta_fast_test_20251201_182223/summary"
     args = Namespace(
         csv=f"{base_path}/nested_cv_results.csv",
         output_dir=base_path,

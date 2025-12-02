@@ -205,11 +205,11 @@ if __name__ == "__main__":
     from argparse import Namespace
     args = Namespace(
         csv=[
-            "logs/nested_cv_20251127_225832_beta/summary/nested_cv_results.csv",
-            "logs/nested_cv_20251128_150642_beta/summary/nested_cv_results.csv"],
+            "logs/beta_fast_test_20251201_182223/summary/nested_cv_results.csv",
+            "logs/beta_100feat_20251130_083915/summary/nested_cv_results.csv"],
         labels=[
-            "Run1",
-            "Run2"
+            "beta_fast_test",
+            "beta_100feat"
         ],
         output_dir="logs/compare",
         metrics=[

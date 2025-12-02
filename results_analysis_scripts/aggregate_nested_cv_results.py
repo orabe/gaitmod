@@ -11,7 +11,7 @@ import glob
 import json
 import os
 from collections import Counter
-from typing import List, Any
+from typing import List, Any, Optional
 
 import pandas as pd
 
@@ -182,9 +182,9 @@ def generate_text_report(df: pd.DataFrame, output_file: str) -> None:
             f.write(f"{name:<28}" + "".join(formatted_values) + "\n")
 
 
-def main():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aggregate nested CV sbatch results.")
-    parser.add_argument("--run-dir", required=True, help="Path to logs/nested_cv_<run-id>_beta directory")
+    parser.add_argument("--run-dir", required=True, help="Path to logs/nested_cv_<run-id> directory")
     parser.add_argument(
         "--output-dir",
         default=None,
@@ -195,7 +195,12 @@ def main():
         default="report.txt",
         help="Filename for the generated text report (stored in output-dir)",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main(args: Optional[argparse.Namespace] = None):
+    if args is None:
+        args = parse_args()
 
     run_dir = os.path.abspath(args.run_dir)
     output_dir = args.output_dir or os.path.join(run_dir, "summary")
@@ -226,4 +231,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from argparse import Namespace
+
+    args = Namespace(
+        run_dir="logs/beta_fast_test_20251201_182223",
+        output_dir=None,
+        report_name="report.txt",
+    )
+    main(args)
