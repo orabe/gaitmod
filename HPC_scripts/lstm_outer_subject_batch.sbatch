@@ -7,7 +7,7 @@
 #   sbatch scripts/lstm_outer_subject_batch.sbatch
 
 #SBATCH --job-name=PW_EM59
-#SBATCH --partition=gpu-7d
+#SBATCH --partition=gpu-2d
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96gb
@@ -38,8 +38,20 @@ fi
 # ----------------------------------------------------------------------------
 
 SUBJECTS="${SUBJECTS:-}"
+CONFIG_PATH="${1:-}"
+
+if [[ -z "$CONFIG_PATH" ]]; then
+    echo "[SLURM] Hyperparameter config path argument is required" >&2
+    exit 2
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "[SLURM] Hyperparameter config not found: $CONFIG_PATH" >&2
+    exit 2
+fi
+shift || true
 
 CMD=(python examples/LFP/classification_experiments/train_lstm_hctsa.py)
+CMD+=(--hyperparams-config "$CONFIG_PATH")
 if [[ -n "${RUN_ID:-}" ]]; then
     CMD+=(--run-id "$RUN_ID")
 fi
