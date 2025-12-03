@@ -198,6 +198,10 @@ THRESHOLD_SETTINGS: Dict[str, Any] = {}
 MASK_SETTINGS: Dict[str, Any] = {}
 CHANNEL_SELECTION_SETTINGS: Dict[str, Any] = {}
 CHANNEL_SELECTION_METHODS: Dict[str, Any] = {}
+
+# Track numbered hyperparameter directories per (outer_fold_dir, param_str)
+HYPERPARAM_RUN_DIRECTORY_MAP: Dict[Tuple[str, str], str] = {}
+HYPERPARAM_RUN_COUNTERS: Dict[str, int] = {}
 DEFAULT_CHANNEL_SELECTION_METHOD = 'beta'
 SELECTION_SETTINGS: Dict[str, Any] = {}
 DEFAULT_REFIT_SCORING_METRIC = 'f1'
@@ -798,6 +802,131 @@ class LearningRateLoggingCallback(Callback):
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
 # ===================================================================
+
+def _compose_outer_fold_dir(experiment_dir: Optional[str], outer_fold: Optional[int],
+                            outer_test_subject: Optional[str]) -> str:
+    """
+    Build the base directory for an outer fold, optionally including the test subject.
+    """
+    if experiment_dir is None:
+        raise ValueError("experiment_dir must be provided to build logging directories")
+
+    base_dir = os.path.abspath(experiment_dir)
+    if outer_fold is None:
+        return base_dir
+
+    fold_dir_name = f"outer_fold_{int(outer_fold):02d}"
+    if outer_test_subject:
+        fold_dir_name += f"_test_{outer_test_subject}"
+    return os.path.join(base_dir, fold_dir_name)
+
+
+def _split_numbered_dirname(dirname: str) -> Optional[Tuple[int, str]]:
+    """
+    Split directory names formatted as '<number>_<rest>' into their components.
+    Returns (number, rest) or None if the format does not match.
+    """
+    if '_' not in dirname:
+        return None
+    prefix, remainder = dirname.split('_', 1)
+    if prefix.isdigit():
+        return int(prefix), remainder
+    return None
+
+
+def _get_next_run_index(outer_fold_dir: str) -> int:
+    """
+    Determine the next available numeric prefix for a given outer fold directory.
+    """
+    normalized_dir = os.path.abspath(outer_fold_dir)
+    if normalized_dir in HYPERPARAM_RUN_COUNTERS:
+        return HYPERPARAM_RUN_COUNTERS[normalized_dir] + 1
+
+    max_index = 0
+    if os.path.isdir(normalized_dir):
+        for entry in os.listdir(normalized_dir):
+            entry_path = os.path.join(normalized_dir, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            split_entry = _split_numbered_dirname(entry)
+            if split_entry:
+                max_index = max(max_index, split_entry[0])
+
+    HYPERPARAM_RUN_COUNTERS[normalized_dir] = max_index
+    return max_index + 1
+
+
+def _format_param_dirname(index: int, param_str: str) -> str:
+    """Format the numbered directory name with a zero-padded prefix."""
+    if param_str:
+        return f"{index:03d}_{param_str}"
+    return f"{index:03d}"
+
+
+def _find_existing_param_dir(outer_fold_dir: str, param_str: str) -> Optional[str]:
+    """
+    Search for an existing directory that matches the provided hyperparameter string.
+    """
+    normalized_dir = os.path.abspath(outer_fold_dir)
+    if not os.path.isdir(normalized_dir):
+        return None
+
+    matches: List[Tuple[int, str]] = []
+    for entry in os.listdir(normalized_dir):
+        entry_path = os.path.join(normalized_dir, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        split_entry = _split_numbered_dirname(entry)
+        if split_entry:
+            prefix, remainder = split_entry
+            if remainder == param_str:
+                matches.append((prefix, entry))
+        elif entry == param_str:
+            matches.append((0, entry))
+
+    if not matches:
+        return None
+
+    # Return the match with the highest numeric prefix (latest run)
+    matches.sort(key=lambda item: item[0])
+    return matches[-1][1]
+
+
+def _resolve_hparam_dirname(outer_fold_dir: str, param_str: str, create_if_missing: bool) -> str:
+    """
+    Retrieve or create the numbered directory name for a hyperparameter combination.
+    """
+    normalized_dir = os.path.abspath(outer_fold_dir)
+    key = (normalized_dir, param_str)
+
+    if key in HYPERPARAM_RUN_DIRECTORY_MAP:
+        return HYPERPARAM_RUN_DIRECTORY_MAP[key]
+
+    if not create_if_missing:
+        existing_dir = _find_existing_param_dir(normalized_dir, param_str)
+        if existing_dir:
+            HYPERPARAM_RUN_DIRECTORY_MAP[key] = existing_dir
+            split_entry = _split_numbered_dirname(existing_dir)
+            if split_entry:
+                existing_index, _ = split_entry
+                HYPERPARAM_RUN_COUNTERS[normalized_dir] = max(
+                    HYPERPARAM_RUN_COUNTERS.get(normalized_dir, 0),
+                    existing_index
+                )
+            return existing_dir
+        return param_str
+
+    os.makedirs(normalized_dir, exist_ok=True)
+    next_index = _get_next_run_index(normalized_dir)
+    candidate_name = _format_param_dirname(next_index, param_str)
+    while os.path.exists(os.path.join(normalized_dir, candidate_name)):
+        next_index += 1
+        candidate_name = _format_param_dirname(next_index, param_str)
+
+    HYPERPARAM_RUN_COUNTERS[normalized_dir] = next_index
+    HYPERPARAM_RUN_DIRECTORY_MAP[key] = candidate_name
+    return candidate_name
+
 def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
                             inner_fold=None, outer_test_subject=None, hyperparams=None,
                             inner_validation_subject=None, is_refit=False):
@@ -818,10 +947,9 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
     Returns:
         Dictionary with all logging paths and identifiers
     """
-    # Use subject_name as fallback for backward compatibility
-    if outer_fold is not None and outer_test_subject is not None:
-        outer_fold_dir = os.path.join(experiment_dir, f"outer_fold_{outer_fold:02d}_test_{outer_test_subject}")
-    
+    outer_fold_dir = _compose_outer_fold_dir(experiment_dir, outer_fold, outer_test_subject)
+    os.makedirs(outer_fold_dir, exist_ok=True)
+
     # Create run identifier with hyperparameters
     unique_id = str(uuid.uuid4())[:8]
     
@@ -890,9 +1018,9 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
     else:
         # Use "refit" for refit training, "default" for other cases
         param_str = "refit" if is_refit else "default"
-        
-    run_id = f"{unique_id}--{param_str}"
-    hyperparams_dir = os.path.join(outer_fold_dir, param_str)
+    param_dir_name = _resolve_hparam_dirname(outer_fold_dir, param_str, create_if_missing=True)
+    run_id = f"{unique_id}--{param_dir_name}"
+    hyperparams_dir = os.path.join(outer_fold_dir, param_dir_name)
 
     if inner_fold is not None and inner_validation_subject is not None:
         inner_fold_dir = os.path.join(hyperparams_dir, f"inner_fold_{inner_fold:02d}_val_{inner_validation_subject}")
@@ -914,6 +1042,7 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         'experiment_dir': experiment_dir,
         'outer_fold_dir': outer_fold_dir,
         'hyperparams_dir': hyperparams_dir,
+        'hyperparams_dir_name': param_dir_name,
         'inner_fold_dir': inner_fold_dir,
         'callbacks_dir': callbacks_dir,
         'tensorboard_dir': tensorboard_dir,
@@ -1534,15 +1663,17 @@ def _construct_inner_fold_directory(experiment_dir, outer_fold, inner_fold,
         str: Complete path for inner fold results
     """
     # Create TensorBoard-style directory structure for inner fold results
-    outer_fold_dir = os.path.join(
-        experiment_dir, 
-        f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
+    outer_fold_dir = _compose_outer_fold_dir(
+        experiment_dir,
+        (outer_fold + 1) if outer_fold is not None else None,
+        outer_test_subject
     )
+    os.makedirs(outer_fold_dir, exist_ok=True)
     
     # Create hyperparameter string for directory structure
     param_str = _create_hyperparameter_string(hyperparams)
-    
-    hyperparams_dir = os.path.join(outer_fold_dir, param_str)
+    param_dir_name = _resolve_hparam_dirname(outer_fold_dir, param_str, create_if_missing=True)
+    hyperparams_dir = os.path.join(outer_fold_dir, param_dir_name)
     inner_fold_dir = os.path.join(
         hyperparams_dir, 
         f"inner_fold_{inner_fold + 1:02d}_val_{inner_validation_subject}" if inner_validation_subject 
