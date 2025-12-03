@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Visualize aggregated nested CV results.
+Visualize nested CV results.
 
-Example:
+Examples:
+    # From aggregated CSV (legacy behavior)
     python scripts/visualize_nested_cv_results.py \
         --csv logs/nested_cv_<run-id>_beta/summary/nested_cv_results.csv
+
+    # Directly from refit JSON files
+    python scripts/visualize_nested_cv_results.py \
+        --refit-file logs/PW_SN61/.../refit_results.json \
+        --refit-file logs/PW_EM59/.../refit_results.json
 """
 
 import argparse
+import glob
 import os
 from typing import List
 
@@ -15,12 +22,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from aggregate_nested_cv_results import collect_refit_results
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize nested CV summary metrics.")
     parser.add_argument(
         "--csv",
-        required=True,
+        default=None,
         help="Path to nested_cv_results.csv produced by aggregate script.",
     )
     parser.add_argument(
@@ -33,6 +41,12 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         default=None,
         help="Metric columns to visualize (if not provided, use all numeric columns except subject name).",
+    )
+    parser.add_argument(
+        "--refit-file",
+        action="append",
+        default=[],
+        help="Path or glob for refit_results.json (repeat per file).",
     )
     return parser.parse_args()
 
@@ -179,11 +193,40 @@ def plot_metric_violinplots(df: pd.DataFrame, metrics: List[str], output_path: s
 def main(args=None):
     if args is None:
         args = parse_args()
-    csv_path = os.path.abspath(args.csv)
-    output_dir = args.output_dir or os.path.dirname(csv_path)
+    df = None
+    refit_patterns = args.refit_file or []
+    csv_path = args.csv
+
+    if not csv_path and not refit_patterns:
+        raise ValueError("Provide --csv or at least one --refit-file.")
+
+    if csv_path:
+        csv_path = os.path.abspath(csv_path)
+        df = load_results(csv_path)
+    else:
+        refit_files: List[str] = []
+        for pattern in refit_patterns:
+            matches = glob.glob(pattern)
+            if not matches:
+                print(f"[WARN] No files match pattern: {pattern}")
+            refit_files.extend(matches or [pattern])
+        refit_files = [os.path.abspath(p) for p in refit_files]
+        if not refit_files:
+            raise RuntimeError("No refit_results.json files provided.")
+        base_dirs = sorted({os.path.dirname(path) for path in refit_files})
+        df = collect_refit_results(refit_files, base_dirs=base_dirs)
+        if df.empty:
+            raise RuntimeError("No valid refit results were loaded.")
+        csv_path = None
+
+    if args.output_dir:
+        output_dir = os.path.abspath(args.output_dir)
+    elif csv_path:
+        output_dir = os.path.dirname(csv_path)
+    else:
+        output_dir = os.path.join(os.path.dirname(refit_files[0]), "visualizations")
     os.makedirs(output_dir, exist_ok=True)
 
-    df = load_results(csv_path)
     metrics = filter_available_metrics(df, args.metrics)
 
     plot_metric_summary(df, metrics, os.path.join(output_dir, "metrics_bar_summary.png"))
@@ -197,11 +240,10 @@ def main(args=None):
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/beta_fast_test_20251201_182223/summary"
+    base_path = "logs/results/100feat"
     args = Namespace(
-        csv=f"{base_path}/nested_cv_results.csv",
-        output_dir=base_path,
-        # metrics=None
+        csv=f"{base_path}/summary/nested_cv_results.csv",
+        output_dir=f"{base_path}/figures",
         metrics=[
             "test_f1",
             "test_tuned_f1",
@@ -216,5 +258,6 @@ if __name__ == "__main__":
             "test_roc_auc",
             "test_pr_auc",
         ],
+        refit_file=[],
     )
     main(args)

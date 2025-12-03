@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """
-Compare aggregated nested CV results from multiple runs.
+Compare nested CV results from multiple runs.
 
-Example:
+Examples:
+    # Compare two aggregated CSV exports (legacy behavior)
     python scripts/compare_nested_cv_results.py \
-        --csv logs/run1.csv logs/run2.csv \
+        --csv logs/run1/summary/nested_cv_results.csv \
+        logs/run2/summary/nested_cv_results.csv \
         --labels Run1 Run2
+
+    # Compare two runs directly from refit JSON files
+    python scripts/compare_nested_cv_results.py \
+        --refit-run Run1 logs/PW_SN61/.../refit_results.json logs/PW_EM59/.../refit_results.json \
+        --refit-run Run2 logs/PW_SN61/.../refit_results.json logs/PW_EM59/.../refit_results.json
 """
 
 import argparse
+import glob
 import os
 from typing import List, Optional
 
@@ -16,13 +24,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from aggregate_nested_cv_results import collect_refit_results
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare nested CV summary metrics across multiple runs.")
     parser.add_argument(
         "--csv",
-        nargs="+",
-        required=True,
-        help="Paths to nested_cv_results.csv files to compare."
+        nargs="*",
+        default=[],
+        help="Paths to nested_cv_results.csv files to compare (from aggregate script)."
     )
     parser.add_argument(
         "--labels",
@@ -40,6 +50,14 @@ def parse_args() -> argparse.Namespace:
         nargs="*",
         default=None,
         help="Metric columns to visualize (if not provided, use all numeric columns except subject name present in all files)."
+    )
+    parser.add_argument(
+        "--refit-run",
+        action="append",
+        nargs="+",
+        metavar=("LABEL", "REFIT"),
+        default=[],
+        help="Provide a label followed by one or more refit_results.json paths or glob patterns for that run. Repeat per run."
     )
     return parser.parse_args()
 
@@ -173,14 +191,69 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
 def main(args=None):
     if args is None:
         args = parse_args()
-    csv_paths = [os.path.abspath(p) for p in args.csv]
-    # Combine labels for output folder
-    labels = args.labels if args.labels and len(args.labels) == len(csv_paths) else [os.path.splitext(os.path.basename(p))[0] for p in csv_paths]
+    csv_paths = [os.path.abspath(p) for p in (args.csv or [])]
+    refit_runs = args.refit_run or []
+    if not csv_paths and not refit_runs:
+        raise ValueError("Provide at least one --csv path or --refit-run.")
+
+    # Prepare output directory
+    refit_default_sources = [run[1] for run in refit_runs if len(run) >= 2]
+    if args.output_dir:
+        base_output_dir = os.path.abspath(args.output_dir)
+    elif csv_paths:
+        base_output_dir = os.path.dirname(csv_paths[0])
+    elif refit_default_sources:
+        base_output_dir = os.path.dirname(os.path.abspath(refit_default_sources[0]))
+    else:
+        base_output_dir = os.getcwd()
+
+    dfs: List[pd.DataFrame] = []
+    labels: List[str] = []
+    # CSV sources
+    if csv_paths:
+        csv_labels = (
+            args.labels if args.labels and len(args.labels) == len(csv_paths)
+            else [os.path.splitext(os.path.basename(p))[0] for p in csv_paths]
+        )
+        for csv_path, label in zip(csv_paths, csv_labels):
+            df = load_results(csv_path)
+            dfs.append(df)
+            labels.append(label)
+    elif args.labels:
+        print("[WARN] --labels ignored because no --csv paths were provided.")
+
+    # Refit runs
+    for run_args in refit_runs:
+        if len(run_args) < 2:
+            print("[WARN] --refit-run requires a label followed by at least one refit JSON path.")
+            continue
+        label = run_args[0]
+        patterns = run_args[1:]
+        refit_files: List[str] = []
+        for pattern in patterns:
+            matches = glob.glob(pattern)
+            if not matches:
+                print(f"[WARN] No files match pattern for run '{label}': {pattern}")
+            refit_files.extend(matches or [pattern])
+        refit_files = [os.path.abspath(p) for p in refit_files]
+        if not refit_files:
+            print(f"[WARN] Run '{label}' has no valid refit files; skipping.")
+            continue
+        base_dirs = sorted({os.path.dirname(path) for path in refit_files})
+        df = collect_refit_results(refit_files, base_dirs=base_dirs)
+        if df.empty:
+            print(f"[WARN] Run '{label}' yielded no valid refit data; skipping.")
+            continue
+        dfs.append(df)
+        labels.append(label)
+
+    if not dfs:
+        raise RuntimeError("No valid data loaded for comparison.")
+
     combined_label = "_".join(labels)
-    base_output_dir = args.output_dir or os.path.dirname(csv_paths[0])
     output_dir = os.path.join(base_output_dir, combined_label)
     os.makedirs(output_dir, exist_ok=True)
-    dfs = [load_results(p) for p in csv_paths]
+
     # Use metrics present in all files
     if args.metrics is None:
         # Get all numeric columns except 'test_subject_name' present in all files
@@ -203,15 +276,21 @@ def main(args=None):
 
 if __name__ == "__main__":
     from argparse import Namespace
+    
+    base_path = "logs/results"
+    label1 = "fast_test"
+    label2 = "100feat"
+    
     args = Namespace(
         csv=[
-            "logs/beta_fast_test_20251201_182223/summary/nested_cv_results.csv",
-            "logs/beta_100feat_20251130_083915/summary/nested_cv_results.csv"],
-        labels=[
-            "beta_fast_test",
-            "beta_100feat"
+            f"{base_path}/{label1}/summary/nested_cv_results.csv",
+            f"{base_path}/{label2}/summary/nested_cv_results.csv"
         ],
-        output_dir="logs/compare",
+        labels=[
+            label1,
+            label2
+        ],
+        output_dir="logs/results/comparison_figures",
         metrics=[
             "test_f1",
             "test_tuned_f1",
@@ -226,5 +305,6 @@ if __name__ == "__main__":
             "test_roc_auc",
             "test_pr_auc",
         ],
+        refit_run=[],
     )
     main(args)

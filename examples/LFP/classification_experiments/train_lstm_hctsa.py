@@ -5874,6 +5874,20 @@ def parse_outer_subject_selection(selection_str):
     return filters if filters else None
 
 
+def sanitize_path_component(component: Optional[str]) -> Optional[str]:
+    """
+    Make a string filesystem-friendly. Returns None if nothing valid remains.
+    """
+    if component is None:
+        return None
+    text = str(component).strip()
+    if not text:
+        return None
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    sanitized = re.sub(r"_{2,}", "_", sanitized).strip("_")
+    return sanitized or None
+
+
 def main(argv=None):            
     script_start_time = time.time()
     
@@ -5888,7 +5902,7 @@ def main(argv=None):
         "--run-id",
         type=str,
         default=None,
-        help="Optional run identifier; when provided, results go to logs/nested_cv_<run-id>_<channel>"
+        help="Optional run identifier included in log directory names"
     )
     parser.add_argument(
         "--hyperparams-config",
@@ -5906,17 +5920,23 @@ def main(argv=None):
     
     outer_subject_selection_str = args.outer_subjects
     outer_subject_filters = parse_outer_subject_selection(outer_subject_selection_str)
+    subject_log_display = outer_subject_filters[0] if outer_subject_filters else None
+    subject_log_component = sanitize_path_component(subject_log_display)
+    multiple_subject_filters = bool(outer_subject_filters and len(outer_subject_filters) > 1)
     
         
     # Setup hierarchical experiment logging structure
     channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD or 'beta'
-    if args.run_id:
-        run_id = args.run_id
-    else:
-        run_id = time.strftime("%Y%m%d_%H%M%S")
+    generated_run_id = time.strftime("%Y%m%d_%H%M%S")
+    run_id_raw = args.run_id or generated_run_id
+    run_id = sanitize_path_component(run_id_raw) or generated_run_id
     experiment_name = EXPERIMENT_NAME or 'nested_cv'
-    experiment_dir_name = f"{experiment_name}_{run_id}"
-    experiment_dir = os.path.join("logs", experiment_dir_name)
+    experiment_name_component = sanitize_path_component(experiment_name) or 'nested_cv'
+    experiment_dir_name = f"{experiment_name_component}_{run_id}"
+    if subject_log_component:
+        experiment_dir = os.path.join("logs", subject_log_component, experiment_dir_name)
+    else:
+        experiment_dir = os.path.join("logs", experiment_dir_name)
     os.makedirs(experiment_dir, exist_ok=True)
     
     # Create main experiment log
@@ -5931,6 +5951,13 @@ def main(argv=None):
     logging.info(f"Experiment directory: {experiment_dir}")
     if outer_subject_filters:
         logging.info(f"[MAIN] Outer subject filter applied: {outer_subject_filters}")
+    if subject_log_component:
+        subject_msg = f"logs/{subject_log_component}"
+        if subject_log_display and subject_log_display != subject_log_component:
+            subject_msg += f" (from '{subject_log_display}')"
+        logging.info(f"[MAIN] Subject-specific log root: {subject_msg}")
+        if multiple_subject_filters:
+            logging.info(f"[MAIN] Multiple outer subjects requested; using '{subject_log_display}' for directory naming.")
     
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")

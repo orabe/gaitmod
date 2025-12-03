@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BATCH_SCRIPT="$SCRIPT_DIR/lstm_outer_subject_batch.sbatch"
-HYPERPARAMS_CONFIG="$PROJECT_ROOT/examples/LFP/classification_experiments/hyperparameters_fast_testing.json"
+HYPERPARAMS_CONFIG="$PROJECT_ROOT/examples/LFP/classification_experiments/hparams_test.json"
 
 if [[ ! -f "$HYPERPARAMS_CONFIG" ]]; then
     echo "Hyperparameter config not found: $HYPERPARAMS_CONFIG" >&2
@@ -20,9 +20,9 @@ declare -a SUBJECT_BATCHES=(
     # "PW_FH57",
     # "PW_HK59",
     # "PW_HZ58",
-    "PW_SN61",
+    # "PW_SN61",
     # "PW_SN66",
-    # "PW_US68"
+    "PW_US68"
 )
 
 RUN_ID="${RUN_ID:-$(date +'%Y%m%d_%H%M%S')}"
@@ -35,5 +35,5 @@ fi
 
 for subjects in "${SUBJECT_BATCHES[@]}"; do
     echo "Submitting batch for subjects: $subjects (config: $HYPERPARAMS_CONFIG)"
-    sbatch --export=SUBJECTS="$subjects",RUN_ID="$RUN_ID" "$BATCH_SCRIPT" "$HYPERPARAMS_CONFIG"
+    sbatch --job-name="$subjects" "$BATCH_SCRIPT" "$HYPERPARAMS_CONFIG" "$subjects" "$RUN_ID"
 done

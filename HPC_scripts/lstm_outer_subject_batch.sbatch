@@ -3,16 +3,16 @@
 # SLURM batch script for training on a subject subset.
 #
 # Usage:
-#   sbatch --export=SUBJECTS="PW_EM59,PW_SN61" scripts/lstm_outer_subject_batch.sbatch
-#   sbatch scripts/lstm_outer_subject_batch.sbatch
+#   sbatch HPC_scripts/lstm_outer_subject_batch.sbatch <CONFIG_PATH> <SUBJECTS> [RUN_ID]
+#   sbatch --job-name=PW_EM59 HPC_scripts/lstm_outer_subject_batch.sbatch config.json PW_EM59 20250101_120000
 
-#SBATCH --job-name=PW_EM59
-#SBATCH --partition=gpu-2d
+#SBATCH --job-name=lstm_subject
+#SBATCH --partition=gpu-2h
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96gb
-#SBATCH --output=logs/slurm/PW_EM59_%j.out
-#SBATCH --error=logs/slurm/PW_EM59_%j.err
+#SBATCH --output=logs/slurm/%x_%j.out
+#SBATCH --error=logs/slurm/%x_%j.err
 
 set -euo pipefail
 
@@ -37,27 +37,26 @@ else
 fi
 # ----------------------------------------------------------------------------
 
-SUBJECTS="${SUBJECTS:-}"
 CONFIG_PATH="${1:-}"
+SUBJECTS="${2:-}"
+RUN_ID="${3:-}"
 
-if [[ -z "$CONFIG_PATH" ]]; then
-    echo "[SLURM] Hyperparameter config path argument is required" >&2
+if [[ -z "$CONFIG_PATH" || -z "$SUBJECTS" ]]; then
+    echo "[SLURM] Usage: $0 <config_path> <subjects> [run_id]" >&2
     exit 2
 fi
 if [[ ! -f "$CONFIG_PATH" ]]; then
     echo "[SLURM] Hyperparameter config not found: $CONFIG_PATH" >&2
     exit 2
 fi
-shift || true
+if [[ -z "$RUN_ID" ]]; then
+    RUN_ID="$(date +'%Y%m%d_%H%M%S')"
+fi
 
 CMD=(python examples/LFP/classification_experiments/train_lstm_hctsa.py)
 CMD+=(--hyperparams-config "$CONFIG_PATH")
-if [[ -n "${RUN_ID:-}" ]]; then
-    CMD+=(--run-id "$RUN_ID")
-fi
-if [[ -n "$SUBJECTS" ]]; then
-    CMD+=(--outer-subjects "$SUBJECTS")
-fi
+CMD+=(--run-id "$RUN_ID")
+CMD+=(--outer-subjects "$SUBJECTS")
 
 echo "[SLURM] Running: ${CMD[*]}"
 "${CMD[@]}"

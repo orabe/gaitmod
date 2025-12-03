@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Aggregate nested CV results across multiple sbatch jobs.
+Aggregate nested CV refit JSON files (one per outer fold).
 
-Usage:
-    python scripts/aggregate_nested_cv_results.py --run-dir logs/nested_cv_<run-id>_beta
+Example:
+    python scripts/aggregate_nested_cv_results.py \
+        logs/PW_SN61/beta_fast_test_20251202_231856/outer_fold_05_test_PW_SN61/refit/refit_results.json \
+        logs/PW_EM59/beta_fast_test_20251202_231900/outer_fold_03_test_PW_EM59/refit/refit_results.json
 """
 
 import argparse
@@ -11,7 +13,7 @@ import glob
 import json
 import os
 from collections import Counter
-from typing import List, Any, Optional
+from typing import List, Any, Optional, Sequence
 
 import pandas as pd
 
@@ -29,11 +31,26 @@ def _make_hashable(value: Any) -> Any:
     return repr(value)
 
 
-def collect_refit_results(run_dir: str) -> pd.DataFrame:
-    pattern = os.path.join(run_dir, "outer_fold_*", "refit", "refit_results.json")
-    files = sorted(glob.glob(pattern))
+def _relative_refit_path(path: str, base_dirs: Sequence[str]) -> str:
+    """Return a refit path relative to any known base directory, else the basename."""
+    for base_dir in base_dirs:
+        try:
+            rel_path = os.path.relpath(path, base_dir)
+        except ValueError:
+            continue
+        if not rel_path.startswith(".."):
+            return rel_path
+    return os.path.basename(path)
+
+
+def collect_refit_results(refit_files: List[str], base_dirs: Optional[Sequence[str]] = None) -> pd.DataFrame:
+    files = sorted(set(os.path.abspath(p) for p in refit_files))
+    base_dirs = [os.path.abspath(p) for p in (base_dirs or [])]
     rows: List[dict] = []
     for refit_path in files:
+        if not os.path.isfile(refit_path):
+            print(f"[WARN] Skipping missing refit file: {refit_path}")
+            continue
         with open(refit_path, "r") as f:
             data = json.load(f)
         metadata = data.get("metadata", {})
@@ -47,7 +64,8 @@ def collect_refit_results(run_dir: str) -> pd.DataFrame:
         n_test_samples = test_shape[0] if len(test_shape) > 0 else None
 
         row = {
-            "refit_path": os.path.relpath(refit_path, run_dir),
+            "refit_path": _relative_refit_path(refit_path, base_dirs),
+            "refit_path_abs": refit_path,
             "outer_fold": metadata.get("outer_fold"),
             "test_subject_name": metadata.get("outer_test_subject"),
             "trained_epochs": metadata.get("trained_epochs"),
@@ -183,8 +201,12 @@ def generate_text_report(df: pd.DataFrame, output_file: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Aggregate nested CV sbatch results.")
-    parser.add_argument("--run-dir", required=True, help="Path to logs/nested_cv_<run-id> directory")
+    parser = argparse.ArgumentParser(description="Aggregate nested CV refit JSON files.")
+    parser.add_argument(
+        "refit_files",
+        nargs="+",
+        help="Paths to refit_results.json files (one per outer fold).",
+    )
     parser.add_argument(
         "--output-dir",
         default=None,
@@ -202,13 +224,37 @@ def main(args: Optional[argparse.Namespace] = None):
     if args is None:
         args = parse_args()
 
-    run_dir = os.path.abspath(args.run_dir)
-    output_dir = args.output_dir or os.path.join(run_dir, "summary")
+    refit_files: List[str] = []
+    for pattern in args.refit_files:
+        expanded = glob.glob(pattern)
+        if not expanded:
+            print(f"[WARN] No files match pattern: {pattern}")
+        refit_files.extend(expanded or [pattern])
+    refit_files = [os.path.abspath(p) for p in refit_files]
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_refits = []
+    for path in refit_files:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_refits.append(path)
+    refit_files = unique_refits
+
+    if not refit_files:
+        raise RuntimeError("No refit_results.json files provided.")
+
+    if args.output_dir:
+        output_dir = os.path.abspath(args.output_dir)
+    else:
+        output_dir = os.path.join(os.path.dirname(refit_files[0]), "summary")
     os.makedirs(output_dir, exist_ok=True)
 
-    df = collect_refit_results(run_dir)
+    base_dirs = sorted({os.path.dirname(path) for path in refit_files})
+    df = collect_refit_results(refit_files, base_dirs=base_dirs)
     if df.empty:
-        raise RuntimeError(f"No refit results found under {run_dir}")
+        raise RuntimeError("No valid refit results were loaded.")
 
     csv_path = os.path.join(output_dir, "nested_cv_results.csv")
     df.to_csv(csv_path, index=False)
@@ -232,10 +278,18 @@ def main(args: Optional[argparse.Namespace] = None):
 
 if __name__ == "__main__":
     from argparse import Namespace
-
     args = Namespace(
-        run_dir="logs/beta_fast_test_20251201_182223",
-        output_dir=None,
+        refit_files=[
+            "logs/PW_EM59/hparams_test_beta_fast_test_2_20251203_033724/outer_fold_01_test_PW_EM59/refit/refit_results.json",
+            "logs/PW_FH57/hparams_test_beta_fast_test_2_20251203_033754/outer_fold_02_test_PW_FH57/refit/refit_results.json",
+            "logs/PW_HK59/hparams_test_beta_fast_test_2_20251203_033808/outer_fold_03_test_PW_HK59/refit/refit_results.json",
+            "logs/PW_HZ58/hparams_test_beta_fast_test_2_20251203_033814/outer_fold_04_test_PW_HZ58/refit/refit_results.json",
+            
+            
+            
+            
+        ],
+        output_dir='logs/results/100feat/summary',
         report_name="report.txt",
     )
     main(args)
