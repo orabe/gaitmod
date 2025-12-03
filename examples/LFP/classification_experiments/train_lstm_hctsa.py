@@ -111,37 +111,6 @@ def format_warning_message(message):
     return message
 
 
-def log_section_separator(message: Optional[str] = None,
-                          border_char: str = '-',
-                          length: int = 70,
-                          prefix: Optional[str] = None,
-                          blank_line: bool = True):
-    """
-    Draw a visually distinctive separator in the logs to highlight key stages.
-    
-    Args:
-        message: Optional text to display between separator lines.
-        border_char: Character used for the separator bar.
-        length: Length of the separator bar.
-        prefix: Prefix to prepend to each log line (e.g., module tag).
-        blank_line: Whether to insert an empty line before the separator.
-    """
-    if blank_line:
-        logging.info("")
-    border = border_char * length
-    if prefix:
-        logging.info(f"{prefix} {border}")
-    else:
-        logging.info(border)
-    if message:
-        if prefix:
-            logging.info(f"{prefix} {message}")
-            logging.info(f"{prefix} {border}")
-        else:
-            logging.info(message)
-            logging.info(border)
-
-
 # Prefixes used to identify detailed log lines that should stay off the console
 # unless the user explicitly asks for verbose output.
 DETAILED_CONSOLE_PREFIXES = (
@@ -759,9 +728,8 @@ class ProgressTrainingLogger(Callback):
             
             # Core metrics display
             core_metrics = []
-            for metric in ['train_loss', 'val_loss',
-                           'train_balanced_accuracy', 'val_balanced_accuracy',
-                           'train_f1', 'val_f1']:
+            for metric in ['train_loss', 'train_balanced_accuracy', 'train_f1',
+                           'val_loss', 'val_balanced_accuracy', 'val_f1']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -1150,16 +1118,17 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
             append=False
         ),
         
-        # Early stopping with logging
-        LoggingEarlyStopping(
+        # Early stopping
+        EarlyStopping(
             monitor=effective_monitor,
             patience=patience,
             restore_best_weights=True,
+            verbose=1,
             mode='min' if 'loss' in effective_monitor else 'max'
         ), 
         
-        # Learning rate reduction with logging
-        LoggingReduceLROnPlateau(
+        # Learning rate reduction
+        ReduceLROnPlateau(
             monitor=effective_monitor,
             factor=DEFAULT_REDUCE_LR_FACTOR,
             patience=max(1, int(round(patience * DEFAULT_REDUCE_LR_PATIENCE_RATIO))),
@@ -1859,12 +1828,6 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
     Returns:
         Dictionary with all results organized for storage
     """
-    def _safe_int(value):
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError, OverflowError):
-            return None
-    
     
     # Extract essential threshold optimization data (removing verbose details)
     essential_threshold_results = {}
@@ -3324,7 +3287,6 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         self.input_shape = None
         self.X_mask_ = None
         self.y_mask_ = None
-        self.training_metadata_ = {}
                 
     def build_model(self, input_shape):
         """Build the LSTM model with the given input shape."""
@@ -3518,57 +3480,12 @@ class LSTMClassifier(BaseEstimator, ClassifierMixin):
         
         # Store the training history for each fold (for backward compatibility)
         self.history_.append(history)
-
-        # Capture training metadata (epochs executed, restored epoch, etc.)
-        self._capture_training_metadata(history, final_callbacks)
         
         # Clear validation data after training to prevent issues
         if hasattr(self, '_validation_data'):
             delattr(self, '_validation_data')
         
         return self
-
-    def _capture_training_metadata(self, history, callbacks):
-        """
-        Record key epoch counts from the most recent training run.
-        """
-        def _safe_int(value):
-            try:
-                return int(value) if value is not None else None
-            except (TypeError, ValueError, OverflowError):
-                return None
-
-        metadata = {
-            'configured_epochs': _safe_int(self.epochs),
-            'trained_epochs': None,
-            'restored_epoch': None,
-            'early_stopping_epoch': None,
-            'early_stopping_triggered': False,
-        }
-
-        losses = None
-        if isinstance(history, dict):
-            losses = history.get('loss') or history.get('train_loss')
-        if isinstance(losses, (list, tuple, np.ndarray)):
-            metadata['trained_epochs'] = len(losses)
-
-        callbacks = callbacks or []
-        for cb in callbacks:
-            if isinstance(cb, LoggingEarlyStopping):
-                stopped_epoch = getattr(cb, 'stopped_epoch', -1)
-                if stopped_epoch is not None and stopped_epoch >= 0:
-                    metadata['early_stopping_epoch'] = stopped_epoch + 1
-                    metadata['early_stopping_triggered'] = stopped_epoch > 0
-                best_epoch = getattr(cb, 'best_epoch', None)
-                if best_epoch is not None:
-                    metadata['restored_epoch'] = best_epoch + 1
-                break
-
-        if metadata['restored_epoch'] is None:
-            metadata['restored_epoch'] = metadata['trained_epochs']
-
-        self.training_metadata_ = metadata
-        return metadata
     
     def calculate_class_weights(self, y):
         # Flatten the array and filter out padding values
@@ -4505,6 +4422,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                           subject_names=None,
                           model_type='lstm',
                           refit_scoring_metric='f1',
+                          selection_score_metric: str = 'val_tuned_f1',
+                          selection_score_aggregation: str = 'median',
                           experiment_dir=None,
                           n_jobs=1, 
                           verbose: int = 1,
@@ -4528,6 +4447,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         subject_names: List of subject names
         model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
         refit_scoring_metric: Primary scoring metric
+        selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
         n_jobs: Number of parallel jobs
         verbose: Verbosity level
@@ -4671,11 +4591,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         if verbose >= 1:
             logging.info(f"[CV_SKLEARN] Parameter combinations: {len(param_combinations)}")
-            log_section_separator(
-                message=f"PARAMETER GRID ({len(param_combinations)} combinations)",
-                border_char='*',
-                length=70
-            )
         
         # Step 3: Inner CV with hyperparameter testing and pre-computed padding
         inner_cv = LeaveOneGroupOut()
@@ -4696,12 +4611,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         # Test each hyperparameter combination
         for param_idx, params in enumerate(param_combinations):
             if verbose >= 2:
-                log_section_separator(
-                    message=f"Hyperparameter set {param_idx + 1}/{len(param_combinations)}",
-                    border_char='*',
-                    length=70,
-                    blank_line=False
-                )
+                logging.info(f"[CV_SKLEARN] Testing parameter combination {param_idx + 1}/{len(param_combinations)}")
                         
             # Storage for this parameter combination
             inner_scores = []
@@ -4727,11 +4637,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                    else f"Subject_{val_subject_number}")
                 
                 if verbose >= 2:
-                    log_section_separator(
-                        message=f"Inner fold {inner_fold + 1}/{n_inner_folds} | val subject: {val_subject_name}",
-                        border_char='-',
-                        length=70
-                    )
+                    logging.info(f"[CV_SKLEARN]   Inner fold {inner_fold + 1}/{n_inner_folds}, val subject: {val_subject_name}")
                 
                 try:
                     # Track actual tensors seen by the classifier for logging
@@ -4877,8 +4783,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
                             logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('val_tuned_f1', 0.0):.4f}")
                         
-                        # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('val_tuned_f1', 0.0)
+                        # Primary score for hyperparameter selection
+                        score = _extract_selection_score(fold_scores)
 
                         # Store confusion matrix components at the F1-optimal threshold
                         try:
@@ -4983,8 +4889,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             fold_scores['val_tuned_confusion_matrix_components'] = None
                         fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
-                        # Primary score for hyperparameter selection (threshold-optimized F1)
-                        score = fold_scores.get('val_tuned_f1', 0.0)
+                        # Primary score for hyperparameter selection
+                        score = _extract_selection_score(fold_scores)
                     
                     inner_scores.append(score)
                     inner_all_metrics.append(fold_scores)  # Store all metrics for this fold
@@ -5043,6 +4949,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             learning_rate_history=learning_rate_history,
                             feature_selection_report=selection_report
                         )
+                        comprehensive_results['selection_parameters'] = {
+                            'selection_score_metric': selection_score_metric,
+                            'selection_score_aggregation': selection_score_aggregation,
+                            'refit_scoring_metric': refit_scoring_metric,
+                        }
                         
                         # Save results immediately to prevent data loss
                         json_path = save_evaluation_results(
@@ -5095,9 +5006,15 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     inner_selected_features.append([])
                     inner_all_metrics.append({})  # Add empty metrics for failed folds
             
-            # Compute average validation score for this parameter combination
-            avg_score = np.mean(inner_scores) if inner_scores else 0.0
-            param_scores.append(avg_score)
+            # Compute robust validation score for this parameter combination
+            if inner_scores:
+                if selection_score_aggregation == 'median':
+                    selection_score = float(np.median(inner_scores))
+                else:  # mean
+                    selection_score = float(np.mean(inner_scores))
+            else:
+                selection_score = 0.0
+            param_scores.append(selection_score)
             
             # Aggregate multi-metric results across inner folds
             if inner_all_metrics:
@@ -5133,7 +5050,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     else:
                         aggregated_metrics[metric_name] = metric_values[-1] if metric_values else 0.0
             else:
-                aggregated_metrics = {'f1': avg_score}
+                aggregated_metrics = {selection_score_metric: selection_score}
             
             param_all_metrics.append(aggregated_metrics)
             
@@ -5265,7 +5182,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             
             if hparam_logger:
                 trial_results = {
-                    'cv_score': float(avg_score),
+                    'cv_score': float(selection_score),
                     'cv_std': float(np.std(inner_scores)) if len(inner_scores) > 1 else 0.0,
                 }
 
@@ -5312,7 +5229,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     hparam_trials.append(trial_record)
             
             if verbose >= 1:
-                logging.info(f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: Average score: {avg_score:.4f}")
+                logging.info(
+                    f"[CV_SKLEARN]   Parameter {param_idx + 1}/{len(param_combinations)}: "
+                    f"{selection_score_aggregation.title()} {selection_score_metric}: {selection_score:.4f}"
+                )
                 logging.info(f"[CV_SKLEARN]   Aggregated features: {len(aggregated_features)}")
                 if aggregated_metrics:
                     metrics_summary = ", ".join([f"{k}={v:.4f}" for k, v in aggregated_metrics.items() if isinstance(v, (int, float))])
@@ -5793,15 +5713,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         logging.warning(format_warning_message(
                             f"[FEATURE_SELECTOR] Steps failed during final retraining: {', '.join(failed_steps)}"
                         ))
-            def _safe_epoch_value(value):
-                try:
-                    return int(value) if value is not None else None
-                except (TypeError, ValueError, OverflowError):
-                    return None
             
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
-
                 # Gather comprehensive training and test information
                 train_info = {
                     'n_samples': len(y_outer_train),
@@ -5855,6 +5769,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     'best_inner_cv_score': best_score,
                     'test_subject_id': test_subject_number,
                     'test_subject_name': test_subject_name,
+                    'selection_parameters': {
+                        'selection_score_metric': selection_score_metric,
+                        'selection_score_aggregation': selection_score_aggregation,
+                        'refit_scoring_metric': refit_scoring_metric,
+                    }
                 }
                 
                 # Save comprehensive sklearn refit results immediately
@@ -5891,9 +5810,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
-                'configured_epochs': _safe_epoch_value(refit_configured_epochs),
-                'trained_epochs': _safe_epoch_value(refit_trained_epochs),
-                'restored_epoch': _safe_epoch_value(refit_restored_epoch),
+                'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
                 'test_tuned_f1': test_f1,
                 'test_roc_auc': test_auc,
                 'test_tuned_accuracy': test_accuracy
@@ -5936,9 +5853,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
-                'configured_epochs': None,
-                'trained_epochs': None,
-                'restored_epoch': None,
                 'test_tuned_f1': 0.0,
                 'test_tuned_accuracy': 0.0,
                 'test_tuned_precision': 0.0,
@@ -6077,7 +5991,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     
     # Suppress TensorFlow logging unless in debug mode
     if verbose_level < 3:
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
         tf_logger = logging.getLogger('tensorflow')
         tf_logger.setLevel(logging.ERROR)
     
@@ -6221,7 +6135,7 @@ def main(argv=None):
     # Filter invalid features
     if verbose >= 1:
         logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING")
-        logging.info("[MAIN] " + "#" * 70)
+        logging.info("[MAIN] " + "-" * 40)
             
     TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
         TS_DataMat,
@@ -6259,7 +6173,7 @@ def main(argv=None):
     # Parse metadata and group by trials
     if verbose >= 1:
         logging.info("\n[MAIN] 2. SEQUENCE FORMATTING")
-        logging.info("[MAIN] " + "#" * 70)
+        logging.info("[MAIN] " + "-" * 40)
     
     timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
     epoch_mapping, subject_names = parse_epoch_metadata(timeseries, verbose=verbose)
