@@ -278,18 +278,31 @@ def main(args: Optional[argparse.Namespace] = None):
 
 if __name__ == "__main__":
     from argparse import Namespace
+    from pathlib import Path
+
+    experiment_name = "hparams_test_val_tuned_f1"
+    
+    subject_fold_map = {
+        "PW_EM59": "outer_fold_01_test_PW_EM59",
+        "PW_FH57": "outer_fold_02_test_PW_FH57",
+        "PW_HK59": "outer_fold_03_test_PW_HK59",
+        "PW_HZ58": "outer_fold_04_test_PW_HZ58",
+        "PW_SN61": "outer_fold_05_test_PW_SN61",
+        "PW_SN66": "outer_fold_06_test_PW_SN66",
+        "PW_US68": "outer_fold_07_test_PW_US68",
+    }
+
+    refit_suffix = Path("refit") / "refit_results.json"
+    refit_files = []
+    for subject, fold_dir in subject_fold_map.items():
+        refit_path = Path("logs") / subject / experiment_name / fold_dir / refit_suffix
+        refit_files.append(str(refit_path))
+
+    output_dir = Path("logs") / "results" / experiment_name / "summary"
+
     args = Namespace(
-        refit_files=[
-            "logs/PW_EM59/hparams_test_beta_fast_test_2_20251203_033724/outer_fold_01_test_PW_EM59/refit/refit_results.json",
-            "logs/PW_FH57/hparams_test_beta_fast_test_2_20251203_033754/outer_fold_02_test_PW_FH57/refit/refit_results.json",
-            "logs/PW_HK59/hparams_test_beta_fast_test_2_20251203_033808/outer_fold_03_test_PW_HK59/refit/refit_results.json",
-            "logs/PW_HZ58/hparams_test_beta_fast_test_2_20251203_033814/outer_fold_04_test_PW_HZ58/refit/refit_results.json",
-            
-            
-            
-            
-        ],
-        output_dir='logs/results/100feat/summary',
+        refit_files=refit_files,
+        output_dir=str(output_dir),
         report_name="report.txt",
     )
     main(args)

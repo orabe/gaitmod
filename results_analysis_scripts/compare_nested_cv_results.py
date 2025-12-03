@@ -278,8 +278,8 @@ if __name__ == "__main__":
     from argparse import Namespace
     
     base_path = "logs/results"
-    label1 = "fast_test"
-    label2 = "100feat"
+    label1 = "test_feat"
+    label2 = "hparams_test_val_tuned_f1"
     
     args = Namespace(
         csv=[

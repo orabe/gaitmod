@@ -199,6 +199,10 @@ MASK_SETTINGS: Dict[str, Any] = {}
 CHANNEL_SELECTION_SETTINGS: Dict[str, Any] = {}
 CHANNEL_SELECTION_METHODS: Dict[str, Any] = {}
 DEFAULT_CHANNEL_SELECTION_METHOD = 'beta'
+SELECTION_SETTINGS: Dict[str, Any] = {}
+DEFAULT_REFIT_SCORING_METRIC = 'f1'
+DEFAULT_SELECTION_SCORE_METRIC = 'val_tuned_f1'
+DEFAULT_SELECTION_SCORE_AGGREGATION = 'median'
 
 DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
 DEFAULT_THRESHOLD_STEPS: int = 81
@@ -237,6 +241,8 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     global DEFAULT_PROGRESS_FREQUENCY, DEFAULT_REDUCE_LR_FACTOR, DEFAULT_REDUCE_LR_MIN_LR
     global DEFAULT_REDUCE_LR_PATIENCE_RATIO, DEFAULT_CALLBACK_MONITOR, DEFAULT_CALLBACK_PATIENCE
     global DEFAULT_GLOBAL_X_MASK_VALUE, DEFAULT_Y_MASK_VALUE
+    global SELECTION_SETTINGS, DEFAULT_REFIT_SCORING_METRIC
+    global DEFAULT_SELECTION_SCORE_METRIC, DEFAULT_SELECTION_SCORE_AGGREGATION
 
     resolved_path = Path(config_path).expanduser().resolve()
     config = load_hyperparameter_config(str(resolved_path))
@@ -247,14 +253,15 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     EXPERIMENT_NAME = GLOBAL_SETTINGS.get('experiment_name', 'nested_cv')
 
     CALLBACK_SETTINGS = GLOBAL_SETTINGS.get('callbacks', {})
-    THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('threshold_search', {})
+    THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('decision_threshold_search', {})
     MASK_SETTINGS = GLOBAL_SETTINGS.get('masking', {})
     CHANNEL_SELECTION_SETTINGS = GLOBAL_SETTINGS.get('channel_selection', {})
     CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
     DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
+    SELECTION_SETTINGS = GLOBAL_SETTINGS.get('selection_metrics', {})
 
     DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
-    DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_thresholds', 81))
+    DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_sweep_thresholds', 81))
     DEFAULT_THRESHOLD_METRICS = THRESHOLD_SETTINGS.get('metrics', [
         'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy'
     ]) or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
@@ -269,6 +276,9 @@ def configure_hyperparameter_settings(config_path: str) -> None:
 
     DEFAULT_GLOBAL_X_MASK_VALUE = MASK_SETTINGS.get('global_x_mask_value', 1e6)
     DEFAULT_Y_MASK_VALUE = MASK_SETTINGS.get('y_mask_value', -1)
+    DEFAULT_REFIT_SCORING_METRIC = SELECTION_SETTINGS.get('refit_scoring_metric', 'f1')
+    DEFAULT_SELECTION_SCORE_METRIC = SELECTION_SETTINGS.get('selection_score_metric', 'val_tuned_f1')
+    DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
 
 
 # ===================================================================
@@ -5927,12 +5937,11 @@ def main(argv=None):
         
     # Setup hierarchical experiment logging structure
     channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD or 'beta'
-    generated_run_id = time.strftime("%Y%m%d_%H%M%S")
-    run_id_raw = args.run_id or generated_run_id
-    run_id = sanitize_path_component(run_id_raw) or generated_run_id
+    run_id_raw = args.run_id
+    run_id = sanitize_path_component(run_id_raw) if run_id_raw else None
     experiment_name = EXPERIMENT_NAME or 'nested_cv'
     experiment_name_component = sanitize_path_component(experiment_name) or 'nested_cv'
-    experiment_dir_name = f"{experiment_name_component}_{run_id}"
+    experiment_dir_name = experiment_name_component
     if subject_log_component:
         experiment_dir = os.path.join("logs", subject_log_component, experiment_dir_name)
     else:
@@ -6106,9 +6115,9 @@ def main(argv=None):
         subject_names=subject_names,
         mask_values=mask_values,
         model_type='lstm',
-        refit_scoring_metric='f1',
-        selection_score_metric='val_tuned_f1',
-        selection_score_aggregation='median',
+        refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+        selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+        selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
         experiment_dir=experiment_dir,
         n_jobs=n_jobs,
         verbose=verbose,

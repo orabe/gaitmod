@@ -7,7 +7,7 @@
 #   sbatch --job-name=PW_EM59 HPC_scripts/lstm_outer_subject_batch.sbatch config.json PW_EM59 20250101_120000
 
 #SBATCH --job-name=lstm_subject
-#SBATCH --partition=gpu-2h
+#SBATCH --partition=gpu-7d
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96gb

@@ -3,12 +3,11 @@
 # Helper script to submit multiple subject batches in sequence.
 
 set -euo pipefail
-
+CONFIG_NAME="hparams_4layer_1000feat.json"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BATCH_SCRIPT="$SCRIPT_DIR/lstm_outer_subject_batch.sbatch"
-HYPERPARAMS_CONFIG="$PROJECT_ROOT/examples/LFP/classification_experiments/hparams_test.json"
-
+HYPERPARAMS_CONFIG="$PROJECT_ROOT/gaitmod/configs/hparams_configs/$CONFIG_NAME"
 if [[ ! -f "$HYPERPARAMS_CONFIG" ]]; then
     echo "Hyperparameter config not found: $HYPERPARAMS_CONFIG" >&2
     exit 1

@@ -14,9 +14,10 @@ Examples:
 """
 
 import argparse
+import ast
 import glob
 import os
-from typing import List
+from typing import Any, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -66,6 +67,62 @@ def filter_available_metrics(df: pd.DataFrame, metrics: List[str]) -> List[str]:
             if col != "test_subject_name" and pd.api.types.is_numeric_dtype(df[col])
         ]
     return [metric for metric in metrics if metric in df.columns]
+
+
+def _parse_confusion_components(value: Any) -> Optional[dict]:
+    """Support dicts or stringified dicts from CSV."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def plot_confusion_matrices(df: pd.DataFrame, column_name: str, output_path: str) -> None:
+    """Generate subplot grid of confusion matrices stored in a data column."""
+    entries: List[Tuple[str, np.ndarray]] = []
+    for _, row in df.iterrows():
+        components = _parse_confusion_components(row.get(column_name))
+        if not components:
+            continue
+        matrix = np.array([
+            [components.get('tn', 0), components.get('fp', 0)],
+            [components.get('fn', 0), components.get('tp', 0)]
+        ], dtype=float)
+        subject = row.get("test_subject_name", "subject")
+        entries.append((subject, matrix))
+
+    if not entries:
+        print(f"[WARN] No valid confusion matrices found in column '{column_name}'. Skipping {output_path}.")
+        return
+
+    n_subjects = len(entries)
+    n_cols = min(3, n_subjects)
+    n_rows = int(np.ceil(n_subjects / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), squeeze=False)
+    axes = axes.flatten()
+    for ax_idx, (subject, matrix) in enumerate(entries):
+        ax = axes[ax_idx]
+        im = ax.imshow(matrix, cmap="Blues")
+        ax.set_title(subject)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["Pred 0", "Pred 1"])
+        ax.set_yticks([0, 1])
+        ax.set_yticklabels(["Actual 0", "Actual 1"])
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{matrix[i, j]:.0f}", ha="center", va="center", color="black", fontsize=11)
+    for j in range(len(entries), len(axes)):
+        fig.delaxes(axes[j])
+    fig.tight_layout()
+    fig.colorbar(im, ax=axes[:len(entries)], shrink=0.7, location="right")
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
 
 
 def plot_metric_summary(df: pd.DataFrame, metrics: List[str], output_path: str) -> None:
@@ -232,15 +289,19 @@ def main(args=None):
     plot_metric_summary(df, metrics, os.path.join(output_dir, "metrics_bar_summary.png"))
     plot_metric_violinplots(df, metrics, os.path.join(output_dir, "metrics_violinplots.png"))
     plot_subject_barplots(df, metrics, os.path.join(output_dir, "subject_barplots.png"))
+    plot_confusion_matrices(df, "test_confusion_matrix_components", os.path.join(output_dir, "confusion_matrices.png"))
+    plot_confusion_matrices(df, "test_tuned_confusion_matrix_components", os.path.join(output_dir, "confusion_matrices_tuned.png"))
 
     print("Visualization complete. Generated figures:")
     print(f"- {os.path.join(output_dir, 'metrics_bar_summary.png')}")
     print(f"- {os.path.join(output_dir, 'metrics_violinplots.png')}")
     print(f"- {os.path.join(output_dir, 'subject_barplots.png')}")
+    print(f"- {os.path.join(output_dir, 'confusion_matrices.png')}")
+    print(f"- {os.path.join(output_dir, 'confusion_matrices_tuned.png')}")
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/results/100feat"
+    base_path = "logs/results/hparams_test_val_tuned_f1"
     args = Namespace(
         csv=f"{base_path}/summary/nested_cv_results.csv",
         output_dir=f"{base_path}/figures",
