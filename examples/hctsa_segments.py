@@ -2,13 +2,13 @@ import json
 import logging
 import re
 import time
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from collections import defaultdict
 
-import h5py
 import numpy as np
 import pandas as pd
+from gaitmod.utils.utils import load_hctsa_data
 
 
 def parse_segment_identifier(name: str) -> Dict[str, Any]:
@@ -92,22 +92,19 @@ class HCTSASegmentCache:
             return False
         return channel_name in set(index_df['channel_canonical'].unique())
 
-    def _update_manifest(self, channel_name: str, subject_counts: Dict[str, int],
-                         normalized: bool, feature_dim: int):
-        """Record high-level channel metadata with per-subject counts."""
+    def _update_manifest(self, channel_name: str, num_segments: int, normalized: bool, feature_dim: int):
+        """Record high-level channel metadata (counts, feature dimension)."""
         manifest: Dict[str, Any] = {}
         if self.manifest_file.exists():
             with open(self.manifest_file, 'r', encoding='utf-8') as fp:
                 manifest = json.load(fp)
         channels = manifest.setdefault('channels', {})
-        channel_entry = channels.setdefault(channel_name, {})
-        channel_entry['normalized'] = bool(normalized)
-        channel_entry['feature_dim'] = int(feature_dim)
-        subjects_entry = channel_entry.setdefault('subjects', {})
-        for subject, count in subject_counts.items():
-            subjects_entry[str(subject)] = int(count)
-        channel_entry['num_segments'] = int(sum(subjects_entry.values()))
-        channel_entry['last_updated'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        channels[channel_name] = {
+            'num_segments': int(num_segments),
+            'normalized': bool(normalized),
+            'feature_dim': int(feature_dim),
+            'last_updated': time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
         manifest['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.manifest_file, 'w', encoding='utf-8') as fp:
             json.dump(manifest, fp, indent=2)
@@ -190,27 +187,16 @@ class HCTSASegmentCache:
                 'flat_index': idx,
             })
 
-        subject_counts: Dict[str, int] = {}
-        for rec in records:
-            subject_counts[rec['subject']] = subject_counts.get(rec['subject'], 0) + 1
-
         index_df = self.load_index()
-        subject_set = {rec['subject'] for rec in records}
-        if not index_df.empty and subject_set:
-            mask = ~(
-                (index_df['channel_canonical'] == canonical_channel_name) &
-                (index_df['subject'].isin(subject_set))
-            )
-            index_df = index_df[mask]
+        index_df = index_df[index_df['channel_canonical'] != canonical_channel_name]
         index_df = pd.concat([index_df, pd.DataFrame(records)], ignore_index=True)
         self._write_index(index_df)
         self._persist_operations(operations_df)
-        self._update_manifest(
-            canonical_channel_name,
-            subject_counts,
-            normalized=normalized,
-            feature_dim=TS_DataMat.shape[1]
-        )
+        self._update_manifest(canonical_channel_name, len(records), normalized=normalized, feature_dim=TS_DataMat.shape[1])
+
+        subject_counts: Dict[str, int] = {}
+        for rec in records:
+            subject_counts[rec['subject']] = subject_counts.get(rec['subject'], 0) + 1
 
         return subject_counts, TS_DataMat.shape[1]
 
@@ -311,53 +297,6 @@ class HCTSASegmentCache:
         operations_df = self.load_operations()
         labels = combined_df['label'].to_numpy(dtype=np.int64)
         return TS_DataMat, timeseries_df, operations_df, labels
-
-
-def load_hctsa_data(base_path: str, data_variant: str = "N", verbose: bool = False):
-    """
-    Lightweight loader for HCTSA feature matrices and metadata.
-
-    Parameters
-    ----------
-    base_path : str
-        Root directory containing the HCTSA.mat/.csv files.
-    data_variant : str
-        Variant suffix ('' for raw, 'F' for filtered, 'N' for normalized).
-    verbose : bool
-        Whether to log basic information.
-    """
-    base_path = Path(base_path)
-    suffix = f"_{data_variant}" if data_variant else ""
-    mat_file = base_path / f"HCTSA{suffix}.mat"
-    csv_root = base_path / "data" / "hctsa_output_data"
-
-    with h5py.File(mat_file, "r") as mat_fp:
-        TS_DataMat = mat_fp["/TS_DataMat"][()].T
-
-    timeseries = pd.read_csv(csv_root / f"TimeSeries{suffix}.csv")
-    operations = pd.read_csv(csv_root / f"Operations{suffix}.csv")
-
-    group_values = timeseries["Group"].unique()
-    gait_mod_names = {"gait_modulation", "gaitMod", "gait_mod", "GM"}
-    positives = [name for name in gait_mod_names if name in group_values]
-    if positives:
-        labels = np.where(timeseries["Group"].isin(positives), 1, 0)
-    else:
-        labels = np.where(timeseries["Group"] == group_values[0], 1, 0)
-
-    if verbose:
-        logging.info(
-            "[LOAD] Data loaded - Features=%s TimeSeries=%s Operations=%s",
-            TS_DataMat.shape,
-            timeseries.shape,
-            operations.shape,
-        )
-        logging.info(
-            "[LOAD] Labels distribution: %s",
-            dict(zip(["negative", "positive"], np.bincount(labels))),
-        )
-
-    return TS_DataMat, timeseries, operations, labels
 
 
 def export_channels_to_segment_cache(
