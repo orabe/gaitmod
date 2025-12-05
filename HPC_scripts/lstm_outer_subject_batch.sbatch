@@ -7,8 +7,7 @@
 #   sbatch --job-name=PW_EM59 HPC_scripts/lstm_outer_subject_batch.sbatch config.json PW_EM59 20250101_120000
 
 #SBATCH --job-name=lstm_subject
-#SBATCH --partition=gpu-7d
-#SBATCH --gres=gpu:1
+#SBATCH --partition=cpu-2d
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96gb
 #SBATCH --output=logs/slurm/%x_%j.out
@@ -25,9 +24,9 @@ export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
 # --- Environment setup ------------------------------------------------------
 # Customize this block to activate your preferred Python environment.
 # shellcheck disable=SC2015
-if [[ -f "$HOME/.bashrc" ]]; then
-    source "$HOME/.bashrc"
-fi
+#if [[ -f "$HOME/.bashrc" ]]; then
+#    source "$HOME/.bashrc"
+#fi
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
     conda activate gaitmod-cluster
@@ -60,3 +59,4 @@ CMD+=(--outer-subjects "$SUBJECTS")
 
 echo "[SLURM] Running: ${CMD[*]}"
 "${CMD[@]}"
+# --gres=gpu:1
