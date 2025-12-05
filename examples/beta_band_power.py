@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import pickle
+import re
 import shutil
 from collections import defaultdict
 from pathlib import Path
@@ -15,8 +17,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import welch
 
-from gaitmod.utils.hctsa_segments import HCTSASegmentCache
-from gaitmod.utils.utils import load_pkl
+from examples.hctsa_segments import HCTSASegmentCache
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ class BetaBandPowerCacheBuilder:
         self.welch_nfft = welch_nfft
         self.label_mapping = dict(label_mapping) if label_mapping is not None else DEFAULT_LABEL_MAP
         self.verbose = verbose
+        self._beta_freqs: Optional[np.ndarray] = None
+        self._operations_df: Optional[pd.DataFrame] = None
 
     def build_from_epochs_dict(
         self,
@@ -63,7 +66,6 @@ class BetaBandPowerCacheBuilder:
             self._reset_cache(cache.root_dir)
             cache = HCTSASegmentCache(segment_cache_dir)
 
-        operations_df = self._build_operations_df()
         for subject, epochs in patient_epochs.items():
             if epochs is None:
                 logger.warning("Skipping subject %s (no epochs).", subject)
@@ -72,7 +74,6 @@ class BetaBandPowerCacheBuilder:
                 subject=subject,
                 epochs=epochs,
                 cache=cache,
-                operations_df=operations_df,
                 overwrite_channels=overwrite_channels,
             )
 
@@ -81,7 +82,6 @@ class BetaBandPowerCacheBuilder:
         subject: str,
         epochs: "mne.Epochs",
         cache: HCTSASegmentCache,
-        operations_df: pd.DataFrame,
         overwrite_channels: bool,
     ) -> None:
         data = epochs.get_data(copy=True)  # (n_epochs, n_channels, n_samples)
@@ -112,8 +112,10 @@ class BetaBandPowerCacheBuilder:
 
         for ch_idx, channel_name in enumerate(epochs.ch_names):
             channel_data = data[:, ch_idx, :]
-            log_beta = self._compute_log_beta_power(channel_data, sfreq)
-            ts_datamat = log_beta.reshape(-1, 1).astype(np.float32)
+            log_beta = self._compute_log_beta_spectrum(channel_data, sfreq)
+            ts_datamat = log_beta.astype(np.float32)
+            operations_df = self._get_operations_df()
+            formatted_channel = self._format_channel_folder_name(ch_idx, channel_name)
             timeseries_df = self._build_timeseries_metadata(
                 subject=subject,
                 trial_ids=trial_ids,
@@ -123,7 +125,7 @@ class BetaBandPowerCacheBuilder:
             )
 
             cache.build_channel_from_arrays(
-                channel_name=channel_name,
+                channel_name=formatted_channel,
                 TS_DataMat=ts_datamat,
                 timeseries_df=timeseries_df,
                 labels=labels,
@@ -133,8 +135,8 @@ class BetaBandPowerCacheBuilder:
                 verbose=self.verbose,
             )
 
-    def _compute_log_beta_power(self, channel_data: np.ndarray, sfreq: float) -> np.ndarray:
-        """Return log beta power for shape (n_epochs, n_times) channel data."""
+    def _compute_log_beta_spectrum(self, channel_data: np.ndarray, sfreq: float) -> np.ndarray:
+        """Return log beta-band spectrum (all frequency bins) for each epoch."""
         if channel_data.ndim != 2:
             raise ValueError(f"Channel data must be 2D (epochs x samples), got {channel_data.shape}")
 
@@ -165,7 +167,17 @@ class BetaBandPowerCacheBuilder:
                 f"({freqs.min():.2f}-{freqs.max():.2f}Hz)."
             )
 
-        beta_power = psd[..., mask].mean(axis=-1)
+        beta_freqs = freqs[mask]
+        if self._beta_freqs is None:
+            self._beta_freqs = beta_freqs
+        else:
+            if len(self._beta_freqs) != len(beta_freqs) or not np.allclose(self._beta_freqs, beta_freqs):
+                raise ValueError(
+                    "Welch frequency grid changed between segments. "
+                    "Ensure consistent sampling rate and Welch parameters."
+                )
+
+        beta_power = psd[..., mask]
         return np.log(beta_power + self.log_epsilon)
 
     def _build_timeseries_metadata(
@@ -193,20 +205,33 @@ class BetaBandPowerCacheBuilder:
             )
         return pd.DataFrame(rows)
 
+    def _get_operations_df(self) -> pd.DataFrame:
+        """Create metadata rows for each beta frequency bin."""
+        if self._operations_df is None:
+            if self._beta_freqs is None:
+                raise RuntimeError("Beta frequency bins not initialized before building operations.")
+            rows = []
+            for idx, freq in enumerate(self._beta_freqs, start=1):
+                rows.append(
+                    {
+                        "ID": idx,
+                        "Name": f"log_beta_power_{freq:.2f}Hz",
+                        "Keywords": f"beta_psd,log_power,freq_{freq:.2f}",
+                        "CodeString": f"beta_log_power_{freq:.2f}",
+                        "MasterID": idx,
+                    }
+                )
+            self._operations_df = pd.DataFrame(rows)
+        return self._operations_df
+
     @staticmethod
-    def _build_operations_df() -> pd.DataFrame:
-        """Create a single-operation metadata table for beta features."""
-        return pd.DataFrame(
-            [
-                {
-                    "ID": 1,
-                    "Name": "log_beta_power",
-                    "Keywords": "beta_psd,log_power",
-                    "CodeString": "beta_log_power",
-                    "MasterID": 1,
-                }
-            ]
-        )
+    def _format_channel_folder_name(index: int, raw_name: str) -> str:
+        """Return a filesystem-friendly channel folder name like channel_0-Original."""
+        safe = raw_name.strip().replace(" ", "_")
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "", safe)
+        if not safe:
+            safe = f"ch{index}"
+        return f"channel_{index}-{safe}"
 
     def _reset_cache(self, cache_root: Path) -> None:
         """Remove existing cache contents so new features can be written cleanly."""
@@ -231,7 +256,9 @@ def build_beta_band_power_cache(
     verbose: bool = True,
 ) -> None:
     """Convenience wrapper to build a beta-band PSD cache directly from saved epochs."""
-    patient_epochs = load_pkl(patient_epochs_path)
+    resolved_path = Path(patient_epochs_path).expanduser()
+    with resolved_path.open("rb") as file:
+        patient_epochs = pickle.load(file)
     builder = BetaBandPowerCacheBuilder(
         beta_band=beta_band,
         log_epsilon=log_epsilon,
