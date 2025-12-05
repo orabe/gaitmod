@@ -1018,7 +1018,11 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
     else:
         # Use "refit" for refit training, "default" for other cases
         param_str = "refit" if is_refit else "default"
-    param_dir_name = _resolve_hparam_dirname(outer_fold_dir, param_str, create_if_missing=True)
+
+    if is_refit:
+        param_dir_name = param_str
+    else:
+        param_dir_name = _resolve_hparam_dirname(outer_fold_dir, param_str, create_if_missing=True)
     run_id = f"{unique_id}--{param_dir_name}"
     hyperparams_dir = os.path.join(outer_fold_dir, param_dir_name)
 
