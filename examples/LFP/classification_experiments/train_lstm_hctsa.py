@@ -4492,6 +4492,110 @@ def get_default_param_grid(model_type, mask_values=None):
 
     return param_grid
 
+
+def flatten_valid_epochs(X, y, mask_values):
+    """
+    Convert padded trial sequences into epoch-level samples for classical models.
+
+    Args:
+        X: Array of shape (n_trials, max_len, n_features) or already 2D.
+        y: Array of shape (n_trials, max_len, ...) containing labels.
+        mask_values: Dict with 'X_mask' and 'y_mask' entries.
+
+    Returns:
+        tuple: (X_epochs, y_epochs) where each row corresponds to a real epoch.
+    """
+    X_arr = np.asarray(X)
+    y_arr = np.asarray(y)
+
+    mask_values = mask_values or {}
+    X_mask_val = mask_values.get('X_mask', 0.0)
+    y_mask_val = mask_values.get('y_mask', -1)
+
+    if X_arr.ndim == 3:
+        # Identify padded timesteps by checking whether all features equal the mask.
+        feature_mask = ~np.all(np.isclose(X_arr, X_mask_val), axis=-1)  # (n_trials, max_len)
+        X_epochs = X_arr[feature_mask]
+
+        if y_arr.ndim == 1:
+            # Broadcast single label per trial across timesteps if needed.
+            y_expanded = np.repeat(y_arr[:, None], X_arr.shape[1], axis=1)
+        else:
+            y_expanded = y_arr.reshape(y_arr.shape[0], -1)
+        if y_expanded.shape != feature_mask.shape:
+            raise ValueError(
+                f"Label array shape {y_expanded.shape} does not match feature mask {feature_mask.shape}"
+            )
+        y_epochs = y_expanded[feature_mask]
+    elif X_arr.ndim == 2:
+        X_epochs = X_arr
+        y_epochs = y_arr if y_arr.ndim == 1 else y_arr.reshape(-1)
+        feature_mask = np.ones(X_epochs.shape[0], dtype=bool)
+    else:
+        raise ValueError("Expected 2D or 3D feature arrays for flattening to epochs.")
+
+    # Drop entries where labels are masked.
+    valid_label_mask = y_epochs != y_mask_val
+    if not np.all(valid_label_mask):
+        X_epochs = X_epochs[valid_label_mask]
+        y_epochs = y_epochs[valid_label_mask]
+
+    if X_epochs.size == 0 or y_epochs.size == 0:
+        raise ValueError("No valid epochs found after removing masked timesteps.")
+
+    return X_epochs.astype(np.float32), y_epochs.astype(np.int32)
+
+
+def extract_valid_epoch_labels(y, y_mask_val):
+    """Return a 1D array of labels for all unmasked epochs."""
+    y_array = np.asarray(y)
+    if y_array.ndim <= 1:
+        mask = y_array != y_mask_val
+        return y_array[mask]
+    flattened = y_array.reshape(y_array.shape[0], -1)
+    mask = flattened != y_mask_val
+    return flattened[mask]
+
+
+def compute_auc_metrics(y_true, y_scores):
+    """
+    Safely compute ROC AUC and PR AUC, skipping if only one class is present.
+
+    Args:
+        y_true: Array-like of ground-truth labels.
+        y_scores: Array-like of positive-class probabilities/scores.
+
+    Returns:
+        tuple: (roc_auc, pr_auc, has_valid_classes)
+               has_valid_classes is False if fewer than 2 classes exist.
+    """
+    y_true_arr = np.asarray(y_true).ravel()
+    y_scores_arr = np.asarray(y_scores).ravel()
+
+    valid_mask = np.isfinite(y_true_arr) & np.isfinite(y_scores_arr)
+    if not np.any(valid_mask):
+        return None, None, False
+
+    y_valid = y_true_arr[valid_mask]
+    score_valid = y_scores_arr[valid_mask]
+
+    if np.unique(y_valid).size < 2:
+        return None, None, False
+
+    roc_auc = None
+    pr_auc = None
+    try:
+        roc_auc = roc_auc_score(y_valid, score_valid)
+    except Exception:
+        roc_auc = None
+
+    try:
+        pr_auc = average_precision_score(y_valid, score_valid)
+    except Exception:
+        pr_auc = None
+
+    return roc_auc, pr_auc, True
+
 # ==================================================================
 # Nested Cross-Validation with Pre-computed Padding
 # ==================================================================
@@ -4581,6 +4685,24 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             if verbose >= 2:
                 logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' non-numeric ({raw_score}); using 0.0")
             return 0.0
+
+    def _mean_valid(values):
+        """Compute the mean of numeric, non-NaN values; return None if none available."""
+        valid = []
+        for value in values:
+            if isinstance(value, (int, float, np.number)):
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if np.isnan(numeric_value):
+                    continue
+                valid.append(numeric_value)
+        return float(np.mean(valid)) if valid else None
+
+    def _format_avg(value):
+        """Format average metric for logging, showing 'N/A' when unavailable."""
+        return f"{value:.4f}" if isinstance(value, (int, float)) and not np.isnan(value) else "N/A"
     
     if verbose >= 1:
         logging.info(f"\n[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
@@ -4752,6 +4874,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     
                     # Step 7: Fit and evaluate pipeline with proper validation data handling
                     learning_rate_history = None
+                    threshold_results = None
                     if model_type == 'lstm' and len(X_inner_train.shape) == 3:
                         # Implement proper pipeline-aware validation data handling
                         if verbose >= 2:
@@ -4884,23 +5007,28 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
                     else:
-                        # For other models, flatten to 2D
+                        # For other models, train on individual epochs
                         X_inner_train_arr = np.asarray(X_inner_train)
                         X_inner_val_arr = np.asarray(X_inner_val)
-                        X_inner_train_2d = X_inner_train_arr.reshape(X_inner_train_arr.shape[0], -1)
-                        X_inner_val_2d = X_inner_val_arr.reshape(X_inner_val_arr.shape[0], -1)
-                        train_shape_for_logging = X_inner_train_2d.shape
-                        val_shape_for_logging = X_inner_val_2d.shape
+                        X_inner_train_epochs, y_inner_train_epochs = flatten_valid_epochs(
+                            X_inner_train_arr, y_inner_train, mask_values
+                        )
+                        X_inner_val_epochs, y_inner_val_epochs = flatten_valid_epochs(
+                            X_inner_val_arr, y_inner_val, mask_values
+                        )
+                        train_shape_for_logging = X_inner_train_epochs.shape
+                        val_shape_for_logging = X_inner_val_epochs.shape
+
+                        y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                         
-                        inner_pipeline.fit(X_inner_train_2d, y_inner_train)
-                        y_val_pred = inner_pipeline.predict(X_inner_val_2d)
-                        y_val_proba = inner_pipeline.predict_proba(X_inner_val_2d)
+                        inner_pipeline.fit(X_inner_train_epochs, y_inner_train_epochs)
+                        y_val_proba = inner_pipeline.predict_proba(X_inner_val_epochs)
                         
                         # Capture validation predictions for aggregated threshold optimization
                         # This ensures threshold tuning is done on truly held-out data
                         inner_val_predictions.append(y_val_proba)
-                        inner_val_labels.append(y_inner_val)
-                        inner_val_weights.append(len(y_inner_val))  # Weight by validation set size
+                        inner_val_labels.append(y_inner_val_epochs)
+                        inner_val_weights.append(len(y_inner_val_epochs))  # Weight by validation set size
                         
                         # Use default threshold evaluation for non-LSTM models (no threshold optimization)
                         if verbose >= 2:
@@ -4920,29 +5048,30 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                         # Compute standard sklearn metrics with default threshold (no masking needed for 2D baseline models)
                         baseline_scores = {
-                            'f1': f1_score(y_inner_val, y_val_pred_threshold, average='weighted'),
-                            'accuracy': accuracy_score(y_inner_val, y_val_pred_threshold),
-                            'precision': precision_score(y_inner_val, y_val_pred_threshold, average='weighted', zero_division=0),
-                            'recall': recall_score(y_inner_val, y_val_pred_threshold, average='weighted'),
-                            'balanced_accuracy': balanced_accuracy_score(y_inner_val, y_val_pred_threshold)
+                            'f1': f1_score(y_inner_val_epochs, y_val_pred_threshold, average='weighted'),
+                            'accuracy': accuracy_score(y_inner_val_epochs, y_val_pred_threshold),
+                            'precision': precision_score(y_inner_val_epochs, y_val_pred_threshold, average='weighted', zero_division=0),
+                            'recall': recall_score(y_inner_val_epochs, y_val_pred_threshold, average='weighted'),
+                            'balanced_accuracy': balanced_accuracy_score(y_inner_val_epochs, y_val_pred_threshold)
                         }
 
                         baseline_confusion_components = None
                         try:
-                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
                             baseline_confusion_components = LSTMClassifier.eval_masked_confusion_matrix_components(
-                                y_inner_val, y_val_pred_threshold, y_mask_val
+                                y_inner_val_epochs.reshape(-1, 1),
+                                y_val_pred_threshold.reshape(-1, 1),
+                                y_mask_val
                             )
                         except Exception as cm_error:
                             logging.debug(f"[CV_SKLEARN]       Baseline confusion matrix components unavailable: {cm_error}")
                         
                         # Add AUC scores (threshold-independent)
                         try:
-                            baseline_scores['roc_auc'] = roc_auc_score(y_inner_val, y_val_proba_pos, average='weighted')
-                            baseline_scores['pr_auc'] = average_precision_score(y_inner_val, y_val_proba_pos, average='weighted')
-                        except:
-                            baseline_scores['roc_auc'] = 0.5
-                            baseline_scores['pr_auc'] = 0.0
+                            baseline_scores['roc_auc'] = roc_auc_score(y_inner_val_epochs, y_val_proba_pos, average='weighted')
+                            baseline_scores['pr_auc'] = average_precision_score(y_inner_val_epochs, y_val_proba_pos, average='weighted')
+                        except Exception:
+                            baseline_scores['roc_auc'] = None
+                            baseline_scores['pr_auc'] = None
                         
                         # Store default thresholds (all 0.5 for baseline models)
                         optimal_thresholds = {
@@ -4952,6 +5081,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             'recall': default_threshold,
                             'balanced_accuracy': default_threshold
                         }
+                        threshold_results = {}
                         
                         if verbose >= 2:
                             primary_threshold = optimal_thresholds.get('f1', 0.5)
@@ -5540,10 +5670,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Base metrics using default threshold
                     try:
                         y_test_pred_default = (y_test_proba_valid > default_threshold)
-                        from sklearn.metrics import (
-                            f1_score, accuracy_score, precision_score,
-                            recall_score, balanced_accuracy_score
-                        )
                         test_metrics['test_f1'] = f1_score(y_test_valid, y_test_pred_default, pos_label=1)
                         test_metrics['test_accuracy'] = accuracy_score(y_test_valid, y_test_pred_default)
                         test_metrics['test_precision'] = precision_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
@@ -5551,11 +5677,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
                     except Exception as metric_error:
                         logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}"))
-                        test_metrics.setdefault('test_f1', np.nan)
-                        test_metrics.setdefault('test_accuracy', np.nan)
-                        test_metrics.setdefault('test_precision', np.nan)
-                        test_metrics.setdefault('test_recall', np.nan)
-                        test_metrics.setdefault('test_balanced_accuracy', np.nan)
+                        test_metrics.setdefault('test_f1', None)
+                        test_metrics.setdefault('test_accuracy', None)
+                        test_metrics.setdefault('test_precision', None)
+                        test_metrics.setdefault('test_recall', None)
+                        test_metrics.setdefault('test_balanced_accuracy', None)
                     
                     # Base confusion matrix components
                     try:
@@ -5580,34 +5706,32 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         metric_key = f"{metric_prefix}_{metric_name}"
                         try:
                             if metric_name == 'f1':
-                                from sklearn.metrics import f1_score
                                 test_metrics[metric_key] = f1_score(y_test_valid, y_test_pred_thresh, pos_label=1)
                             elif metric_name == 'accuracy':
-                                from sklearn.metrics import accuracy_score
                                 test_metrics[metric_key] = accuracy_score(y_test_valid, y_test_pred_thresh)
                             elif metric_name == 'precision':
-                                from sklearn.metrics import precision_score
                                 test_metrics[metric_key] = precision_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
                             elif metric_name == 'recall':
-                                from sklearn.metrics import recall_score
                                 test_metrics[metric_key] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
                             elif metric_name == 'balanced_accuracy':
-                                from sklearn.metrics import balanced_accuracy_score
                                 test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
                         except Exception as e:
-                            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
-                            test_metrics[metric_key] = np.nan
+                            logging.warning(format_warning_message(f"[CV_SKLEERN] Could not calculate threshold-optimized {metric_name}: {e}"))
+                            test_metrics[metric_key] = None
                     
                     # Add AUC scores (threshold-independent)
-                    try:
-                        from sklearn.metrics import roc_auc_score, average_precision_score
-                        test_metrics['test_roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
-                        pr_auc = average_precision_score(y_test_valid, y_test_proba_valid)
+                    roc_auc, pr_auc, has_valid_auc = compute_auc_metrics(y_test_valid, y_test_proba_valid)
+                    if not has_valid_auc:
+                        logging.debug("[CV_SKLEARN] Skipping AUC metrics for LSTM test data: only one class present after masking")
+                        test_metrics['test_roc_auc'] = None
+                        test_metrics['test_pr_auc'] = None
+                    else:
+                        test_metrics['test_roc_auc'] = roc_auc
                         test_metrics['test_pr_auc'] = pr_auc
-                    except Exception as e:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
-                        test_metrics['test_roc_auc'] = np.nan
-                        test_metrics['test_pr_auc'] = np.nan
+                        if (roc_auc is None) or (pr_auc is None):
+                            logging.warning(format_warning_message(
+                                "[CV_SKLEARN] AUC metrics returned NaN despite valid classes"
+                            ))
                 
                 # Derive confusion matrix components at the F1-optimized threshold
                 try:
@@ -5624,22 +5748,27 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 test_metrics = add_notuning_metrics(test_metrics, 'test')
                 
                 # Extract primary metrics for backward compatibility
-                test_f1 = test_metrics.get('test_tuned_f1', np.nan)
-                test_auc = test_metrics.get('test_roc_auc', np.nan)
-                test_accuracy = test_metrics.get('test_tuned_accuracy', np.nan)
+                test_f1 = test_metrics.get('test_tuned_f1')
+                test_auc = test_metrics.get('test_roc_auc')
+                test_accuracy = test_metrics.get('test_tuned_accuracy')
                 
             else:
                 # For other models
                 X_outer_train_arr = np.asarray(X_outer_train)
                 X_outer_test_arr = np.asarray(X_outer_test)
-                X_outer_train_2d = X_outer_train_arr.reshape(X_outer_train_arr.shape[0], -1)
-                X_outer_test_2d = X_outer_test_arr.reshape(X_outer_test_arr.shape[0], -1)
-                train_shape_for_logging = X_outer_train_2d.shape
-                test_shape_for_logging = X_outer_test_2d.shape
-                
-                final_pipeline.fit(X_outer_train_2d, y_outer_train)
-                y_test_pred = final_pipeline.predict(X_outer_test_2d)
-                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_2d)
+                X_outer_train_epochs, y_outer_train_epochs = flatten_valid_epochs(
+                    X_outer_train_arr, y_outer_train, mask_values
+                )
+                X_outer_test_epochs, y_outer_test_epochs = flatten_valid_epochs(
+                    X_outer_test_arr, y_outer_test, mask_values
+                )
+                train_shape_for_logging = X_outer_train_epochs.shape
+                test_shape_for_logging = X_outer_test_epochs.shape
+
+                y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+
+                final_pipeline.fit(X_outer_train_epochs, y_outer_train_epochs)
+                y_test_pred_proba = final_pipeline.predict_proba(X_outer_test_epochs)
                 
                 # Use stable thresholds computed on aggregated validation data from inner CV
                 # This avoids optimism bias from refitting thresholds on training data
@@ -5662,7 +5791,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     stable_threshold_summary = ", ".join([f"{k}={v:.3f}" for k, v in optimal_thresholds.items()])
                     logging.info(f"[CV_SKLEARN] Using stable thresholds: {stable_threshold_summary}")
 
-                y_mask_val = mask_values.get('y_mask', -1)
                 default_threshold = 0.5
 
                 # Apply optimized thresholds to test predictions
@@ -5674,18 +5802,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 else:
                     y_test_proba_pos = y_test_pred_proba.ravel()
 
-                y_test_flat = y_outer_test.ravel()
-                test_mask = y_test_flat != y_mask_val
-                if np.sum(test_mask) > 0:
-                    y_test_valid = y_test_flat[test_mask]
-                    y_test_proba_valid = y_test_proba_pos[test_mask]
+                if y_outer_test_epochs.size > 0:
+                    y_test_valid = y_outer_test_epochs
+                    y_test_proba_valid = y_test_proba_pos
 
                     try:
                         y_test_pred_default = (y_test_proba_valid > default_threshold)
-                        from sklearn.metrics import (
-                            f1_score, accuracy_score, precision_score,
-                            recall_score, balanced_accuracy_score
-                        )
                         test_metrics['test_f1'] = f1_score(y_test_valid, y_test_pred_default, pos_label=1)
                         test_metrics['test_accuracy'] = accuracy_score(y_test_valid, y_test_pred_default)
                         test_metrics['test_precision'] = precision_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
@@ -5693,18 +5815,18 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
                     except Exception as metric_error:
                         logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}"))
-                        test_metrics.setdefault('test_f1', np.nan)
-                        test_metrics.setdefault('test_accuracy', np.nan)
-                        test_metrics.setdefault('test_precision', np.nan)
-                        test_metrics.setdefault('test_recall', np.nan)
-                        test_metrics.setdefault('test_balanced_accuracy', np.nan)
+                        test_metrics.setdefault('test_f1', None)
+                        test_metrics.setdefault('test_accuracy', None)
+                        test_metrics.setdefault('test_precision', None)
+                        test_metrics.setdefault('test_recall', None)
+                        test_metrics.setdefault('test_balanced_accuracy', None)
 
                     try:
                         y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
-                        if y_test_pred_default_full.size == y_outer_test.size:
-                            y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
                         cm_base = LSTMClassifier.eval_masked_confusion_matrix_components(
-                            y_outer_test, y_test_pred_default_full, y_mask_val
+                            y_outer_test_epochs.reshape(-1, 1),
+                            y_test_pred_default_full.reshape(-1, 1),
+                            y_mask_val
                         )
                         test_metrics['test_confusion_matrix_components'] = cm_base
                     except Exception as cm_error:
@@ -5731,23 +5853,27 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                 test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
                         except Exception as e:
                             logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
-                            test_metrics[metric_key] = np.nan
+                            test_metrics[metric_key] = None
 
-                    try:
-                        from sklearn.metrics import roc_auc_score, average_precision_score
-                        test_metrics['test_roc_auc'] = roc_auc_score(y_test_valid, y_test_proba_valid)
-                        test_metrics['test_pr_auc'] = average_precision_score(y_test_valid, y_test_proba_valid)
-                    except Exception as e:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
-                        test_metrics['test_roc_auc'] = np.nan
-                        test_metrics['test_pr_auc'] = np.nan
+                    roc_auc, pr_auc, has_valid_auc = compute_auc_metrics(y_test_valid, y_test_proba_valid)
+                    if not has_valid_auc:
+                        logging.debug("[CV_SKLEARN] Skipping AUC metrics for baseline test data: only one class present after masking")
+                        test_metrics['test_roc_auc'] = None
+                        test_metrics['test_pr_auc'] = None
+                    else:
+                        test_metrics['test_roc_auc'] = roc_auc
+                        test_metrics['test_pr_auc'] = pr_auc
+                        if (roc_auc is None) or (pr_auc is None):
+                            logging.warning(format_warning_message(
+                                "[CV_SKLEARN] AUC metrics returned NaN despite valid classes"
+                            ))
                     try:
                         confusion_threshold = optimal_thresholds.get('f1', 0.5)
                         y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
-                        if y_test_pred_conf.size == y_outer_test.size:
-                            y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
                         cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(
-                            y_outer_test, y_test_pred_conf, y_mask_val
+                            y_outer_test_epochs.reshape(-1, 1),
+                            y_test_pred_conf.reshape(-1, 1),
+                            y_mask_val
                         )
                         test_metrics['test_tuned_confusion_matrix_components'] = cm_components
                     except Exception as e:
@@ -5756,10 +5882,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 else:
                     logging.warning(format_warning_message("[CV_SKLEARN] No valid test samples after masking"))
                     for metric_name in ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']:
-                        test_metrics[f'test_{metric_name}'] = np.nan
-                        test_metrics[f'test_tuned_{metric_name}'] = np.nan
-                    test_metrics['test_roc_auc'] = np.nan
-                    test_metrics['test_pr_auc'] = np.nan
+                        test_metrics[f'test_{metric_name}'] = None
+                        test_metrics[f'test_tuned_{metric_name}'] = None
+                    test_metrics['test_roc_auc'] = None
+                    test_metrics['test_pr_auc'] = None
                     test_metrics['test_confusion_matrix_components'] = None
                     test_metrics['test_tuned_confusion_matrix_components'] = None
                     y_test_proba_pos = np.asarray([])
@@ -5767,9 +5893,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 test_metrics = add_notuning_metrics(test_metrics, 'test')
 
                 # Extract primary metrics for backward compatibility
-                test_f1 = test_metrics.get('test_tuned_f1', np.nan)
-                test_auc = test_metrics.get('test_roc_auc', np.nan)
-                test_accuracy = test_metrics.get('test_tuned_accuracy', np.nan)
+                test_f1 = test_metrics.get('test_tuned_f1')
+                test_auc = test_metrics.get('test_roc_auc')
+                test_accuracy = test_metrics.get('test_tuned_accuracy')
 
             # Update feature selection metadata from the fitted final pipeline
             feature_selector_step = final_pipeline.named_steps.get('feature_selector')
@@ -5799,16 +5925,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
                 # Gather comprehensive training and test information
+                summary_y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                train_labels_summary = extract_valid_epoch_labels(y_outer_train, summary_y_mask_val)
+                test_labels_summary = extract_valid_epoch_labels(y_outer_test, summary_y_mask_val)
+
                 train_info = {
                     'n_samples': len(y_outer_train),
                     'shape': train_shape_for_logging,
-                    'class_dist': dict(zip(*np.unique(y_outer_train, return_counts=True))),
+                    'class_dist': dict(zip(*np.unique(train_labels_summary, return_counts=True))),
+                    'n_valid_epochs': int(train_labels_summary.size)
                 }
                 
                 test_info = {
                     'n_samples': len(y_outer_test),
                     'shape': test_shape_for_logging,
-                    'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
+                    'class_dist': dict(zip(*np.unique(test_labels_summary, return_counts=True))),
+                    'n_valid_epochs': int(test_labels_summary.size)
                 }
                 
                 # Create comprehensive sklearn refit results dictionary
@@ -5935,13 +6067,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
-                'test_tuned_f1': 0.0,
-                'test_tuned_accuracy': 0.0,
-                'test_tuned_precision': 0.0,
-                'test_tuned_recall': 0.0,
-                'test_tuned_balanced_accuracy': 0.0,
-                'test_roc_auc': 0.0,
-                'test_pr_auc': 0.0
+                'test_tuned_f1': None,
+                'test_tuned_accuracy': None,
+                'test_tuned_precision': None,
+                'test_tuned_recall': None,
+                'test_tuned_balanced_accuracy': None,
+                'test_roc_auc': None,
+                'test_pr_auc': None
             })
             
             all_best_params.append(best_params)
@@ -5954,16 +6086,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         if outer_results:
             # Calculate averages for primary metrics
-            avg_f1 = np.mean([r['test_tuned_f1'] for r in outer_results])
-            avg_auc = np.mean([r['test_roc_auc'] for r in outer_results])
-            avg_accuracy = np.mean([r['test_tuned_accuracy'] for r in outer_results])
-            balanced_accuracy_values = [
-                r['test_tuned_balanced_accuracy'] for r in outer_results
-                if isinstance(r.get('test_tuned_balanced_accuracy'), (int, float, np.number))
-                and not np.isnan(float(r.get('test_tuned_balanced_accuracy')))
-            ]
-            avg_balanced_accuracy = np.mean(balanced_accuracy_values) if balanced_accuracy_values else None
-            avg_features = np.mean([r['n_selected_features'] for r in outer_results])
+            avg_f1 = _mean_valid([r.get('test_tuned_f1') for r in outer_results])
+            avg_auc = _mean_valid([r.get('test_roc_auc') for r in outer_results])
+            avg_accuracy = _mean_valid([r.get('test_tuned_accuracy') for r in outer_results])
+            avg_balanced_accuracy = _mean_valid([r.get('test_tuned_balanced_accuracy') for r in outer_results])
+            avg_features = _mean_valid([r.get('n_selected_features') for r in outer_results])
             
             # Calculate averages for all test metrics
             all_test_metrics = {}
@@ -5981,21 +6108,22 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             continue
             
             # Log primary metrics
-            logging.info(f"[CV_SKLEARN] Average F1: {avg_f1:.4f}")
-            logging.info(f"[CV_SKLEARN] Average AUC: {avg_auc:.4f}")
-            logging.info(f"[CV_SKLEARN] Average Accuracy: {avg_accuracy:.4f}")
+            logging.info(f"[CV_SKLEARN] Average F1: {_format_avg(avg_f1)}")
+            logging.info(f"[CV_SKLEARN] Average AUC: {_format_avg(avg_auc)}")
+            logging.info(f"[CV_SKLEARN] Average Accuracy: {_format_avg(avg_accuracy)}")
             if avg_balanced_accuracy is not None:
-                logging.info(f"[CV_SKLEARN] Average Balanced Accuracy: {avg_balanced_accuracy:.4f}")
+                logging.info(f"[CV_SKLEARN] Average Balanced Accuracy: {_format_avg(avg_balanced_accuracy)}")
             
             # Log all test metrics
             for metric_name, values in all_test_metrics.items():
                 if len(values) > 0:
-                    avg_value = np.mean(values)
+                    avg_value = _mean_valid(values)
                     std_value = np.std(values)
                     metric_display = metric_name.replace('test_tuned_', '').replace('test_', '')
-                    logging.info(f"[CV_SKLEARN] Average {metric_display}: {avg_value:.4f} ± {std_value:.4f}")
+                    logging.info(f"[CV_SKLEARN] Average {metric_display}: {_format_avg(avg_value)} ± {std_value:.4f}")
             
-            logging.info(f"[CV_SKLEARN] Average selected features: {avg_features:.1f}")
+            avg_features_str = f"{avg_features:.1f}" if isinstance(avg_features, (int, float)) and not np.isnan(avg_features) else "N/A"
+            logging.info(f"[CV_SKLEARN] Average selected features: {avg_features_str}")
     
     if hparam_logger and hparam_trials:
         try:
@@ -6124,7 +6252,7 @@ def main(argv=None):
     parser.add_argument(
         "--run-id",
         type=str,
-        default="hparams_test",
+        default="hparams_logreg_raw",
         help="Optional string inserted into log directory names (default: ). Example: --run-id hparams_test"
     )
     parser.add_argument(
@@ -6137,7 +6265,7 @@ def main(argv=None):
         "--model-type",
         type=str,
         choices=SUPPORTED_MODEL_TYPES,
-        default=None,
+        default="rf",
         help="Classifier to train (overrides config model_type)."
     )
     args = parser.parse_args(argv)
