@@ -4752,6 +4752,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             logging.info(f"\n[CV_SKLEARN] {'='*70}")
             logging.info(f"[CV_SKLEARN] OUTER FOLD {fold_number}/{n_outer_folds}")
             logging.info(f"[CV_SKLEARN] {'='*70}")
+            log_memory_usage()
         
         # Step 1: Split trials into train/test (pre-padded)
         X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
@@ -6463,6 +6464,7 @@ def main(argv=None):
     # Run nested CV with inner-fold specific padding
     logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding")
     logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
+    log_memory_usage()
 
     X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
     outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
@@ -6485,6 +6487,7 @@ def main(argv=None):
     if verbose >= 1:
         logging.info("\n[MAIN] 4. FINAL EVALUATION")
         logging.info("[MAIN] " + "-" * 40)
+        log_memory_usage()
     
     total_runtime_seconds = time.time() - script_start_time
     total_runtime_formatted = str(timedelta(seconds=int(total_runtime_seconds)))
