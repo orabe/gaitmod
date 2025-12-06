@@ -1,6 +1,10 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_test_val_tuned_f1",
+    "experiment_name": "delme",
+    "feature_data": {
+      "source": "hctsa",
+      "segment_cache_dir": "data/hctsa_segments"
+    },
     "callbacks": {
       "progress_frequency": 1,
       "reduce_lr_factor": 0.5,
@@ -54,20 +58,20 @@
   },
   "lstm": {
     "feature_params": {
-      "feature_selector__n_features": [32],
-      "feature_selector__variance_threshold": [0.05],
+      "feature_selector__enabled": [true],
+      "feature_selector__n_features": [100],
+      "feature_selector__variance_threshold": [0.1],
       "feature_selector__selection_method": [
-        "mann_whitney",
-        "mutual_info"
+        "mann_whitney"
       ],
-      "feature_selector__correlation_threshold": [0.7],
+      "feature_selector__correlation_threshold": [0.5],
       "scaler__scaler_type": ["standard"]
     },
     "architecture_configs": [
       {
-        "classifier__hidden_dims": [64],
-        "classifier__activations": ["tanh"],
-        "classifier__recurrent_activations": ["sigmoid"]
+        "classifier__hidden_dims": [32, 64, 64],
+        "classifier__activations": ["tanh", "tanh", "tanh"],
+        "classifier__recurrent_activations": ["sigmoid", "sigmoid", "sigmoid"]
       }
     ],
     "other_params": {
