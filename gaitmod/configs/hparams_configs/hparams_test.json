@@ -91,14 +91,14 @@
   },
   "rf": {
     "param_grid": {
-      "classifier__n_estimators": [50],
-      "classifier__max_depth": [10],
+      "classifier__n_estimators": [200],
+      "classifier__max_depth": [null],
       "classifier__min_samples_split": [2]
     }
   },
   "svm": {
     "param_grid": {
-      "classifier__C": [0.5],
+      "classifier__C": [1.0],
       "classifier__gamma": ["scale"],
       "classifier__kernel": ["rbf"]
     }
@@ -106,16 +106,16 @@
   "logreg": {
     "param_grid": {
       "classifier__penalty": ["l2"],
-      "classifier__C": [0.1],
+      "classifier__C": [1.0],
       "classifier__solver": ["lbfgs"],
-      "classifier__class_weight": ["balanced"],
+      "classifier__class_weight": [null],
       "classifier__max_iter": [1000]
     }
   },
   "xgb": {
     "param_grid": {
-      "classifier__n_estimators": [50],
-      "classifier__max_depth": [3],
+      "classifier__n_estimators": [100],
+      "classifier__max_depth": [6],
       "classifier__learning_rate": [0.1]
     }
   },
