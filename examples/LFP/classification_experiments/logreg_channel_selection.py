@@ -1,8 +1,8 @@
+import argparse
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +10,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from gaitmod.utils.hctsa_segments import HCTSASegmentCache
+from examples.hctsa_segments import HCTSASegmentCache
 from gaitmod.utils.utils import load_pkl
 
 
@@ -48,6 +48,76 @@ def build_channel_name_map(filtered_epochs_path: str) -> Dict[str, Dict[str, str
             f"channel_{idx}": name for idx, name in enumerate(epochs.ch_names)
         }
     return channel_map
+
+
+def load_feature_settings_from_config(config_path: Optional[Path]) -> Tuple[str, Path]:
+    """Return (feature_source, cache_dir) inferred from a hyperparameter config."""
+    if config_path is None:
+        raise ValueError(
+            "Provide --segment-cache-dir or a --hyperparams-config that defines feature_data.segment_cache_dir."
+        )
+    config_path = Path(config_path).expanduser()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Hyperparameter config not found: {config_path}")
+    feature_settings: Dict[str, str] = {}
+    with config_path.open("r", encoding="utf-8") as fp:
+        config = json.load(fp)
+    global_settings = config.get("global_settings", {}) or {}
+    cfg = global_settings.get("feature_data")
+    if isinstance(cfg, dict):
+        feature_settings = cfg.copy()
+    legacy_source = global_settings.get("feature_source")
+    legacy_cache = global_settings.get("feature_cache_dir")
+    if legacy_source and "source" not in feature_settings:
+        feature_settings["source"] = legacy_source
+    if legacy_cache and "segment_cache_dir" not in feature_settings:
+        feature_settings["segment_cache_dir"] = legacy_cache
+
+    feature_source = str(feature_settings.get("source", "custom")).strip().lower() or "custom"
+    cache_override = feature_settings.get("segment_cache_dir")
+    if not cache_override:
+        raise ValueError(
+            f"Config {config_path} must define feature_data.segment_cache_dir for source '{feature_source}'."
+        )
+    cache_dir = Path(cache_override).expanduser()
+    return feature_source, cache_dir
+
+
+def parse_args(argv: Optional[Tuple[str, ...]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate per-channel performance using logistic regression."
+    )
+    parser.add_argument(
+        "--hyperparams-config",
+        type=Path,
+        default=None,
+        help="Optional hyperparameter config path used to determine the feature source.",
+    )
+    parser.add_argument(
+        "--segment-cache-dir",
+        type=Path,
+        default=None,
+        help="Override the segment cache directory (skips config lookup when provided).",
+    )
+    parser.add_argument(
+        "--filtered-epochs",
+        type=Path,
+        default=Path("results/pickles/filtered_patients_epochs.pickle"),
+        help="Pickle produced by process_lfp_data.ipynb containing the Epochs mapping.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("results/logreg_channel_selection"),
+        help="Directory where selection artifacts will be written.",
+    )
+    parser.add_argument(
+        "--combined-json",
+        type=Path,
+        default=Path("results/channel_selection_summary.json"),
+        help="Location of the merged channel selection summary JSON.",
+    )
+    return parser.parse_args(argv)
 
 
 def run_channel_selection(cache_dir: str, channel_name_map: Dict[str, Dict[str, str]]) -> Dict[str, Dict[str, Dict[str, float]]]:
@@ -156,17 +226,26 @@ def plot_subject_metric_lines(results: Dict[str, Dict[str, Dict[str, Dict[str, f
     logging.info("Saved subject metric line plot to %s", plot_path)
 
 
-def main():
+def main(argv: Optional[Tuple[str, ...]] = None):
+    args = parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    cache_directory = os.path.join("data", "hctsa_segments")
-    filtered_epochs_path = os.path.join("results", "pickles", "filtered_patients_epochs.pickle")
-    output_dir = Path("results/logreg_channel_selection")
-    combined_json = Path("results/channel_selection_summary.json")
 
-    channel_name_map = build_channel_name_map(filtered_epochs_path)
-    selection_results = run_channel_selection(cache_directory, channel_name_map)
-    save_results(selection_results, output_dir, combined_json)
-    plot_subject_metric_lines(selection_results, output_dir)
+    if args.segment_cache_dir:
+        cache_dir = args.segment_cache_dir.expanduser()
+        feature_source = "custom"
+    else:
+        feature_source, cache_dir = load_feature_settings_from_config(args.hyperparams_config)
+
+    logging.info(
+        "Using feature source '%s' with cache directory: %s",
+        feature_source,
+        cache_dir,
+    )
+
+    channel_name_map = build_channel_name_map(str(args.filtered_epochs))
+    selection_results = run_channel_selection(str(cache_dir), channel_name_map)
+    save_results(selection_results, args.output_dir, args.combined_json)
+    plot_subject_metric_lines(selection_results, args.output_dir)
 
 
 if __name__ == "__main__":

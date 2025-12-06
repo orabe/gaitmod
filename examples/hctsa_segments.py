@@ -1,14 +1,17 @@
+import argparse
 import json
 import logging
 import re
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
 from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from gaitmod.utils.utils import load_hctsa_data
+
+logger = logging.getLogger(__name__)
 
 
 def parse_segment_identifier(name: str) -> Dict[str, Any]:
@@ -92,19 +95,22 @@ class HCTSASegmentCache:
             return False
         return channel_name in set(index_df['channel_canonical'].unique())
 
-    def _update_manifest(self, channel_name: str, num_segments: int, normalized: bool, feature_dim: int):
-        """Record high-level channel metadata (counts, feature dimension)."""
+    def _update_manifest(self, channel_name: str, subject_counts: Dict[str, int],
+                         normalized: bool, feature_dim: int):
+        """Record high-level channel metadata, including per-subject counts."""
         manifest: Dict[str, Any] = {}
         if self.manifest_file.exists():
             with open(self.manifest_file, 'r', encoding='utf-8') as fp:
                 manifest = json.load(fp)
         channels = manifest.setdefault('channels', {})
-        channels[channel_name] = {
-            'num_segments': int(num_segments),
-            'normalized': bool(normalized),
-            'feature_dim': int(feature_dim),
-            'last_updated': time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
+        channel_entry = channels.setdefault(channel_name, {})
+        channel_entry['normalized'] = bool(normalized)
+        channel_entry['feature_dim'] = int(feature_dim)
+        subjects_entry = channel_entry.setdefault('subjects', {})
+        for subject, count in subject_counts.items():
+            subjects_entry[str(subject)] = int(count)
+        channel_entry['num_segments'] = int(sum(subjects_entry.values()))
+        channel_entry['last_updated'] = time.strftime("%Y-%m-%d %H:%M:%S")
         manifest['updated_at'] = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(self.manifest_file, 'w', encoding='utf-8') as fp:
             json.dump(manifest, fp, indent=2)
@@ -153,7 +159,7 @@ class HCTSASegmentCache:
 
         if self.has_channel(canonical_channel_name) and not overwrite:
             if verbose >= 1:
-                logging.info("[SEGMENTS] Channel %s already cached at %s; skipping export.", channel_name, self.root_dir)
+                logger.info("[HCTSA] Channel %s already cached at %s; skipping export.", channel_name, self.root_dir)
             return None, None
 
         labels = np.asarray(labels).ravel()
@@ -187,16 +193,27 @@ class HCTSASegmentCache:
                 'flat_index': idx,
             })
 
-        index_df = self.load_index()
-        index_df = index_df[index_df['channel_canonical'] != canonical_channel_name]
-        index_df = pd.concat([index_df, pd.DataFrame(records)], ignore_index=True)
-        self._write_index(index_df)
-        self._persist_operations(operations_df)
-        self._update_manifest(canonical_channel_name, len(records), normalized=normalized, feature_dim=TS_DataMat.shape[1])
-
         subject_counts: Dict[str, int] = {}
         for rec in records:
             subject_counts[rec['subject']] = subject_counts.get(rec['subject'], 0) + 1
+
+        index_df = self.load_index()
+        subject_set = set(subject_counts.keys())
+        if not index_df.empty and subject_set:
+            mask = ~(
+                (index_df['channel_canonical'] == canonical_channel_name) &
+                (index_df['subject'].isin(subject_set))
+            )
+            index_df = index_df[mask]
+        index_df = pd.concat([index_df, pd.DataFrame(records)], ignore_index=True)
+        self._write_index(index_df)
+        self._persist_operations(operations_df)
+        self._update_manifest(
+            canonical_channel_name,
+            subject_counts,
+            normalized=normalized,
+            feature_dim=TS_DataMat.shape[1]
+        )
 
         return subject_counts, TS_DataMat.shape[1]
 
@@ -219,14 +236,14 @@ class HCTSASegmentCache:
         channel_df = channel_df.sort_values('flat_index').reset_index(drop=True)
         features = [self.load_segment_features(path) for path in channel_df['segment_path']]
         TS_DataMat = np.vstack(features)
-        logging.info(
-            "[SEGMENTS] load_channel_data subject=%s channel=%s -> matrix_shape=%s",
+        logger.info(
+            "[HCTSA] load_channel_data subject=%s channel=%s -> matrix_shape=%s",
             channel_df['subject'].iloc[0],
             channel_name,
             TS_DataMat.shape
         )
-        logging.info(
-            "[SEGMENTS] load_channel_data channel=%s -> matrix_shape=%s",
+        logger.info(
+            "[HCTSA] load_channel_data channel=%s -> matrix_shape=%s",
             channel_name,
             TS_DataMat.shape
         )
@@ -271,8 +288,8 @@ class HCTSASegmentCache:
             if subset.empty:
                 raise ValueError(f"No cached data for subject {subject} using channel {channel}")
             subset = subset.sort_values(['trial', 'epoch', 'flat_index'])
-            logging.info(
-                "[SEGMENTS] Preparing subject=%s channel=%s -> %d segments",
+            logger.info(
+                "[HCTSA] Preparing subject=%s channel=%s -> %d segments",
                 subject, channel, len(subset)
             )
             frames.append(subset)
@@ -283,7 +300,7 @@ class HCTSASegmentCache:
         combined_df = pd.concat(frames, ignore_index=True)
         features = [self.load_segment_features(path) for path in combined_df['segment_path']]
         lengths = sorted(set(feat.shape[0] for feat in features))
-        logging.info("[SEGMENTS] Combined segments: %d unique feature lengths: %s", len(features), lengths)
+        logger.info("[HCTSA] Combined segments: %d unique feature lengths: %s", len(features), lengths)
         
         # Match HCTSA format
         TS_DataMat = np.vstack(features)
@@ -318,10 +335,10 @@ def export_channels_to_segment_cache(
     export_summary: Dict[str, Dict[str, Dict[str, int]]] = defaultdict(dict)
 
     for channel in channels:
-        print(f"[SEGMENTS] Exporting channel {channel} to segment cache...")
+        # logger.info("[HCTSA] Exporting channel %s to segment cache...", channel)
         channel_path = hctsa_root / channel
         if not channel_path.exists():
-            logging.warning("Channel %s skipped (path not found: %s)", channel, channel_path)
+            logger.warning("Channel %s skipped (path not found: %s)", channel, channel_path)
             continue
         TS_DataMat, timeseries, operations, labels = load_hctsa_data(
             base_path=str(channel_path),
@@ -344,45 +361,91 @@ def export_channels_to_segment_cache(
                     'segments': count,
                     'feature_dim': feature_dim
                 }
+        total_segments = sum(subject_counts.values()) if subject_counts else 0
+        logger.info(
+            "[HCTSA] Channel %s -> segments=%d, feature_dim=%d",
+            channel,
+            total_segments,
+            feature_dim
+        )
 
     if export_summary:
-        logging.info("=" * 80)
-        logging.info("[SEGMENTS] Export summary by subject and channel")
+        logger.info("=" * 80)
+        logger.info("[HCTSA] Export summary by subject and channel")
         for subject in sorted(export_summary.keys()):
-            logging.info(f"Subject {subject}:")
+            logger.info("Subject %s:", subject)
             for channel, stats in sorted(export_summary[subject].items()):
-                logging.info(
+                logger.info(
                     "  Channel %s -> segments=%d, feature_dim=%d",
                     channel,
                     stats['segments'],
                     stats['feature_dim']
                 )
-            logging.info("-" * 60)
+            logger.info("-" * 60)
 
 
-def main():
-    """
-    Manually configure export settings below and run this script directly.
-    """
-    hctsa_root = Path("../hctsa")
-    segment_cache_dir = Path("data/hctsa_segments")
-    channels = sorted(p.name for p in hctsa_root.glob('channel_*') if p.is_dir())
-    variant = '' # Options: '', 'N', 'F', 'raw'
-    overwrite = True
-    verbose = 1
+def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Export HCTSA channel folders into the segment cache format."
+    )
+    parser.add_argument(
+        "--hctsa-root",
+        type=Path,
+        default=Path("data/hctsa"),
+        help="Root directory containing the channel_* folders (default: data/hctsa).",
+    )
+    parser.add_argument(
+        "--segment-cache-dir",
+        type=Path,
+        default=Path("data/hctsa_segments"),
+        help="Output directory for the segment cache (default: data/hctsa_segments).",
+    )
+    parser.add_argument(
+        "--data-variant",
+        type=str,
+        default="",
+        choices=["", "N", "F", "RAW", "raw"],
+        help="Variant suffix for HCTSA data ('', 'N', 'F', or 'raw').",
+    )
+    parser.add_argument(
+        "--channels",
+        type=str,
+        default=None,
+        help="Optional comma-separated list of channel folder names to export. Defaults to all channel_* directories.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing channel exports instead of skipping them.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Reduce console logging output.",
+    )
+    return parser.parse_args(argv)
 
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    args = _parse_args(argv)
     logging.basicConfig(
-        level=logging.INFO if verbose >= 1 else logging.WARNING,
+        level=logging.INFO if not args.quiet else logging.WARNING,
         format="%(asctime)s | %(levelname)s | %(message)s"
     )
 
+    hctsa_root = args.hctsa_root
+    if args.channels:
+        channels = [ch.strip() for ch in args.channels.split(",") if ch.strip()]
+    else:
+        channels = sorted(p.name for p in hctsa_root.glob('channel_*') if p.is_dir())
+
     export_channels_to_segment_cache(
         hctsa_root=hctsa_root,
-        segment_cache_dir=segment_cache_dir,
+        segment_cache_dir=args.segment_cache_dir,
         channels=channels,
-        data_variant=variant,
-        overwrite=overwrite,
-        verbose=verbose
+        data_variant=args.data_variant,
+        overwrite=args.overwrite,
+        verbose=0 if args.quiet else 1,
     )
 
 

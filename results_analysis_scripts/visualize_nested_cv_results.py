@@ -25,6 +25,11 @@ import pandas as pd
 
 from aggregate_nested_cv_results import collect_refit_results
 
+try:
+    plt.style.use("seaborn-whitegrid")
+except OSError:
+    plt.style.use("ggplot")
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize nested CV summary metrics.")
     parser.add_argument(
@@ -104,7 +109,7 @@ def plot_confusion_matrices(df: pd.DataFrame, column_name: str, output_path: str
     n_subjects = len(entries)
     n_cols = min(3, n_subjects)
     n_rows = int(np.ceil(n_subjects / n_cols))
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), squeeze=False)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 5, n_rows * 5), squeeze=False)
     axes = axes.flatten()
     for ax_idx, (subject, matrix) in enumerate(entries):
         ax = axes[ax_idx]
@@ -121,7 +126,7 @@ def plot_confusion_matrices(df: pd.DataFrame, column_name: str, output_path: str
         fig.delaxes(axes[j])
     fig.tight_layout()
     fig.colorbar(im, ax=axes[:len(entries)], shrink=0.7, location="right")
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
 
@@ -133,12 +138,11 @@ def plot_metric_summary(df: pd.DataFrame, metrics: List[str], output_path: str) 
     stds = df[metrics].std()
     x = np.arange(len(metrics))
 
-    fig, ax = plt.subplots(figsize=(max(10, len(metrics) * 0.75), 5))
+    fig, ax = plt.subplots(figsize=(max(12, len(metrics) * 0.9), 6))
     bars = ax.bar(x, means, yerr=stds, capsize=5, color="#4C72B0")
     ax.set_xticks(x)
     ax.set_xticklabels(metrics, rotation=45, ha="right")
     ax.set_ylabel("Score")
-    ax.set_title("Mean ± Std Across Outer Folds")
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     ax.set_ylim(0, 1)  # Set y-axis limit between 0 and 1
 
@@ -158,8 +162,9 @@ def plot_metric_summary(df: pd.DataFrame, metrics: List[str], output_path: str) 
             color="white"
         )
 
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.tight_layout(rect=[0, 0, 0.95, 1])
+    fig.suptitle("Metric Summary (Mean ± Std)", fontsize=14, fontweight="bold")
+    fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
 
@@ -169,29 +174,34 @@ def plot_subject_barplots(df: pd.DataFrame, metrics: List[str], output_path: str
     n_metrics = len(metrics)
     n_cols = min(3, n_metrics)
     n_rows = int(np.ceil(n_metrics / n_cols))
-    fig_width = max(12, n_cols * 5)
-    fig_height = max(5, n_rows * 3)
+    fig_width = max(14, n_cols * 6)
+    fig_height = max(6, n_rows * 4)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
     axes = axes.flatten()
+    base_positions = np.arange(len(subjects))
+    width = 0.6
     for i, metric in enumerate(metrics):
         if metric not in df.columns:
             continue
         values = df[metric].values
         ax = axes[i]
-        bars = ax.bar(subjects, values, color="#55A868")
-        ax.set_ylabel("Score")
-        ax.set_title(f"{metric}")
+        bars = ax.bar(base_positions, values, color="#55A868", width=width)
+        if i % n_cols == 0:
+            ax.set_ylabel("Score")
+        else:
+            ax.set_ylabel("")
+        ax.set_title(f"{metric}", fontsize=12, fontweight="bold")
         ax.grid(axis="y", linestyle="--", alpha=0.5)
         ax.set_ylim(0, 1)  # Set y-axis limit between 0 and 1
         # Set ticks and labels explicitly to avoid warning
-        ax.set_xticks(np.arange(len(subjects)))
+        ax.set_xticks(base_positions)
         ax.set_xticklabels(subjects, rotation=45, ha="right")
         # Annotate bars with values, on top of the bar, not rotated
         for bar, value in zip(bars, values):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height(),
-                f"{round(value,2):.2f}",
+                min(bar.get_height() + 0.02, 1.02),
+                f"{round(value, 2):.2f}",
                 ha="center",
                 va="bottom",
                 fontsize=9,
@@ -201,8 +211,10 @@ def plot_subject_barplots(df: pd.DataFrame, metrics: List[str], output_path: str
     # Hide unused axes
     for j in range(n_metrics, len(axes)):
         fig.delaxes(axes[j])
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.subplots_adjust(wspace=0.25, hspace=0.35)
+    fig.tight_layout(rect=[0, 0, 0.95, 0.95])
+    fig.suptitle("Per-Subject Metrics", fontsize=14, fontweight="bold")
+    fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
 
@@ -210,41 +222,17 @@ def plot_metric_boxplots(df: pd.DataFrame, metrics: List[str], output_path: str)
     """Plot boxplots for metric distributions."""
     if not metrics:
         return
-    fig, ax = plt.subplots(figsize=(max(10, len(metrics) * 0.75), 6))
+    fig, ax = plt.subplots(figsize=(max(12, len(metrics) * 0.9), 6))
     df[metrics].boxplot(ax=ax)
     ax.set_xticklabels(metrics, rotation=45, ha="right")
     ax.set_ylabel("Score")
     ax.set_title("Metric Distribution Across Outer Folds")
     ax.set_ylim(0, 1)  # Set y-axis limit between 0 and 1
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    fig.tight_layout(rect=[0, 0, 0.95, 1])
+    fig.suptitle("Metric Distribution (Boxplots)", fontsize=14, fontweight="bold")
+    fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
-
-def plot_metric_violinplots(df: pd.DataFrame, metrics: List[str], output_path: str) -> None:
-    """Plot violin plots for metric distributions, with boxplot and individual data points."""
-    if not metrics:
-        return
-    fig, ax = plt.subplots(figsize=(max(10, len(metrics) * 0.75), 6))
-    data = [df[metric].dropna().values for metric in metrics]
-    parts = ax.violinplot(data, showmeans=False, showmedians=True, showextrema=True)
-    # Overlay boxplots
-    ax.boxplot(data, positions=np.arange(1, len(metrics) + 1), widths=0.15, patch_artist=True,
-               boxprops=dict(facecolor='white', color='black', zorder=2),
-               medianprops=dict(color='red', zorder=2),
-               whiskerprops=dict(color='black', zorder=2),
-               capprops=dict(color='black', zorder=2))
-    # Overlay individual data points (dots) on top
-    for i, vals in enumerate(data):
-        ax.scatter(np.full_like(vals, i + 1, dtype=float), vals, color="#4C72B0", alpha=0.8, s=30, edgecolors='k', linewidths=0.5, zorder=3)
-    ax.set_xticks(np.arange(1, len(metrics) + 1))
-    ax.set_xticklabels(metrics, rotation=45, ha="right")
-    ax.set_ylabel("Score")
-    ax.set_title("Metric Distribution Across Outer Folds (Violin + Box + Dots)")
-    ax.set_ylim(0, 1)  # Set y-axis limit between 0 and 1
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
 
 
 def main(args=None):
@@ -287,21 +275,21 @@ def main(args=None):
     metrics = filter_available_metrics(df, args.metrics)
 
     plot_metric_summary(df, metrics, os.path.join(output_dir, "metrics_bar_summary.png"))
-    plot_metric_violinplots(df, metrics, os.path.join(output_dir, "metrics_violinplots.png"))
     plot_subject_barplots(df, metrics, os.path.join(output_dir, "subject_barplots.png"))
+    plot_metric_boxplots(df, metrics, os.path.join(output_dir, "metrics_boxplots.png"))
     plot_confusion_matrices(df, "test_confusion_matrix_components", os.path.join(output_dir, "confusion_matrices.png"))
     plot_confusion_matrices(df, "test_tuned_confusion_matrix_components", os.path.join(output_dir, "confusion_matrices_tuned.png"))
 
     print("Visualization complete. Generated figures:")
     print(f"- {os.path.join(output_dir, 'metrics_bar_summary.png')}")
-    print(f"- {os.path.join(output_dir, 'metrics_violinplots.png')}")
     print(f"- {os.path.join(output_dir, 'subject_barplots.png')}")
+    print(f"- {os.path.join(output_dir, 'metrics_boxplots.png')}")
     print(f"- {os.path.join(output_dir, 'confusion_matrices.png')}")
     print(f"- {os.path.join(output_dir, 'confusion_matrices_tuned.png')}")
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/results/hparams_test_val_tuned_f1"
+    base_path = "logs/results/hparams_test_lstm_hctsa"
     args = Namespace(
         csv=f"{base_path}/summary/nested_cv_results.csv",
         output_dir=f"{base_path}/figures",

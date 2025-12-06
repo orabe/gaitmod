@@ -26,6 +26,20 @@ import pandas as pd
 
 from aggregate_nested_cv_results import collect_refit_results
 
+try:
+    plt.style.use("seaborn-v0_8-darkgrid")
+except OSError:
+    try:
+        plt.style.use("seaborn-darkgrid")
+    except OSError:
+        pass
+
+# Modern color palette - use a professional color scheme
+def get_modern_colors(n):
+    """Get a modern, professional color palette."""
+    # Use viridis colormap for professional and colorblind-friendly colors
+    return plt.cm.viridis(np.linspace(0, 0.9, n))  # 0.9 to avoid very light yellow
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare nested CV summary metrics across multiple runs.")
     parser.add_argument(
@@ -74,118 +88,309 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
     """Plot mean ± std bar chart for selected metrics, comparing all runs."""
     if not metrics:
         return
-    x = np.arange(len(metrics))
-    width = 0.8 / len(dfs)
-    fig, ax = plt.subplots(figsize=(max(10, len(metrics) * 0.75), 5))
+    
+    # Set modern style
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    
+    # Create positions with proper spacing between metric groups
+    n_metrics = len(metrics)
+    n_models = len(dfs)
+    
+    # Width of each bar and spacing
+    bar_width = 0.8 / n_models  # Bars within a group will touch
+    group_width = 0.8  # Total width of each metric group
+    group_spacing = 0.2  # Gap between metric groups
+    
+    # Calculate positions for each metric group
+    group_positions = np.arange(n_metrics) * (group_width + group_spacing)
+    
+    fig, ax = plt.subplots(figsize=(max(14, n_metrics * 1.2), 7))
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+    
+    # Use modern colors
+    colors = get_modern_colors(len(dfs))
+    
     for idx, (df, label) in enumerate(zip(dfs, labels)):
         means = df[metrics].mean()
         stds = df[metrics].std()
-        bars = ax.bar(x + idx * width, means, width=width, yerr=stds, capsize=5, label=label)
-        # Annotate bars with mean ± std, inside the bar, rotated 90 degrees
+        
+        # Calculate bar positions: start of group + offset for this model
+        bar_positions = group_positions + idx * bar_width
+        
+        # Create bars
+        bars = ax.bar(
+            bar_positions, means, width=bar_width, 
+            label=label, color=colors[idx],
+            edgecolor='none',  # No edges between bars in same group
+            linewidth=0,
+            alpha=0.85
+        )
+        
+        # Add error bars
+        ax.errorbar(
+            bar_positions, means, yerr=stds,
+            fmt='none', ecolor='gray', elinewidth=1.5,
+            capsize=4, capthick=1.5, alpha=0.6
+        )
+        
+        # Annotate bars with values
         for i, bar in enumerate(bars):
             mean = means.iloc[i]
             std = stds.iloc[i]
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() / 2,
-                f"{round(mean,2):.2f}±{round(std,2):.2f}",
-                ha="center",
-                va="center",
-                fontsize=10,
-                fontweight="bold",
-                rotation=90,
-                color="white"
-            )
-    ax.set_xticks(x + width * (len(dfs)-1)/2)
-    ax.set_xticklabels(metrics, rotation=45, ha="right")
-    ax.set_ylabel("Score")
-    ax.set_title("Mean ± Std Across Outer Folds (Comparison)")
-    ax.grid(axis="y", linestyle="--", alpha=0.5)
-    ax.set_ylim(0, 1)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    plt.close(fig)
-
-def plot_metric_violinplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
-    """Plot violin plots for metric distributions, with boxplot and individual data points, comparing all runs, arranged in a grid."""
-    if not metrics:
-        return
-    n_metrics = len(metrics)
-    n_cols = min(3, n_metrics)
-    n_rows = int(np.ceil(n_metrics / n_cols))
-    fig_width = max(12, n_cols * 5)
-    fig_height = max(5, n_rows * 4)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
-    axes = axes.flatten()
-    for i, metric in enumerate(metrics):
-        ax = axes[i]
-        data = [df[metric].dropna().values for df in dfs]
-        positions = np.arange(1, len(dfs) + 1)
-        parts = ax.violinplot(data, positions=positions, showmeans=False, showmedians=True, showextrema=True)
-        # Overlay boxplots
-        ax.boxplot(data, positions=positions, widths=0.15, patch_artist=True,
-                   boxprops=dict(facecolor='white', color='black', zorder=2),
-                   medianprops=dict(color='red', zorder=2),
-                   whiskerprops=dict(color='black', zorder=2),
-                   capprops=dict(color='black', zorder=2))
-        # Overlay individual data points (dots) on top
-        for j, vals in enumerate(data):
-            ax.scatter(np.full_like(vals, positions[j], dtype=float), vals, color="#4C72B0", alpha=0.8, s=30, edgecolors='k', linewidths=0.5, zorder=3)
-        ax.set_xticks(positions)
-        ax.set_xticklabels(labels)
-        ax.set_ylabel("Score")
-        ax.set_title(f"{metric} Distribution Across Outer Folds")
-        ax.set_ylim(0, 1)
-    # Hide unused axes
-    for j in range(n_metrics, len(axes)):
-        fig.delaxes(axes[j])
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+            height = bar.get_height()
+            
+            # Only show text if bar is tall enough
+            if height > 0.15:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    height / 2,
+                    f"{mean:.3f}±{std:.3f}",
+                    ha="center", va="center",
+                    fontsize=9, fontweight='bold',
+                    rotation=90, color='white'
+                )
+    
+    # Set x-axis ticks at the center of each metric group
+    ax.set_xticks(group_positions + group_width / 2 - bar_width / 2)
+    ax.set_xticklabels(metrics, rotation=45, ha="right", fontsize=11, fontweight='medium')
+    ax.set_ylabel("Score", fontsize=13, fontweight='bold')
+    ax.set_ylim(0, 1.05)
+    
+    # Modern grid with horizontal lines only
+    ax.grid(axis="y", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
+    ax.set_axisbelow(True)
+    
+    # Add rectangular border around plot
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.5)
+        spine.set_edgecolor('black')
+    
+    # Minimal legend
+    legend = ax.legend(
+        loc="upper left", bbox_to_anchor=(1.02, 1),
+        frameon=True, fancybox=False, shadow=False,
+        fontsize=11, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=12  # Added title
+    )
+    legend.get_frame().set_linewidth(1.0)
+    legend.get_frame().set_facecolor('none')
+    
+    ax.set_title(
+        "Model Performance Across Subjects (Mean ± Std)", 
+        fontsize=15, fontweight='bold', pad=20
+    )
+    
+    fig.tight_layout(rect=[0, 0, 0.88, 1])
+    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
     """For each metric, plot barplots for each subject, comparing all runs."""
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    
     subjects = dfs[0]["test_subject_name"].tolist()
     n_metrics = len(metrics)
     n_cols = min(3, n_metrics)
     n_rows = int(np.ceil(n_metrics / n_cols))
-    fig_width = max(12, n_cols * 5)
-    fig_height = max(5, n_rows * 3)
+    
+    fig_width = max(18, n_cols * 7)
+    fig_height = max(10, n_rows * 5)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    fig.patch.set_facecolor('white')
     axes = axes.flatten()
-    width = 0.8 / len(dfs)
+    
+    # Calculate positions with proper spacing between subject groups
+    n_subjects = len(subjects)
+    n_models = len(dfs)
+    
+    # Width and spacing configuration
+    bar_width = 0.8 / n_models  # Bars within a subject group will touch
+    group_width = 0.8  # Total width allocated to each subject group
+    group_spacing = 0.2  # Gap between subject groups
+    
+    # Calculate positions for each subject group
+    group_positions = np.arange(n_subjects) * (group_width + group_spacing)
+    
+    colors = get_modern_colors(len(dfs))
+    
     for i, metric in enumerate(metrics):
         ax = axes[i]
+        ax.set_facecolor('white')
+        
         for idx, (df, label) in enumerate(zip(dfs, labels)):
             if metric not in df.columns:
                 continue
             values = df[metric].values
-            bars = ax.bar(np.arange(len(subjects)) + idx * width, values, width=width, label=label)
-            # Annotate bars with values, on top of the bar, not rotated
+            
+            # Calculate bar positions: start of group + offset for this model
+            bar_positions = group_positions + idx * bar_width
+            
+            bars = ax.bar(
+                bar_positions, values, width=bar_width,
+                label=label, color=colors[idx],
+                edgecolor='none',  # No edges between bars in same group
+                linewidth=0,
+                alpha=0.85,
+                align='edge'  # Align to edge for precise positioning
+            )
+            
             for bar, value in zip(bars, values):
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height(),
-                    f"{round(value,2):.2f}",
-                    ha="center",
-                    va="bottom",
-                    fontsize=9,
-                    fontweight="bold",
-                    color="black"
-                )
-        ax.set_ylabel("Score")
-        ax.set_title(f"{metric}")
-        ax.grid(axis="y", linestyle="--", alpha=0.5)
-        ax.set_ylim(0, 1)
-        ax.set_xticks(np.arange(len(subjects)) + width * (len(dfs)-1)/2)
-        ax.set_xticklabels(subjects, rotation=45, ha="right")
-        ax.legend()
+                height = bar.get_height()
+                if height > 0.15:
+                    ax.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        height / 2,
+                        f"{value:.2f}",
+                        ha="center", va="center",
+                        rotation=90, fontsize=9,
+                        fontweight='bold', color='white'
+                    )
+        
+        if i % n_cols == 0:
+            ax.set_ylabel("Score", fontsize=12, fontweight='bold')
+        
+        ax.set_title(metric, fontsize=13, fontweight='bold', pad=10)
+        ax.set_ylim(0, 1.05)
+        
+        # Set x-axis ticks at the center of each subject group
+        ax.set_xticks(group_positions + group_width / 2 - bar_width / 2)
+        ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=10)
+        
+        # Modern grid with horizontal lines only
+        ax.grid(axis="y", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
+        ax.set_axisbelow(True)
+        
+        # Add rectangular border around each subplot
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor('black')
+    
     # Hide unused axes
     for j in range(n_metrics, len(axes)):
         fig.delaxes(axes[j])
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
+    
+    # Shared minimal legend
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    if handles:
+        legend = fig.legend(
+            handles, legend_labels,
+            loc="center left", bbox_to_anchor=(0.91, 0.5),
+            frameon=True, fancybox=False, shadow=False,
+            fontsize=11, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=12  # Added title
+        )
+        legend.get_frame().set_linewidth(1.0)
+        legend.get_frame().set_facecolor('none')
+    
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
+    fig.suptitle(
+        "Per-Subject Performance Comparison across Models", 
+        fontsize=22, fontweight='bold', y=0.98
+    )
+    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+def plot_metric_violinplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
+    """Plot modern boxplots with scatter for metric distributions across runs."""
+    if not metrics:
+        return
+    
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    
+    n_metrics = len(metrics)
+    n_cols = min(3, n_metrics)
+    n_rows = int(np.ceil(n_metrics / n_cols))
+    
+    fig_width = max(18, n_cols * 7)
+    fig_height = max(10, n_rows * 5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    fig.patch.set_facecolor('white')
+    axes = axes.flatten()
+    
+    colors = get_modern_colors(len(dfs))
+    
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        ax.set_facecolor('white')
+        data = [df[metric].dropna().values for df in dfs]
+        positions = np.arange(1, len(dfs) + 1)
+        
+        # Create boxplot with modern styling
+        bp = ax.boxplot(
+            data, positions=positions, widths=0.4,
+            patch_artist=True,
+            boxprops=dict(facecolor='white', edgecolor='#2c3e50', linewidth=1.5, zorder=2),
+            medianprops=dict(color='#e74c3c', linewidth=2.5, zorder=3),
+            whiskerprops=dict(color='#2c3e50', linewidth=1.5, zorder=2),
+            capprops=dict(color='#2c3e50', linewidth=1.5, zorder=2),
+            flierprops=dict(marker='o', markerfacecolor='#95a5a6', markersize=6, 
+                           markeredgecolor='#2c3e50', alpha=0.5)
+        )
+        
+        # Color the boxes (removed alpha for solid colors)
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+        
+        # Add jittered scatter points
+        for j, (vals, color) in enumerate(zip(data, colors)):
+            # Add slight jitter for better visibility
+            jitter = np.random.normal(0, 0.04, size=len(vals))
+            ax.scatter(
+                positions[j] + jitter, vals,
+                color=color, alpha=0.6, s=50,
+                edgecolors='white', linewidths=1.5,
+                zorder=4
+            )
+        
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=10, fontweight='medium')
+        ax.set_ylabel("Score", fontsize=12, fontweight='bold')
+        ax.set_title(f"{metric}", fontsize=13, fontweight='bold', pad=10)
+        ax.set_ylim(0, 1.05)
+        
+        # Modern grid with horizontal lines only
+        ax.grid(axis='y', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
+        ax.set_axisbelow(True)
+        
+        # Add rectangular border around each subplot
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor('black')
+    
+    # Hide unused axes
+    for j in range(n_metrics, len(axes)):
+        fig.delaxes(axes[j])
+    
+    # Minimal legend
+    handles = [
+        plt.Line2D([0], [0], marker='o', color='w', 
+                   markerfacecolor=c, markersize=12,
+                   markeredgecolor='white', markeredgewidth=1.5) 
+        for c in colors
+    ]
+    legend = fig.legend(
+        handles, labels,
+        loc='center left', bbox_to_anchor=(0.91, 0.5),
+        frameon=True, fancybox=False, shadow=False,
+        fontsize=11, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=12  # Added title
+    )
+    legend.get_frame().set_linewidth(1.0)
+    legend.get_frame().set_facecolor('none')  # Explicitly set no background color
+    
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
+    fig.suptitle(
+        "Distribution of Model Performance across Subjects", 
+        fontsize=17, fontweight='bold', y=0.98
+    )
+    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def main(args=None):
@@ -278,17 +483,23 @@ if __name__ == "__main__":
     from argparse import Namespace
     
     base_path = "logs/results"
-    label1 = "test_feat"
-    label2 = "hparams_test_val_tuned_f1"
+    label1 = "hparams_test_lstm_raw"
+    label2 = "hparams_test_lstm_beta"
+    label3 = "hparams_test_lstm_hctsa"
+    label4 = "hparams_lstm_baseline"
     
     args = Namespace(
         csv=[
             f"{base_path}/{label1}/summary/nested_cv_results.csv",
-            f"{base_path}/{label2}/summary/nested_cv_results.csv"
+            f"{base_path}/{label2}/summary/nested_cv_results.csv",
+            f"{base_path}/{label3}/summary/nested_cv_results.csv",
+            f"{base_path}/{label4}/summary/nested_cv_results.csv",
         ],
         labels=[
-            label1,
-            label2
+            "LSTM Raw-Feat",
+            "LSTM Beta-Feat",
+            "LSTM HCTSA-Feat",
+            "LSTM HCTSA-Feat Tuned-48"
         ],
         output_dir="logs/results/comparison_figures",
         metrics=[

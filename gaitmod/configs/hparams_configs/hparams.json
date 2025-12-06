@@ -1,6 +1,10 @@
 {
   "global_settings": {
     "experiment_name": "beta_100feat",
+    "feature_data": {
+      "source": "hctsa",
+      "segment_cache_dir": "data/hctsa_segments"
+    },
     "callbacks": {
       "progress_frequency": 1,
       "reduce_lr_factor": 0.5,
@@ -58,6 +62,7 @@
   },
   "lstm": {
     "feature_params": {
+      "feature_selector__enabled": [true],
       "feature_selector__n_features": [100],
       "feature_selector__variance_threshold": [0.01, 0.1],
       "feature_selector__selection_method": [
