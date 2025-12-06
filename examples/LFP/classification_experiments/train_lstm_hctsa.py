@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import pickle
 import re
 import sys
 import time
@@ -187,7 +186,7 @@ except ImportError:
     XGBOOST_AVAILABLE = False
     XGBClassifier = None
 
-from gaitmod.utils.hctsa_segments import HCTSASegmentCache
+from examples.hctsa_segments import HCTSASegmentCache
 
 HYPERPARAM_CONFIG_PATH: Optional[Path] = None
 GLOBAL_HPARAM_CONFIG: Dict[str, Any] = {}
@@ -223,6 +222,11 @@ DEFAULT_CALLBACK_PATIENCE = 10
 DEFAULT_GLOBAL_X_MASK_VALUE = 1e6
 DEFAULT_Y_MASK_VALUE = -1
 
+FEATURE_DATA_SETTINGS: Dict[str, Any] = {}
+DEFAULT_FEATURE_SOURCE = 'hctsa'
+
+DEFAULT_HPARAMS_CONFIG = Path("gaitmod/configs/hparams_configs/hparams_test.json")
+
 
 @lru_cache(maxsize=1)
 def load_hyperparameter_config(config_path: str) -> Dict[str, Any]:
@@ -247,6 +251,7 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     global DEFAULT_GLOBAL_X_MASK_VALUE, DEFAULT_Y_MASK_VALUE
     global SELECTION_SETTINGS, DEFAULT_REFIT_SCORING_METRIC
     global DEFAULT_SELECTION_SCORE_METRIC, DEFAULT_SELECTION_SCORE_AGGREGATION
+    global FEATURE_DATA_SETTINGS, DEFAULT_FEATURE_SOURCE
 
     resolved_path = Path(config_path).expanduser().resolve()
     config = load_hyperparameter_config(str(resolved_path))
@@ -263,6 +268,20 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
     DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
     SELECTION_SETTINGS = GLOBAL_SETTINGS.get('selection_metrics', {})
+
+    feature_data_cfg = GLOBAL_SETTINGS.get('feature_data')
+    if isinstance(feature_data_cfg, dict):
+        feature_data = feature_data_cfg.copy()
+    else:
+        feature_data = {}
+    legacy_feature_source = GLOBAL_SETTINGS.get('feature_source')
+    if legacy_feature_source and 'source' not in feature_data:
+        feature_data['source'] = legacy_feature_source
+    legacy_cache_dir = GLOBAL_SETTINGS.get('feature_cache_dir')
+    if legacy_cache_dir and 'segment_cache_dir' not in feature_data:
+        feature_data['segment_cache_dir'] = legacy_cache_dir
+    FEATURE_DATA_SETTINGS = feature_data
+    DEFAULT_FEATURE_SOURCE = str(FEATURE_DATA_SETTINGS.get('source', 'hctsa')).strip().lower() or 'hctsa'
 
     DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
     DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_sweep_thresholds', 81))
@@ -284,6 +303,17 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     DEFAULT_SELECTION_SCORE_METRIC = SELECTION_SETTINGS.get('selection_score_metric', 'val_tuned_f1')
     DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
 
+
+def resolve_feature_cache_directory() -> str:
+    """Determine which segment cache directory to load based on the config."""
+    feature_source = (DEFAULT_FEATURE_SOURCE or 'hctsa').strip().lower()
+    configured_dir = FEATURE_DATA_SETTINGS.get('segment_cache_dir')
+    if configured_dir:
+        return str(Path(configured_dir).expanduser())
+    raise ValueError(
+        "Feature configuration must define 'segment_cache_dir' under 'feature_data'. "
+        f"Received source '{feature_source}' without an explicit directory."
+    )
 
 # ===================================================================
 # TensorBoard Hyperparameter Visualization
@@ -1213,19 +1243,14 @@ def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_
     
     filename_base = "_".join(filename_parts)
     
-    # Save as pickle (complete history)
-    pickle_path = os.path.join(paths['history_dir'], f"{filename_base}_history.pkl")
-    with open(pickle_path, 'wb') as f:
-        pickle.dump(history, f)
-    
-    # Save as JSON (for easy reading)
+    # Save as JSON (human readable and easy to reload)
     json_path = os.path.join(paths['history_dir'], f"{filename_base}_history.json")
-    with open(json_path, 'w') as f:
+    with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(history, f, indent=2)
     
-    logging.info(f"[HISTORY] Saved fold history to {pickle_path}")
+    logging.info(f"[HISTORY] Saved fold history to {json_path}")
     
-    return pickle_path, json_path
+    return json_path
 
 
 # ===================================================================
@@ -2745,13 +2770,15 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                  correlation_threshold=0.95,
                  x_mask_value=None,
                  selection_method='mutual_info',
-                 scoring_weights=None):  # <-- This parameter
+                 scoring_weights=None,
+                 enabled=True):  # <-- This parameter
         self.n_features = n_features
         self.variance_threshold = variance_threshold
         self.correlation_threshold = correlation_threshold
         self.x_mask_value = x_mask_value
         self.selection_method = selection_method
         self.scoring_weights = scoring_weights or {}
+        self.enabled = bool(enabled)
         
         # Store feature selection results
         self.selected_features_ = None
@@ -3058,6 +3085,18 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         n_features = X.shape[-1]  # Last dimension is always features
         self.selection_report_ = self._init_selection_report(n_features)
         
+        if not self.enabled:
+            self.selected_features_ = list(range(n_features))
+            self.feature_scores_ = np.ones(n_features)
+            self._mark_pending_steps(status='skipped', reason='feature selector disabled')
+            self._set_final_strategy(
+                'disabled_passthrough',
+                selected_features=int(n_features),
+                reason='Feature selector disabled via config'
+            )
+            logging.info("Feature selection disabled; passing through all %d features", n_features)
+            return self
+        
         try:
             # Step 1: Variance filtering
             variance_input = int(n_features)
@@ -3217,6 +3256,8 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
     
     def transform(self, X):
         """Transform data using selected features."""
+        if not self.enabled:
+            return X
         if self.selected_features_ is None:
             raise ValueError("Selector not fitted yet")
         
@@ -6040,28 +6081,30 @@ def main(argv=None):
     parser.add_argument(
         "--outer-subjects",
         type=str,
-        default=None,
+        default="PW_SN61",
         help="Comma-separated list of outer subjects to run (e.g., 'PW_EM59,PW_SN61')"
     )
     parser.add_argument(
         "--run-id",
         type=str,
-        default=None,
-        help="Optional run identifier included in log directory names"
+        default="hparams_test",
+        help="Optional string inserted into log directory names (default: ). Example: --run-id hparams_test"
     )
     parser.add_argument(
         "--hyperparams-config",
-        type=str,
-        required=True,
-        help="Full path to the hyperparameters JSON config file"
+        type=Path,
+        default=DEFAULT_HPARAMS_CONFIG,
+        help=f"Path to the hyperparameter JSON config (default: {DEFAULT_HPARAMS_CONFIG})"
     )
     args = parser.parse_args(argv)
 
-    configure_hyperparameter_settings(args.hyperparams_config)
+    hyperparams_config_path = Path(args.hyperparams_config).expanduser()
+    configure_hyperparameter_settings(str(hyperparams_config_path))
     
     verbose = 2
     n_jobs = 1  # Optimal for LSTM with GPU
-    segment_cache_dir = os.path.join("data", "hctsa_segments")
+    feature_source = (DEFAULT_FEATURE_SOURCE or 'hctsa')
+    segment_cache_dir = resolve_feature_cache_directory()
     
     outer_subject_selection_str = args.outer_subjects
     outer_subject_filters = parse_outer_subject_selection(outer_subject_selection_str)
@@ -6106,6 +6149,7 @@ def main(argv=None):
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
+    logging.info("[MAIN] Feature source: %s (cache dir: %s)", feature_source, segment_cache_dir)
     logging.info("="*80)
     logging.info("NESTED CROSS-VALIDATION PIPELINE")
     logging.info("="*80)
