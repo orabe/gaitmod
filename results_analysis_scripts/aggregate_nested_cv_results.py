@@ -280,7 +280,7 @@ if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
 
-    experiment_name = "hparams_test_val_tuned_f1"
+    experiment_name = "hparams_lstm_baseline"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
