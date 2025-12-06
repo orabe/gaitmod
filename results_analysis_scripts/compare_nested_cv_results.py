@@ -487,6 +487,7 @@ if __name__ == "__main__":
     label2 = "hparams_test_lstm_beta"
     label3 = "hparams_test_lstm_hctsa"
     label4 = "hparams_lstm_baseline"
+    label5 = "hparams_lstm_roc_auc_refit"
     
     args = Namespace(
         csv=[
@@ -494,12 +495,14 @@ if __name__ == "__main__":
             f"{base_path}/{label2}/summary/nested_cv_results.csv",
             f"{base_path}/{label3}/summary/nested_cv_results.csv",
             f"{base_path}/{label4}/summary/nested_cv_results.csv",
+            f"{base_path}/{label5}/summary/nested_cv_results.csv",
         ],
         labels=[
             "LSTM Raw-Feat",
             "LSTM Beta-Feat",
             "LSTM HCTSA-Feat",
-            "LSTM HCTSA-Feat Tuned-48"
+            "LSTM HCTSA-Feat Tuned-48",
+            "LSTM HCTSA-Feat ROC-AUC Refit",
         ],
         output_dir="logs/results/comparison_figures",
         metrics=[

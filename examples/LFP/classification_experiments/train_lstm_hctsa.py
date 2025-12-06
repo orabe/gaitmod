@@ -170,6 +170,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
 from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.dummy import DummyClassifier
 from sklearn.utils.class_weight import compute_class_weight
@@ -206,6 +207,9 @@ SELECTION_SETTINGS: Dict[str, Any] = {}
 DEFAULT_REFIT_SCORING_METRIC = 'f1'
 DEFAULT_SELECTION_SCORE_METRIC = 'val_tuned_f1'
 DEFAULT_SELECTION_SCORE_AGGREGATION = 'median'
+DEFAULT_FEATURE_PARAMS: Dict[str, Any] = {}
+SUPPORTED_MODEL_TYPES: Tuple[str, ...] = ('lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
+DEFAULT_MODEL_TYPE = 'lstm'
 
 DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
 DEFAULT_THRESHOLD_STEPS: int = 81
@@ -252,6 +256,8 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     global SELECTION_SETTINGS, DEFAULT_REFIT_SCORING_METRIC
     global DEFAULT_SELECTION_SCORE_METRIC, DEFAULT_SELECTION_SCORE_AGGREGATION
     global FEATURE_DATA_SETTINGS, DEFAULT_FEATURE_SOURCE
+    global DEFAULT_FEATURE_PARAMS
+    global DEFAULT_MODEL_TYPE
 
     resolved_path = Path(config_path).expanduser().resolve()
     config = load_hyperparameter_config(str(resolved_path))
@@ -302,6 +308,25 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     DEFAULT_REFIT_SCORING_METRIC = SELECTION_SETTINGS.get('refit_scoring_metric', 'f1')
     DEFAULT_SELECTION_SCORE_METRIC = SELECTION_SETTINGS.get('selection_score_metric', 'val_tuned_f1')
     DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
+    feature_params_cfg = GLOBAL_HPARAM_CONFIG.get('feature_params')
+    DEFAULT_FEATURE_PARAMS = copy.deepcopy(feature_params_cfg) if isinstance(feature_params_cfg, dict) else {}
+    configured_model_type = str(GLOBAL_SETTINGS.get('model_type', DEFAULT_MODEL_TYPE or 'lstm')).strip().lower()
+    if configured_model_type not in SUPPORTED_MODEL_TYPES:
+        logging.warning(format_warning_message(
+            f"Unsupported model_type '{configured_model_type}' in config. "
+            f"Falling back to 'lstm'. Available: {', '.join(SUPPORTED_MODEL_TYPES)}"
+        ))
+        configured_model_type = 'lstm'
+    DEFAULT_MODEL_TYPE = configured_model_type
+
+
+def _merge_feature_params(model_specific: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Combine global feature params with model-specific overrides."""
+    merged: Dict[str, Any] = copy.deepcopy(DEFAULT_FEATURE_PARAMS) if DEFAULT_FEATURE_PARAMS else {}
+    if model_specific:
+        for key, value in model_specific.items():
+            merged[key] = value
+    return merged
 
 
 def resolve_feature_cache_directory() -> str:
@@ -3081,6 +3106,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
     
     def fit(self, X, y):
         """Fit feature selector."""
+        X = np.asarray(X)
         # Determine number of features (handle both 2D and 3D data)
         n_features = X.shape[-1]  # Last dimension is always features
         self.selection_report_ = self._init_selection_report(n_features)
@@ -3256,6 +3282,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
     
     def transform(self, X):
         """Transform data using selected features."""
+        X = np.asarray(X)
         if not self.enabled:
             return X
         if self.selected_features_ is None:
@@ -4216,7 +4243,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'lstm')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lstm')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -4257,6 +4284,9 @@ def build_pipeline(model_type='lstm', mask_values=None,
     elif model_type == 'svm':
         classifier = SVC(probability=True, random_state=42)
         logging.info(f"[BUILD_PIPELINE] Created SVC")
+    elif model_type == 'logreg':
+        classifier = LogisticRegression(max_iter=1000, solver='lbfgs', random_state=42)
+        logging.info(f"[BUILD_PIPELINE] Created LogisticRegression")
     elif model_type == 'xgb':
         if XGBOOST_AVAILABLE:
             classifier = XGBClassifier(random_state=42)
@@ -4426,7 +4456,7 @@ def get_default_param_grid(model_type, mask_values=None):
     
     if model_type == 'lstm':
         logging.info(f"[PARAM_GRID] Creating LSTM parameter grid from config")
-        feature_params = model_config.get('feature_params', {})
+        feature_params = _merge_feature_params(model_config.get('feature_params'))
         architecture_configs = model_config.get('architecture_configs', [])
         other_params = model_config.get('other_params', {})
         
@@ -4455,8 +4485,11 @@ def get_default_param_grid(model_type, mask_values=None):
         logging.info(f"[PARAM_GRID] Total combinations: {len(complete_params)}")
         param_grid = complete_params
     else:
+        feature_params = _merge_feature_params(model_config.get('feature_params'))
+        if feature_params:
+            param_grid.update(feature_params)
         param_grid.update(model_config.get('param_grid', {}))
-    
+
     return param_grid
 
 # ==================================================================
@@ -4490,7 +4523,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         groups: Array indicating which subject each trial belongs to
         mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length)
         subject_names: List of subject names
-        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'dummy')
+        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
         refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
@@ -4852,8 +4885,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         
                     else:
                         # For other models, flatten to 2D
-                        X_inner_train_2d = X_inner_train.reshape(X_inner_train.shape[0], -1)
-                        X_inner_val_2d = X_inner_val.reshape(X_inner_val.shape[0], -1)
+                        X_inner_train_arr = np.asarray(X_inner_train)
+                        X_inner_val_arr = np.asarray(X_inner_val)
+                        X_inner_train_2d = X_inner_train_arr.reshape(X_inner_train_arr.shape[0], -1)
+                        X_inner_val_2d = X_inner_val_arr.reshape(X_inner_val_arr.shape[0], -1)
                         train_shape_for_logging = X_inner_train_2d.shape
                         val_shape_for_logging = X_inner_val_2d.shape
                         
@@ -5595,8 +5630,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 
             else:
                 # For other models
-                X_outer_train_2d = X_outer_train.reshape(X_outer_train.shape[0], -1)
-                X_outer_test_2d = X_outer_test.reshape(X_outer_test.shape[0], -1)
+                X_outer_train_arr = np.asarray(X_outer_train)
+                X_outer_test_arr = np.asarray(X_outer_test)
+                X_outer_train_2d = X_outer_train_arr.reshape(X_outer_train_arr.shape[0], -1)
+                X_outer_test_2d = X_outer_test_arr.reshape(X_outer_test_arr.shape[0], -1)
                 train_shape_for_logging = X_outer_train_2d.shape
                 test_shape_for_logging = X_outer_test_2d.shape
                 
@@ -6077,7 +6114,7 @@ def sanitize_path_component(component: Optional[str]) -> Optional[str]:
 def main(argv=None):            
     script_start_time = time.time()
     
-    parser = argparse.ArgumentParser(description="LSTM HCTSA nested cross-validation training")
+    parser = argparse.ArgumentParser(description="HCTSA nested cross-validation training")
     parser.add_argument(
         "--outer-subjects",
         type=str,
@@ -6096,10 +6133,20 @@ def main(argv=None):
         default=DEFAULT_HPARAMS_CONFIG,
         help=f"Path to the hyperparameter JSON config (default: {DEFAULT_HPARAMS_CONFIG})"
     )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        choices=SUPPORTED_MODEL_TYPES,
+        default=None,
+        help="Classifier to train (overrides config model_type)."
+    )
     args = parser.parse_args(argv)
 
     hyperparams_config_path = Path(args.hyperparams_config).expanduser()
     configure_hyperparameter_settings(str(hyperparams_config_path))
+    selected_model_type = (args.model_type or DEFAULT_MODEL_TYPE or 'lstm').strip().lower()
+    if selected_model_type not in SUPPORTED_MODEL_TYPES:
+        raise ValueError(f"Unsupported model_type '{selected_model_type}'. Expected one of {SUPPORTED_MODEL_TYPES}.")
     
     verbose = 2
     n_jobs = 1  # Optimal for LSTM with GPU
@@ -6130,12 +6177,13 @@ def main(argv=None):
     log_file = setup_logging(verbose_level=verbose, log_dir=experiment_dir)
     
     logging.info("="*80)
-    logging.info("LSTM HCTSA NESTED CV EXPERIMENT STARTED")
+    logging.info(f"{selected_model_type.upper()} HCTSA NESTED CV EXPERIMENT STARTED")
     logging.info("="*80)
     logging.info(f"Verbose level: {verbose}")
     logging.info(f"Experiment name: {experiment_name}")
     logging.info(f"Hyperparameter config: {HYPERPARAM_CONFIG_PATH}")
     logging.info(f"Experiment directory: {experiment_dir}")
+    logging.info(f"[MAIN] Model type: {selected_model_type}")
     if outer_subject_filters:
         logging.info(f"[MAIN] Outer subject filter applied: {outer_subject_filters}")
     if subject_log_component:
@@ -6255,7 +6303,7 @@ def main(argv=None):
     # Get parameter grid for hyperparameter logging setup (using dummy mask values for initial setup)
     from sklearn.model_selection import ParameterGrid
     dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}  # Temporary for parameter grid setup
-    default_param_grid = get_default_param_grid('lstm', dummy_mask_values)
+    default_param_grid = get_default_param_grid(selected_model_type, dummy_mask_values)
     
     # Handle different parameter grid structures
     if isinstance(default_param_grid, list):
@@ -6293,7 +6341,7 @@ def main(argv=None):
         X_padded, y_padded, groups,
         subject_names=subject_names,
         mask_values=mask_values,
-        model_type='lstm',
+        model_type=selected_model_type,
         refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
         selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
         selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
