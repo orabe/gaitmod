@@ -2802,7 +2802,9 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         self.correlation_threshold = correlation_threshold
         self.x_mask_value = x_mask_value
         self.selection_method = selection_method
-        self.scoring_weights = scoring_weights or {}
+        if scoring_weights:
+            logging.info("FeatureSelector now uses a single univariate metric; provided scoring_weights are ignored.")
+        self.scoring_weights = None
         self.enabled = bool(enabled)
         
         # Store feature selection results
@@ -2989,24 +2991,17 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             y_flat = y
             n_features = X.shape[1]
 
-        metrics = self.scoring_weights or {self.selection_method or 'mutual_info': 1.0}
-        combined_scores = np.zeros(n_features)
-        total_weight = 0.0
-
-        for metric_name, weight in metrics.items():
-            metric_scores = self._compute_metric_scores(X_flat, y_flat, metric_name)
-            if metric_scores is None:
-                continue
-            metric_scores = np.nan_to_num(metric_scores, nan=0.0, posinf=0.0, neginf=0.0)
-            if np.all(metric_scores == 0):
-                continue
-            metric_scores = (metric_scores - np.min(metric_scores)) / (np.ptp(metric_scores) + 1e-12)
-            combined_scores += weight * metric_scores
-            total_weight += weight
-
-        if total_weight == 0:
+        metric_name = self.selection_method or 'mutual_info'
+        metric_scores = self._compute_metric_scores(X_flat, y_flat, metric_name)
+        if metric_scores is None:
             return np.zeros(n_features)
-        return combined_scores / total_weight
+
+        metric_scores = np.nan_to_num(metric_scores, nan=0.0, posinf=0.0, neginf=0.0)
+        if np.all(metric_scores == 0):
+            return np.zeros(n_features)
+
+        # Normalize to 0-1 so downstream selection uses consistent scale
+        return (metric_scores - np.min(metric_scores)) / (np.ptp(metric_scores) + 1e-12)
     
     def _remove_correlated_features(self, X, selected_indices):
         """Remove highly correlated features."""
@@ -5465,7 +5460,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         fold_scores = add_notuning_metrics(fold_scores, 'val')
                         
                     else:
-                        # For other models, flatten to 2D
                         X_inner_train_arr = np.asarray(X_inner_train)
                         X_inner_val_arr = np.asarray(X_inner_val)
                         X_inner_train_2d = X_inner_train_arr.reshape(X_inner_train_arr.shape[0], -1)
