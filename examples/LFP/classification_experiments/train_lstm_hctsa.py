@@ -4493,7 +4493,588 @@ def get_default_param_grid(model_type, mask_values=None):
     return param_grid
 
 # ==================================================================
-# Nested Cross-Validation with Pre-computed Padding
+# Nested Cross-Validation helpers
+# ==================================================================
+
+def run_nested_cv_classical(
+    X,
+    y,
+    groups,
+    subject_names=None,
+    model_type='rf',
+    refit_scoring_metric='f1',
+    selection_score_metric: str = 'val_tuned_f1',
+    selection_score_aggregation: str = 'median',
+    experiment_dir=None,
+    n_jobs=1,
+    verbose: int = 1,
+    hparam_logger=None,
+    feature_names=None,
+    outer_test_subjects=None
+):
+    """
+    Nested cross-validation for classical (non-LSTM) models at the epoch level.
+    
+    Each sample corresponds to a single epoch (no padding), preserving LOSO CV
+    by grouping epochs by subject.
+    """
+    from sklearn.model_selection import ParameterGrid, LeaveOneGroupOut
+    from sklearn.metrics import (
+        accuracy_score,
+        average_precision_score,
+        balanced_accuracy_score,
+        f1_score,
+        precision_score,
+        recall_score,
+        roc_auc_score,
+        confusion_matrix,
+    )
+
+    if feature_names is not None:
+        try:
+            feature_names = feature_names.tolist()
+        except AttributeError:
+            feature_names = list(feature_names)
+
+    selection_score_metric = (selection_score_metric or 'val_tuned_f1')
+    selection_score_aggregation = (selection_score_aggregation or 'median').lower()
+    if selection_score_aggregation not in {'median', 'mean'}:
+        raise ValueError(
+            f"Invalid selection_score_aggregation='{selection_score_aggregation}'. Expected 'median' or 'mean'."
+        )
+
+    subject_name_filter = None
+    if outer_test_subjects:
+        name_filter_tmp = set()
+        for subj in outer_test_subjects:
+            if not subj:
+                continue
+            subj_str = str(subj).strip()
+            if not subj_str:
+                continue
+            name_filter_tmp.add(subj_str.lower())
+        subject_name_filter = name_filter_tmp or None
+
+    def _extract_selection_score(score_dict):
+        """Safely fetch the configured selection metric from a fold score dict."""
+        if not isinstance(score_dict, dict):
+            return 0.0
+        raw_score = score_dict.get(selection_score_metric, None)
+        if raw_score is None:
+            return 0.0
+        try:
+            return float(raw_score)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _calc_confusion_components(y_true_arr, y_pred_arr):
+        cm = confusion_matrix(y_true_arr, y_pred_arr, labels=[0, 1])
+        tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+        return {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp), 'n_valid_samples': int(len(y_true_arr))}
+
+    if verbose >= 1:
+        logging.info(f"\n[CV_SKLEARN] Starting epoch-level nested CV for model_type={model_type}")
+        logging.info(f"[CV_SKLEARN] Selection metric: {selection_score_metric} ({selection_score_aggregation})")
+        if subject_name_filter:
+            logging.info(f"[CV_SKLEARN] Evaluating only outer test subjects: {sorted(subject_name_filter)}")
+        logging.info(f"[CV_SKLEARN] Experiment directory: {experiment_dir}")
+        logging.info(f"[CV_SKLEARN] {'-'*80}")
+
+    outer_cv = LeaveOneGroupOut()
+    outer_splits = list(outer_cv.split(X, y, groups))
+    n_outer_folds = len(outer_splits)
+
+    param_grid = get_default_param_grid(model_type=model_type, mask_values={'X_mask': 0.0, 'y_mask': -1})
+    param_combinations = list(ParameterGrid(param_grid))
+    hparam_trials = [] if hparam_logger else None
+
+    if verbose >= 1:
+        logging.info(f"[CV_SKLEARN] Setup: {n_outer_folds} outer folds, {len(param_combinations)} parameter combinations")
+
+    outer_results = []
+    all_best_params = []
+    processed_outer_folds = 0
+
+    for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
+        fold_number = outer_fold + 1
+        X_outer_train, X_outer_test = X[outer_train_idx], X[outer_test_idx]
+        y_outer_train, y_outer_test = y[outer_train_idx], y[outer_test_idx]
+        groups_outer_train = groups[outer_train_idx]
+
+        test_subject_number = groups[outer_test_idx][0]
+        test_subject_name = (
+            subject_names[test_subject_number]
+            if subject_names and test_subject_number < len(subject_names)
+            else f"Subject_{test_subject_number}"
+        )
+
+        if subject_name_filter and test_subject_name.lower() not in subject_name_filter:
+            if verbose >= 2:
+                logging.info(f"[CV_SKLEARN] Skipping outer fold {fold_number} (subject filter)")
+            continue
+
+        processed_outer_folds += 1
+
+        if verbose >= 1:
+            logging.info(f"\n[CV_SKLEARN] {'='*70}")
+            logging.info(f"[CV_SKLEARN] OUTER FOLD {fold_number}/{n_outer_folds} (test={test_subject_name})")
+            logging.info(f"[CV_SKLEARN] {'='*70}")
+
+        inner_cv = LeaveOneGroupOut()
+        inner_splits = list(inner_cv.split(X_outer_train, y_outer_train, groups_outer_train))
+        if verbose >= 1:
+            logging.info(f"[CV_SKLEARN] Inner CV folds: {len(inner_splits)}")
+
+        param_scores = []
+        param_features = []
+        param_all_metrics = []
+        param_inner_fold_details = []
+
+        for param_idx, params in enumerate(param_combinations):
+            if verbose >= 2:
+                logging.info(f"[CV_SKLEARN] Testing parameter combo {param_idx + 1}/{len(param_combinations)}")
+
+            inner_scores = []
+            inner_selected_features = []
+            inner_all_metrics = []
+            inner_fold_details = []
+
+            for inner_fold, (inner_train_idx, inner_val_idx) in enumerate(inner_splits):
+                X_inner_train = X_outer_train[inner_train_idx]
+                X_inner_val = X_outer_train[inner_val_idx]
+                y_inner_train = y_outer_train[inner_train_idx]
+                y_inner_val = y_outer_train[inner_val_idx]
+
+                val_subject_number = groups_outer_train[inner_val_idx][0]
+                val_subject_name = (
+                    subject_names[val_subject_number]
+                    if subject_names and val_subject_number < len(subject_names)
+                    else f"Subject_{val_subject_number}"
+                )
+
+                try:
+                    inner_pipeline, _ = build_pipeline(
+                        model_type=model_type,
+                        mask_values={'X_mask': 0.0, 'y_mask': -1},
+                        experiment_dir=experiment_dir,
+                        outer_fold=outer_fold + 1,
+                        inner_fold=inner_fold + 1,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        params=params,
+                        has_validation_data=True,
+                    )
+                    inner_pipeline.set_params(**params)
+                    inner_pipeline.fit(X_inner_train, y_inner_train)
+
+                    y_val_proba = inner_pipeline.predict_proba(X_inner_val)
+                    if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2:
+                        y_val_proba_pos = y_val_proba[:, 1]
+                    else:
+                        y_val_proba_pos = y_val_proba.ravel()
+                    y_val_pred = (y_val_proba_pos > 0.5).astype(int)
+
+                    try:
+                        roc_val = roc_auc_score(y_inner_val, y_val_proba_pos)
+                    except Exception:
+                        roc_val = 0.5
+                    try:
+                        pr_val = average_precision_score(y_inner_val, y_val_proba_pos)
+                    except Exception:
+                        pr_val = 0.0
+
+                    baseline_scores = {
+                        'f1': f1_score(y_inner_val, y_val_pred, average='weighted'),
+                        'accuracy': accuracy_score(y_inner_val, y_val_pred),
+                        'precision': precision_score(y_inner_val, y_val_pred, average='weighted', zero_division=0),
+                        'recall': recall_score(y_inner_val, y_val_pred, average='weighted'),
+                        'balanced_accuracy': balanced_accuracy_score(y_inner_val, y_val_pred),
+                        'roc_auc': roc_val,
+                        'pr_auc': pr_val,
+                    }
+
+                    optimal_thresholds = {
+                        'f1': 0.5,
+                        'accuracy': 0.5,
+                        'precision': 0.5,
+                        'recall': 0.5,
+                        'balanced_accuracy': 0.5,
+                    }
+
+                    conf_components = _calc_confusion_components(y_inner_val, y_val_pred)
+
+                    base_scores = standardize_metric_names(baseline_scores, stage='val', tuned=False)
+                    tuned_scores = standardize_metric_names(baseline_scores, stage='val', tuned=True)
+                    fold_scores = base_scores
+                    fold_scores.update(tuned_scores)
+                    fold_scores['val_confusion_matrix_components'] = conf_components
+                    fold_scores['val_tuned_confusion_matrix_components'] = conf_components
+                    fold_scores = add_notuning_metrics(fold_scores, 'val')
+
+                    score = _extract_selection_score(fold_scores)
+                    inner_scores.append(score)
+                    inner_all_metrics.append(fold_scores)
+
+                    feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
+                    selected_features = []
+                    selection_report = None
+                    if feature_selector_step is not None:
+                        if hasattr(feature_selector_step, 'selected_features_'):
+                            selected_features = feature_selector_step.selected_features_
+                            inner_selected_features.append(selected_features)
+                        selection_report = getattr(feature_selector_step, 'selection_report_', None)
+
+                    train_info = {
+                        'n_samples': len(y_inner_train),
+                        'shape': X_inner_train.shape,
+                        'class_dist': dict(zip(*np.unique(y_inner_train, return_counts=True))),
+                    }
+                    val_info = {
+                        'n_samples': len(y_inner_val),
+                        'shape': X_inner_val.shape,
+                        'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
+                    }
+
+                    comprehensive_results = create_comprehensive_results_dict(
+                        fold_scores=fold_scores,
+                        optimal_thresholds=optimal_thresholds,
+                        threshold_results={},
+                        selected_features=selected_features,
+                        hyperparams=params,
+                        train_info=train_info,
+                        val_info=val_info,
+                        feature_names=feature_names,
+                        trained_epochs=None,
+                        configured_epochs=None,
+                        restored_epoch=None,
+                        learning_rate_history=None,
+                        feature_selection_report=selection_report,
+                    )
+                    comprehensive_results['selection_parameters'] = {
+                        'selection_score_metric': selection_score_metric,
+                        'selection_score_aggregation': selection_score_aggregation,
+                        'refit_scoring_metric': refit_scoring_metric,
+                    }
+
+                    save_evaluation_results(
+                        results_dict=comprehensive_results,
+                        result_type='inner_fold',
+                        experiment_dir=experiment_dir,
+                        outer_fold=outer_fold,
+                        inner_fold=inner_fold,
+                        hyperparams=params,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        immediate_save=True,
+                    )
+
+                    inner_fold_details.append({})
+
+                except Exception as e:
+                    if verbose >= 1:
+                        logging.warning(format_warning_message(f"[CV_SKLEARN] Inner fold {inner_fold + 1} failed: {e}"))
+                    inner_scores.append(0.0)
+                    inner_all_metrics.append({})
+                    inner_selected_features.append([])
+                    inner_fold_details.append({})
+
+            if inner_scores:
+                selection_score = float(np.median(inner_scores)) if selection_score_aggregation == 'median' else float(
+                    np.mean(inner_scores)
+                )
+            else:
+                selection_score = 0.0
+            param_scores.append(selection_score)
+
+            aggregated_metrics = {}
+            if inner_all_metrics:
+                all_metric_names = set()
+                for fold_metrics in inner_all_metrics:
+                    if isinstance(fold_metrics, dict):
+                        all_metric_names.update(fold_metrics.keys())
+                for metric_name in all_metric_names:
+                    numeric_values = []
+                    for fold_metrics in inner_all_metrics:
+                        if isinstance(fold_metrics, dict) and metric_name in fold_metrics:
+                            val = fold_metrics[metric_name]
+                            if isinstance(val, (int, float, np.integer, np.floating)):
+                                numeric_values.append(float(val))
+                    if numeric_values:
+                        aggregated_metrics[metric_name] = float(np.mean(numeric_values))
+                param_all_metrics.append(aggregated_metrics)
+            else:
+                param_all_metrics.append({})
+
+            if inner_selected_features:
+                all_features = []
+                for features in inner_selected_features:
+                    if len(features) > 0:
+                        all_features.extend(features)
+                if all_features:
+                    feature_counts = Counter(all_features)
+                    min_count = max(1, len(inner_selected_features) // 2)
+                    aggregated_features = [feat for feat, count in feature_counts.items() if count >= min_count]
+                else:
+                    aggregated_features = []
+            else:
+                aggregated_features = []
+            param_features.append(aggregated_features)
+            param_inner_fold_details.append(inner_fold_details)
+
+            if hparam_logger:
+                trial_results = {
+                    'cv_score': float(selection_score),
+                    'cv_std': float(np.std(inner_scores)) if len(inner_scores) > 1 else 0.0,
+                }
+                for metric_key in ['val_f1', 'val_accuracy', 'val_precision', 'val_recall', 'val_balanced_accuracy']:
+                    value = aggregated_metrics.get(metric_key)
+                    if isinstance(value, (int, float, np.number)) and not np.isnan(float(value)):
+                        trial_results[metric_key] = float(value)
+
+                session_id = f"outer{outer_fold + 1:02d}_combo{param_idx + 1:03d}"
+                hparam_logger.log_hyperparameter_trial(
+                    params, trial_results, session_id=session_id, subject_identifier=test_subject_name, outer_fold=outer_fold + 1
+                )
+                if hparam_trials is not None:
+                    sanitized_params = convert_numpy_types(dict(params))
+                    trial_record = trial_results.copy()
+                    trial_record['params'] = sanitized_params
+                    hparam_trials.append(trial_record)
+
+            if verbose >= 1:
+                logging.info(
+                    f"[CV_SKLEARN]   Combo {param_idx + 1}/{len(param_combinations)}: "
+                    f"{selection_score_aggregation.title()} {selection_score_metric}={selection_score:.4f}"
+                )
+
+        if param_scores:
+            best_param_idx = np.argmax(param_scores)
+            best_params = param_combinations[best_param_idx]
+            best_score = param_scores[best_param_idx]
+            best_features = param_features[best_param_idx]
+            best_metrics = param_all_metrics[best_param_idx] if param_all_metrics else {}
+        else:
+            best_params = param_combinations[0] if param_combinations else {}
+            best_score = 0.0
+            best_features = []
+            best_metrics = {}
+            logging.warning(format_warning_message("[CV_SKLEARN] No valid scores found, using default parameters"))
+
+        best_feature_names, best_feature_details, best_feature_index_map = build_feature_mapping(best_features, feature_names)
+
+        if verbose >= 1:
+            logging.info(f"[CV_SKLEARN] Best params: {best_params}")
+            logging.info(f"[CV_SKLEARN] Best CV score: {best_score:.4f}")
+
+        final_pipeline, _ = build_pipeline(
+            model_type=model_type,
+            mask_values={'X_mask': 0.0, 'y_mask': -1},
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold + 1,
+            inner_fold=None,
+            outer_test_subject=test_subject_name,
+            inner_validation_subject=None,
+        )
+        final_pipeline.set_params(**best_params)
+
+        train_metrics = {}
+        test_metrics = {}
+        optimal_thresholds = {
+            'f1': 0.5,
+            'accuracy': 0.5,
+            'precision': 0.5,
+            'recall': 0.5,
+            'balanced_accuracy': 0.5,
+        }
+
+        final_pipeline.fit(X_outer_train, y_outer_train)
+
+        # Train-set metrics (for completeness)
+        y_train_proba = final_pipeline.predict_proba(X_outer_train)
+        y_train_proba_pos = y_train_proba[:, 1] if y_train_proba.ndim > 1 and y_train_proba.shape[1] >= 2 else y_train_proba.ravel()
+        y_train_pred = (y_train_proba_pos > 0.5).astype(int)
+        try:
+            train_metrics = {
+                'train_f1': f1_score(y_outer_train, y_train_pred, average='weighted'),
+                'train_accuracy': accuracy_score(y_outer_train, y_train_pred),
+                'train_precision': precision_score(y_outer_train, y_train_pred, average='weighted', zero_division=0),
+                'train_recall': recall_score(y_outer_train, y_train_pred, average='weighted'),
+                'train_balanced_accuracy': balanced_accuracy_score(y_outer_train, y_train_pred),
+                'train_roc_auc': roc_auc_score(y_outer_train, y_train_proba_pos),
+                'train_pr_auc': average_precision_score(y_outer_train, y_train_proba_pos),
+            }
+        except Exception:
+            train_metrics = {}
+
+        y_test_proba = final_pipeline.predict_proba(X_outer_test)
+        y_test_proba_pos = y_test_proba[:, 1] if y_test_proba.ndim > 1 and y_test_proba.shape[1] >= 2 else y_test_proba.ravel()
+        y_test_pred = (y_test_proba_pos > 0.5).astype(int)
+
+        try:
+            test_metrics = {
+                'test_tuned_f1': f1_score(y_outer_test, y_test_pred, average='weighted'),
+                'test_tuned_accuracy': accuracy_score(y_outer_test, y_test_pred),
+                'test_tuned_precision': precision_score(y_outer_test, y_test_pred, average='weighted', zero_division=0),
+                'test_tuned_recall': recall_score(y_outer_test, y_test_pred, average='weighted'),
+                'test_tuned_balanced_accuracy': balanced_accuracy_score(y_outer_test, y_test_pred),
+                'test_roc_auc': roc_auc_score(y_outer_test, y_test_proba_pos),
+                'test_pr_auc': average_precision_score(y_outer_test, y_test_proba_pos),
+            }
+            test_metrics['test_confusion_matrix_components'] = _calc_confusion_components(y_outer_test, y_test_pred)
+            test_metrics['test_tuned_confusion_matrix_components'] = test_metrics['test_confusion_matrix_components']
+        except Exception as e:
+            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not compute test metrics: {e}"))
+            test_metrics = {
+                'test_tuned_f1': np.nan,
+                'test_tuned_accuracy': np.nan,
+                'test_tuned_precision': np.nan,
+                'test_tuned_recall': np.nan,
+                'test_tuned_balanced_accuracy': np.nan,
+                'test_roc_auc': np.nan,
+                'test_pr_auc': np.nan,
+                'test_confusion_matrix_components': None,
+                'test_tuned_confusion_matrix_components': None,
+            }
+
+        test_metrics = add_notuning_metrics(test_metrics, 'test')
+        train_metrics = add_notuning_metrics(train_metrics, 'train')
+
+        final_feature_selection_report = None
+        final_feature_selection_steps = {}
+        final_feature_selection_fallback = False
+        final_feature_selection_strategy = None
+        final_feature_selection_strategy_details = {}
+        final_feature_selection_initial = None
+
+        feature_selector_step = final_pipeline.named_steps.get('feature_selector')
+        if feature_selector_step is not None:
+            final_feature_selection_report = getattr(feature_selector_step, 'selection_report_', None)
+            if final_feature_selection_report:
+                final_feature_selection_steps = final_feature_selection_report.get('steps', {})
+                final_feature_selection_fallback = final_feature_selection_report.get('fallback_used', False)
+                final_feature_selection_strategy = final_feature_selection_report.get('final_feature_strategy')
+                final_feature_selection_strategy_details = final_feature_selection_report.get('final_feature_strategy_details', {})
+                final_feature_selection_initial = final_feature_selection_report.get('initial_features')
+
+        try:
+            train_info = {
+                'n_samples': len(y_outer_train),
+                'shape': X_outer_train.shape,
+                'class_dist': dict(zip(*np.unique(y_outer_train, return_counts=True))),
+            }
+            test_info = {
+                'n_samples': len(y_outer_test),
+                'shape': X_outer_test.shape,
+                'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
+            }
+            comprehensive_refit_results = {
+                'train_scores': train_metrics.copy(),
+                'test_scores': test_metrics.copy(),
+                'optimal_thresholds': optimal_thresholds.copy(),
+                'threshold_optimization': {},
+                'feature_selection': {
+                    'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
+                    'n_selected_features': len(best_feature_index_map),
+                    'step_status': final_feature_selection_steps,
+                    'fallback_used': final_feature_selection_fallback,
+                    'initial_features': final_feature_selection_initial,
+                    'final_strategy': final_feature_selection_strategy,
+                    'final_strategy_details': final_feature_selection_strategy_details,
+                },
+                'trained_epochs': None,
+                'configured_epochs': None,
+                'restored_epoch': None,
+                'learning_rate_history': None,
+                'best_hyperparameters': best_params.copy() if best_params else {},
+                'selected_features': best_features.copy() if best_features else [],
+                'selected_feature_names': best_feature_names.copy() if best_feature_names else [],
+                'selected_feature_details': best_feature_details.copy() if best_feature_details else [],
+                'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
+                'n_selected_features': len(best_features) if best_features else 0,
+                'n_train_samples': train_info['n_samples'],
+                'n_test_samples': test_info['n_samples'],
+                'max_sequence_length': None,
+                'train_class_distribution': train_info['class_dist'],
+                'test_class_distribution': test_info['class_dist'],
+                'best_inner_cv_score': best_score,
+                'test_subject_id': test_subject_number,
+                'test_subject_name': test_subject_name,
+                'selection_parameters': {
+                    'selection_score_metric': selection_score_metric,
+                    'selection_score_aggregation': selection_score_aggregation,
+                    'refit_scoring_metric': refit_scoring_metric,
+                },
+            }
+            save_evaluation_results(
+                results_dict=comprehensive_refit_results,
+                result_type='refit',
+                experiment_dir=experiment_dir,
+                outer_fold=outer_fold,
+                hyperparams=best_params,
+                outer_test_subject=test_subject_name,
+                immediate_save=True,
+            )
+        except Exception as e:
+            logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to save refit results: {e}"))
+
+        result_dict = {
+            'fold': outer_fold + 1,
+            'test_subject': test_subject_number,
+            'test_subject_name': test_subject_name,
+            'best_params': best_params,
+            'best_inner_score': best_score,
+            'selected_features': best_features,
+            'selected_feature_names': best_feature_names,
+            'selected_feature_details': best_feature_details,
+            'selected_feature_index_map': best_feature_index_map,
+            'n_selected_features': len(best_features),
+            'feature_selection_step_status': final_feature_selection_steps,
+            'feature_selection_fallback_used': final_feature_selection_fallback,
+            'feature_selection_initial_features': final_feature_selection_initial,
+            'feature_selection_final_strategy': final_feature_selection_strategy,
+            'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
+        }
+        result_dict.update(train_metrics)
+        result_dict.update(test_metrics)
+        outer_results.append(result_dict)
+        all_best_params.append(best_params)
+
+        if verbose >= 1:
+            metric_items = []
+            for k, v in test_metrics.items():
+                if isinstance(v, (int, float, np.number)) and not np.isnan(float(v)):
+                    display_key = k.replace('test_tuned_', '').replace('test_', '')
+                    metric_items.append(f"{display_key}={v:.4f}")
+            test_metrics_str = ", ".join(metric_items)
+            logging.info(f"[CV_SKLEARN] Test metrics: {test_metrics_str}")
+            logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1} COMPLETED")
+
+    if verbose >= 1:
+        logging.info(f"\n[CV_SKLEARN] {'='*80}")
+        logging.info(f"[CV_SKLEARN] NESTED CROSS-VALIDATION COMPLETED")
+        logging.info(f"[CV_SKLEARN] {'='*80}")
+        if outer_results:
+            avg_f1 = np.mean([r.get('test_tuned_f1', 0.0) for r in outer_results])
+            avg_auc = np.mean([r.get('test_roc_auc', 0.0) for r in outer_results])
+            avg_accuracy = np.mean([r.get('test_tuned_accuracy', 0.0) for r in outer_results])
+            logging.info(f"[CV_SKLEARN] Average F1: {avg_f1:.4f}")
+            logging.info(f"[CV_SKLEARN] Average AUC: {avg_auc:.4f}")
+            logging.info(f"[CV_SKLEARN] Average Accuracy: {avg_accuracy:.4f}")
+
+    if hparam_logger and hparam_trials:
+        try:
+            hparam_logger.create_hyperparameter_summary(hparam_trials)
+        except Exception as summary_error:
+            logging.warning(format_warning_message(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}"))
+
+    if processed_outer_folds == 0:
+        raise ValueError("No outer folds were processed. Check outer fold/subject filters.")
+
+    return outer_results, all_best_params, experiment_dir
+
+
+# ==================================================================
+# Nested Cross-Validation with Pre-computed Padding (LSTM)
 # ==================================================================
 
 def run_nested_cv_sklearn(X, y, groups, mask_values, 
@@ -6006,10 +6587,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     if processed_outer_folds == 0:
         raise ValueError("No outer folds were processed. Check outer fold/subject filters.")
     
-    return outer_results, all_best_params, experiment_dir  
-
-
-
+    return outer_results, all_best_params, experiment_dir
 def setup_logging(verbose_level=2, log_dir=None):
     """
     Configure logging with different verbosity levels and optional file logging.
@@ -6148,7 +6726,7 @@ def main(argv=None):
     if selected_model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(f"Unsupported model_type '{selected_model_type}'. Expected one of {SUPPORTED_MODEL_TYPES}.")
     
-    verbose = 2
+    verbose = 3
     n_jobs = 1  # Optimal for LSTM with GPU
     feature_source = (DEFAULT_FEATURE_SOURCE or 'hctsa')
     segment_cache_dir = resolve_feature_cache_directory()
@@ -6227,37 +6805,45 @@ def main(argv=None):
     TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
         subject_channel_map=subject_channel_map
     )
+    log_memory_usage()
     
-    # Filter invalid features
-    if verbose >= 1:
-        logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING")
-        logging.info("[MAIN] " + "-" * 40)
-            
-    TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
-        TS_DataMat,
-        operations_df=operations,
-        # Disable variance and outlier-based filtering here so we only
-        # remove features that contain any invalid values (NaN/Inf).
-        # Setting variance_threshold to a negative value prevents
-        # variance-based removal (variances are >= 0). Setting
-        # outlier_iqr_factor to 0.0 disables the IQR-based outlier step.
-        variance_threshold=-np.inf,
-        missing_threshold=0.0,  # Only keep features with all valid values
-        outlier_iqr_factor=0.0,  # Disable IQR-based outlier detection
-        outlier_contamination_threshold=0.1,  # Ignored when outlier_iqr_factor=0.0
-        verbose=verbose
-    )
-    
-    # Update operations dataframe to only include valid features
-    operations_filtered = operations.iloc[valid_features_mask].reset_index(drop=True)
-    
-    if verbose >= 1:
-        logging.info(f"[MAIN] Feature filtering completed: {TS_DataMat.shape[1]} -> {TS_DataMat_filtered.shape[1]} features")
-        logging.info(f"[MAIN] Updated operations dataframe: {len(operations_filtered)} entries")
-    
-    # Use filtered data for downstream processing
-    TS_DataMat = TS_DataMat_filtered
-    operations = operations_filtered
+    # Filter invalid features (only for HCTSA source)
+    if feature_source.lower() == 'hctsa':
+        if verbose >= 1:
+            logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING (HCTSA)")
+            logging.info("[MAIN] " + "-" * 40)
+                
+        TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
+            TS_DataMat,
+            operations_df=operations,
+            # Disable variance and outlier-based filtering here so we only
+            # remove features that contain any invalid values (NaN/Inf).
+            # Setting variance_threshold to a negative value prevents
+            # variance-based removal (variances are >= 0). Setting
+            # outlier_iqr_factor to 0.0 disables the IQR-based outlier step.
+            variance_threshold=-np.inf,
+            missing_threshold=0.0,  # Only keep features with all valid values
+            outlier_iqr_factor=0.0,  # Disable IQR-based outlier detection
+            outlier_contamination_threshold=0.1,  # Ignored when outlier_iqr_factor=0.0
+            verbose=verbose
+        )
+        
+        # Update operations dataframe to only include valid features
+        operations_filtered = operations.iloc[valid_features_mask].reset_index(drop=True)
+        
+        if verbose >= 1:
+            logging.info(f"[MAIN] Feature filtering completed: {TS_DataMat.shape[1]} -> {TS_DataMat_filtered.shape[1]} features")
+            logging.info(f"[MAIN] Updated operations dataframe: {len(operations_filtered)} entries")
+        
+        # Use filtered data for downstream processing
+        TS_DataMat = TS_DataMat_filtered
+        operations = operations_filtered
+    else:
+        if verbose >= 1:
+            logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING skipped (source='{feature_source}')")
+        valid_features_mask = np.ones(TS_DataMat.shape[1], dtype=bool)
+        filter_report = {}
+
     if isinstance(operations, pd.DataFrame):
         if 'Name' in operations.columns:
             feature_names = operations['Name'].tolist()
@@ -6332,26 +6918,47 @@ def main(argv=None):
         logging.error(f"Failed to setup hyperparameter experiment: {e}")
         hparam_logger = None
     
-    # Run nested CV with inner-fold specific padding
-    logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding")
-    logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
+    if selected_model_type == 'lstm':
+        # Sequence-to-sequence path (padding required)
+        logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding (LSTM)")
+        logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
 
-    X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
-    outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
-        X_padded, y_padded, groups,
-        subject_names=subject_names,
-        mask_values=mask_values,
-        model_type=selected_model_type,
-        refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
-        selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
-        selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
-        experiment_dir=experiment_dir,
-        n_jobs=n_jobs,
-        verbose=verbose,
-        hparam_logger=hparam_logger,
-        feature_names=feature_names,
-        outer_test_subjects=outer_subject_filters
-    )
+        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
+            X_padded, y_padded, groups,
+            subject_names=subject_names,
+            mask_values=mask_values,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters
+        )
+    else:
+        # Classical models operate per epoch (no padding)
+        logging.info(f"[MAIN] Starting epoch-level nested CV (no padding) for {selected_model_type}")
+        epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_nested_cv_classical(
+            TS_DataMat, labels, epoch_groups,
+            subject_names=subject_names,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters
+        )
 
     # Step 19: Final Evaluation (logged only; aggregation handled separately)
     if verbose >= 1:
