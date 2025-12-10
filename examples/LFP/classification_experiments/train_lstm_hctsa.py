@@ -4662,6 +4662,13 @@ def run_nested_cv_classical(
                     inner_pipeline.set_params(**params)
                     inner_pipeline.fit(X_inner_train, y_inner_train)
 
+                    y_train_proba = inner_pipeline.predict_proba(X_inner_train)
+                    if y_train_proba.ndim > 1 and y_train_proba.shape[1] >= 2:
+                        y_train_proba_pos = y_train_proba[:, 1]
+                    else:
+                        y_train_proba_pos = y_train_proba.ravel()
+                    y_train_pred = (y_train_proba_pos > 0.5).astype(int)
+
                     y_val_proba = inner_pipeline.predict_proba(X_inner_val)
                     if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2:
                         y_val_proba_pos = y_val_proba[:, 1]
@@ -4697,10 +4704,30 @@ def run_nested_cv_classical(
                     }
 
                     conf_components = _calc_confusion_components(y_inner_val, y_val_pred)
+                    train_conf_components = _calc_confusion_components(y_inner_train, y_train_pred)
+
+                    try:
+                        baseline_train_scores = {
+                            'f1': f1_score(y_inner_train, y_train_pred, average='weighted'),
+                            'accuracy': accuracy_score(y_inner_train, y_train_pred),
+                            'precision': precision_score(y_inner_train, y_train_pred, average='weighted', zero_division=0),
+                            'recall': recall_score(y_inner_train, y_train_pred, average='weighted'),
+                            'balanced_accuracy': balanced_accuracy_score(y_inner_train, y_train_pred),
+                            'roc_auc': roc_auc_score(y_inner_train, y_train_proba_pos),
+                            'pr_auc': average_precision_score(y_inner_train, y_train_proba_pos),
+                        }
+                    except Exception:
+                        baseline_train_scores = {}
+
+                    train_scores = standardize_metric_names(baseline_train_scores, stage='train', tuned=False)
+                    train_scores['train_confusion_matrix_components'] = train_conf_components
+                    train_scores = add_notuning_metrics(train_scores, 'train')
 
                     base_scores = standardize_metric_names(baseline_scores, stage='val', tuned=False)
                     tuned_scores = standardize_metric_names(baseline_scores, stage='val', tuned=True)
-                    fold_scores = base_scores
+                    fold_scores = {}
+                    fold_scores.update(train_scores)
+                    fold_scores.update(base_scores)
                     fold_scores.update(tuned_scores)
                     fold_scores['val_confusion_matrix_components'] = conf_components
                     fold_scores['val_tuned_confusion_matrix_components'] = conf_components
@@ -4905,31 +4932,37 @@ def run_nested_cv_classical(
         y_test_proba_pos = y_test_proba[:, 1] if y_test_proba.ndim > 1 and y_test_proba.shape[1] >= 2 else y_test_proba.ravel()
         y_test_pred = (y_test_proba_pos > 0.5).astype(int)
 
+        baseline_test_scores = {
+            'f1': np.nan,
+            'accuracy': np.nan,
+            'precision': np.nan,
+            'recall': np.nan,
+            'balanced_accuracy': np.nan,
+            'roc_auc': np.nan,
+            'pr_auc': np.nan,
+        }
+        test_confusion_components = None
         try:
-            test_metrics = {
-                'test_tuned_f1': f1_score(y_outer_test, y_test_pred, average='weighted'),
-                'test_tuned_accuracy': accuracy_score(y_outer_test, y_test_pred),
-                'test_tuned_precision': precision_score(y_outer_test, y_test_pred, average='weighted', zero_division=0),
-                'test_tuned_recall': recall_score(y_outer_test, y_test_pred, average='weighted'),
-                'test_tuned_balanced_accuracy': balanced_accuracy_score(y_outer_test, y_test_pred),
-                'test_roc_auc': roc_auc_score(y_outer_test, y_test_proba_pos),
-                'test_pr_auc': average_precision_score(y_outer_test, y_test_proba_pos),
+            baseline_test_scores = {
+                'f1': f1_score(y_outer_test, y_test_pred, average='weighted'),
+                'accuracy': accuracy_score(y_outer_test, y_test_pred),
+                'precision': precision_score(y_outer_test, y_test_pred, average='weighted', zero_division=0),
+                'recall': recall_score(y_outer_test, y_test_pred, average='weighted'),
+                'balanced_accuracy': balanced_accuracy_score(y_outer_test, y_test_pred),
+                'roc_auc': roc_auc_score(y_outer_test, y_test_proba_pos),
+                'pr_auc': average_precision_score(y_outer_test, y_test_proba_pos),
             }
-            test_metrics['test_confusion_matrix_components'] = _calc_confusion_components(y_outer_test, y_test_pred)
-            test_metrics['test_tuned_confusion_matrix_components'] = test_metrics['test_confusion_matrix_components']
+            test_confusion_components = _calc_confusion_components(y_outer_test, y_test_pred)
         except Exception as e:
             logging.warning(format_warning_message(f"[CV_SKLEARN] Could not compute test metrics: {e}"))
-            test_metrics = {
-                'test_tuned_f1': np.nan,
-                'test_tuned_accuracy': np.nan,
-                'test_tuned_precision': np.nan,
-                'test_tuned_recall': np.nan,
-                'test_tuned_balanced_accuracy': np.nan,
-                'test_roc_auc': np.nan,
-                'test_pr_auc': np.nan,
-                'test_confusion_matrix_components': None,
-                'test_tuned_confusion_matrix_components': None,
-            }
+
+        base_test_metrics = standardize_metric_names(baseline_test_scores, stage='test', tuned=False)
+        tuned_test_metrics = standardize_metric_names(baseline_test_scores, stage='test', tuned=True)
+        test_metrics = {}
+        test_metrics.update(base_test_metrics)
+        test_metrics.update(tuned_test_metrics)
+        test_metrics['test_confusion_matrix_components'] = test_confusion_components
+        test_metrics['test_tuned_confusion_matrix_components'] = test_confusion_components
 
         test_metrics = add_notuning_metrics(test_metrics, 'test')
         train_metrics = add_notuning_metrics(train_metrics, 'train')
