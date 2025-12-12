@@ -5,6 +5,7 @@ import math
 import mne
 import os
 from typing import Dict, List, Optional
+from matplotlib.lines import Line2D
 from mne.time_frequency import psd_array_multitaper
 
 class Visualise:
@@ -426,6 +427,251 @@ class Visualise:
             plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=300, bbox_inches='tight')
         plt.show()
         plt.close()
+
+    @staticmethod
+    def plot_preferred_channel_trial_type_psd(
+        patients_epochs: Dict[str, mne.Epochs],
+        subject_preferred_channels: Dict[str, object],
+        fmin: float = 1.0,
+        fmax: float = 100.0,
+        colors: Optional[Dict[str, str]] = None,
+        save_path: Optional[str] = None,
+        fig_name: Optional[str] = None,
+        show_fig: bool = True,
+        base_font_size: int = 14
+    ) -> None:
+        """Plot averaged log PSDs (with standard-deviation shading) for each trial type.
+
+        Parameters
+        ----------
+        patients_epochs : Dict[str, mne.Epochs]
+            Mapping from subject identifier to their corresponding epochs.
+        subject_preferred_channels : Dict[str, object]
+            Mapping from subject identifier to a preferred channel definition. The
+            preferred channel can be expressed as a channel name, channel index, or
+            a dict containing keys such as ``best_channel``/``best_channel_name`` and
+            ``best_channel_index``.
+        fmin : float, optional
+            Minimum frequency for PSD computation, by default 1.0 Hz.
+        fmax : float, optional
+            Maximum frequency for PSD computation, by default 100.0 Hz.
+        colors : Optional[Dict[str, str]], optional
+            Custom colors keyed by trial type names. Keys are matched in a
+            case-insensitive manner with whitespace and underscores ignored.
+        save_path : Optional[str], optional
+            Directory where the figure will be saved. If ``None`` the figure is not
+            saved.
+        fig_name : Optional[str], optional
+            File name (without extension) to use when ``save_path`` is provided.
+        show_fig : bool, optional
+            Whether to display the figure interactively, by default True.
+        base_font_size : int, optional
+            Base matplotlib font size used via ``rc_context`` to scale every text
+            element in the figure, by default 14.
+        """
+
+        if not patients_epochs:
+            raise ValueError("patients_epochs must contain at least one subject")
+        if not subject_preferred_channels:
+            raise ValueError("subject_preferred_channels must not be empty")
+
+        subjects = list(patients_epochs.keys())
+        n_subjects = len(subjects)
+
+        def _normalize_label_key(text: str) -> str:
+            return text.lower().replace(' ', '').replace('_', '')
+
+        normalized_color_map = {}
+        if colors:
+            normalized_color_map = {
+                _normalize_label_key(k): v for k, v in colors.items()
+            }
+
+        def _prettify_label(label_name: str) -> str:
+            return label_name.replace('_', ' ').title()
+
+        label_value_to_name = {}
+        for epochs in patients_epochs.values():
+            for name, value in epochs.event_id.items():
+                label_value_to_name[value] = name
+
+        if not label_value_to_name:
+            raise ValueError("No event_id information found in the provided epochs")
+
+        ordered_labels = sorted(label_value_to_name.items(), key=lambda item: item[0])
+
+        color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        trial_colors = {}
+        for idx, (_, label_name) in enumerate(ordered_labels):
+            normalized_label = _normalize_label_key(label_name)
+            pretty_normalized = _normalize_label_key(_prettify_label(label_name))
+            color = normalized_color_map.get(normalized_label)
+            if color is None:
+                color = normalized_color_map.get(pretty_normalized)
+            trial_colors[label_name] = color or color_cycle[idx % len(color_cycle)]
+
+        ctx_fonts = {'font.size': base_font_size}
+        with plt.rc_context(ctx_fonts):
+            fig, axes = plt.subplots(
+                1,
+                n_subjects,
+                figsize=(5 * n_subjects, 5),
+                sharey=True,
+                sharex=True,
+                constrained_layout=False
+            )
+            if n_subjects == 1:
+                axes = np.array([axes])
+
+            global_min, global_max = np.inf, -np.inf
+
+            def _resolve_channel(epochs: mne.Epochs, pref_value: object) -> tuple[int, str]:
+                channel_name = None
+                channel_index = None
+
+                if isinstance(pref_value, dict):
+                    channel_name = (
+                        pref_value.get('best_channel')
+                        or pref_value.get('best_channel_name')
+                        or pref_value.get('channel_name')
+                    )
+                    channel_index = pref_value.get('best_channel_index') or pref_value.get('channel_index')
+                elif isinstance(pref_value, str):
+                    channel_name = pref_value
+                elif isinstance(pref_value, int):
+                    channel_index = pref_value
+                else:
+                    raise TypeError(
+                        "Preferred channel must be a string, integer, or a dict containing channel metadata"
+                    )
+
+                if channel_name is not None:
+                    if channel_name not in epochs.ch_names:
+                        raise ValueError(f"Channel '{channel_name}' not found for subject {subject}")
+                    channel_index = epochs.ch_names.index(channel_name)
+                elif channel_index is not None:
+                    if channel_index < 0 or channel_index >= len(epochs.ch_names):
+                        raise ValueError(f"Channel index {channel_index} is out of range for subject {subject}")
+                    channel_name = epochs.ch_names[channel_index]
+                else:
+                    raise ValueError(
+                        "Preferred channel definition does not include a valid name or index"
+                    )
+
+                return channel_index, channel_name
+
+            for ax, subject in zip(axes, subjects):
+                epochs = patients_epochs[subject]
+                pref_value = subject_preferred_channels.get(subject)
+                if pref_value is None:
+                    raise KeyError(f"No preferred channel provided for subject {subject}")
+
+                channel_idx, channel_name = _resolve_channel(epochs, pref_value)
+                data = epochs.get_data()
+                labels = epochs.events[:, 2]
+                sfreq = epochs.info['sfreq']
+                missing_labels = []
+
+                for label_value, label_name in ordered_labels:
+                    mask = labels == label_value
+                    if not np.any(mask):
+                        missing_labels.append(_prettify_label(label_name))
+                        continue
+
+                    channel_data = data[mask, channel_idx, :]
+                    psds, freqs = psd_array_multitaper(
+                        channel_data,
+                        sfreq,
+                        fmin=fmin,
+                        fmax=fmax,
+                        adaptive=True,
+                        normalization='full',
+                        verbose=False
+                    )
+                    psds = np.maximum(psds, 1e-15)
+                    psd_db = 10 * np.log10(psds)
+                    mean_psd = psd_db.mean(axis=0)
+                    std_psd = psd_db.std(axis=0)
+                    lower = mean_psd - std_psd
+                    upper = mean_psd + std_psd
+
+                    ax.plot(
+                        freqs,
+                        mean_psd,
+                        color=trial_colors[label_name],
+                        linewidth=2.0,
+                        alpha=0.9,
+                        label=_prettify_label(label_name)
+                    )
+                    ax.fill_between(
+                        freqs,
+                        lower,
+                        upper,
+                        color=trial_colors[label_name],
+                        alpha=0.15,
+                        linewidth=0
+                    )
+
+                    global_min = min(global_min, float(np.min(lower)))
+                    global_max = max(global_max, float(np.max(upper)))
+
+                ax.set_title(f"{subject}\n{channel_name} (preferred)")
+                ax.set_xlabel('Frequency (Hz)')
+                ax.set_xlim(fmin, fmax)
+                ax.grid(True, alpha=0.3)
+
+                if missing_labels:
+                    ax.text(
+                        0.5,
+                        0.05,
+                        f"No {', '.join(missing_labels)}",
+                        transform=ax.transAxes,
+                        fontsize=base_font_size - 2,
+                        ha='center',
+                        va='bottom',
+                        color='gray'
+                    )
+
+            if np.isfinite(global_min) and np.isfinite(global_max):
+                y_range = global_max - global_min
+                padding = 0.05 * y_range if y_range > 0 else 1.0
+                for ax in axes:
+                    ax.set_ylim(global_min - padding, global_max + padding)
+
+            axes[0].set_ylabel('PSD (dB)')
+
+            legend_handles = [
+                Line2D([0], [0], color=trial_colors[label_name], linewidth=2.0)
+                for _, label_name in ordered_labels
+            ]
+            legend_labels = [_prettify_label(label_name) for _, label_name in ordered_labels]
+
+            fig.suptitle(
+                'Average log PSD by Trial Type (Preferred Channel)',
+                fontsize=base_font_size + 2
+            )
+            fig.legend(
+                legend_handles,
+                legend_labels,
+                loc='upper right',
+                frameon=False,
+                fontsize=base_font_size - 1
+            )
+            plt.tight_layout(rect=[0, 0, 1, 0.92])
+
+            if save_path:
+                os.makedirs(save_path, exist_ok=True)
+                file_name = fig_name or 'preferred_channel_trial_type_psd'
+                fig.savefig(
+                    os.path.join(save_path, file_name + '.png'),
+                    dpi=300,
+                    bbox_inches='tight'
+                )
+
+            if show_fig:
+                plt.show()
+            else:
+                plt.close(fig)
         
     @staticmethod
     def plot_all_patients_trials(subjects_lfp_data_dict: Dict[str, List[np.ndarray]],
