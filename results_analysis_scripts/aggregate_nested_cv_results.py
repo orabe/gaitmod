@@ -280,7 +280,30 @@ if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
 
+    experiment_name = "hparams_rf_raw"
+    experiment_name = "hparams_rf_beta"
+    experiment_name = "hparams_rf_hctsa"
+    
+    experiment_name = "hparams_logreg_raw"
+    experiment_name = "hparams_logreg_beta"
+    experiment_name = "hparams_logreg_hctsa"
+    
+    experiment_name = "hparams_svm_raw"
+    experiment_name = "hparams_svm_beta"
+    experiment_name = "hparams_svm_hctsa"
+    
+    experiment_name = "hparams_xgb_raw"
+    experiment_name = "hparams_xgb_beta"
+    experiment_name = "hparams_xgb_hctsa"
+    
+    experiment_name = "hparams_test_lstm_hctsa"
+    experiment_name = "hparams_test_lstm_raw"
+    experiment_name = "hparams_test_lstm_beta"
+    
     experiment_name = "hparams_lstm_roc_auc_refit"
+    experiment_name = "hparams_lstm_baseline"
+    
+    
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
