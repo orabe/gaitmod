@@ -2,42 +2,40 @@
 """
 Analyze and visualize HCTSA class distributions, feature means, and variances.
 
-How to run:
-1. Ensure the HCTSA segment cache (default: data/hctsa_segments) and channel
-   selection summary (default: results/channel_selection_summary.json) exist.
-2. Adjust the defaults near the top of this file if you need different paths or
-   selection method names.
-3. Run `python examples/LFP/classification_experiments/run_univariate_analysis.py`.
+Configuration lives inside `main()`. Adjust the base path / settings before running.
 """
 
 import json
 import logging
 import os
-import re
-from math import ceil
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict
 
-import matplotlib.pyplot as plt
 import numpy as np
+from math import ceil
 import pandas as pd
+import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats as sp_stats
-from sklearn.feature_selection import f_classif, mutual_info_classif
-from sklearn.metrics import (average_precision_score, precision_recall_curve,
-                             roc_auc_score, roc_curve)
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_recall_curve
+from sklearn.feature_selection import mutual_info_classif, f_classif
 
-from examples.hctsa_segments import HCTSASegmentCache
+try:
+    import h5py
+except ImportError:  # pragma: no cover
+    h5py = None
 
 
 # --------------------------------------------------------------------------
 # Defaults
 # --------------------------------------------------------------------------
+CHANNEL_NAME = 'channel_0-LFP_L0-3'
+DEFAULT_BASE_PATH = Path(os.path.join("../hctsa", CHANNEL_NAME))
+DEFAULT_NORMALIZED = False
 DEFAULT_OUTPUT_DIR = Path("results") / "class_stats"
 DEFAULT_FEATURE_NORMALIZATION = True
 DEFAULT_CLIP_PERCENTILES = (1, 99)
-DEFAULT_TOP_FEATURES_FOR_PLOTS = 10
+DEFAULT_TOP_FEATURES_FOR_PLOTS = 100
 DEFAULT_VERBOSE = 1
 DEFAULT_NORMALITY_ALPHA = 0.05
 DEFAULT_VARIANCE_ALPHA = 0.05
@@ -47,20 +45,6 @@ DEFAULT_UNIVARIATE_MISSING_THRESHOLD = 0.0
 DEFAULT_UNIVARIATE_RANDOM_STATE = 42
 DEFAULT_UNIVARIATE_TOP_K = 25
 DEFAULT_VIS_TOP_K = 10
-DEFAULT_VIS_WORST_K = 10
-DEFAULT_SEGMENT_CACHE_DIR = Path("data/beta_segments")
-DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/channel_selection_summary.json")
-DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
-MAX_FEATURE_NAME_LENGTH = 48
-THRESHOLD_LINE_WIDTH = 2.0
-THRESHOLD_LINE_COLOR = 'black'
-# DEFAULT_COMBINED_FIGURE_METRIC = 'abs_mean_diff'
-DEFAULT_COMBINED_FIGURE_METRIC = 'univ_roc_auc'
-ASCENDING_METRICS = {
-    'univ_anova_p',
-    'univ_mann_whitney_p',
-    'univ_brunner_munzel_p',
-}
 
 METRICS = [
     {
@@ -107,191 +91,41 @@ METRICS = [
         'rank_column': 'univ_cliffs_delta_abs'
     },
 ]
-METRIC_TITLE_MAP = {cfg['column']: cfg['title'] for cfg in METRICS}
-METRIC_TITLE_MAP.update({
-    'abs_mean_diff': "|Mean Difference|",
-    'mean_diff': "Mean Difference",
-    'var_ratio': "Variance Ratio",
-    'log_var_ratio': "Log Variance Ratio",
-})
-RANK_TITLE_MAP = {
-    'anova_rank': METRIC_TITLE_MAP.get('univ_anova_p', 'ANOVA'),
-    'mi_rank': METRIC_TITLE_MAP.get('univ_mutual_info', 'Mutual Information'),
-    'mw_rank': METRIC_TITLE_MAP.get('univ_mann_whitney_p', 'Mann–Whitney'),
-    'bm_rank': METRIC_TITLE_MAP.get('univ_brunner_munzel_p', 'Brunner–Munzel'),
-    'roc_rank': METRIC_TITLE_MAP.get('univ_roc_auc', 'ROC-AUC'),
-    'pr_rank': METRIC_TITLE_MAP.get('univ_pr_auc', 'PR-AUC'),
-    'cliffs_rank': METRIC_TITLE_MAP.get('univ_cliffs_delta', "Cliff's Delta"),
-}
-METRIC_COLORS = sns.color_palette('tab10', len(METRICS))
-for idx, metric_cfg in enumerate(METRICS):
-    metric_cfg['color'] = METRIC_COLORS[idx]
 
-def describe_selection_method(metric_key: str) -> str:
-    if not metric_key:
-        return "Unknown metric"
-    if metric_key in METRIC_TITLE_MAP:
-        return METRIC_TITLE_MAP[metric_key]
-    if metric_key in RANK_TITLE_MAP:
-        return RANK_TITLE_MAP[metric_key]
-    return metric_key.replace('_', ' ').title()
+# --------------------------------------------------------------------------
+# Data loading utilities (adapted from training pipeline)
+# --------------------------------------------------------------------------
+def load_hctsa_data(base_path: Path, normalized: bool = True, verbose: int = 1):
+    if h5py is None:
+        raise ImportError("h5py is required to load HCTSA data")
 
-def clip_feature_name(name: str, max_len: int = MAX_FEATURE_NAME_LENGTH) -> str:
-    """Clip long feature names while trying to preserve suffix context."""
-    text = str(name)
-    if len(text) <= max_len:
-        return text
-    if max_len <= 6:
-        return text[:max_len]
-    prefix_len = max_len - 6
-    prefix = text[:prefix_len]
-    suffix = text[-3:]
-    return f"{prefix}...{suffix}"
+    suffix = '_N' if normalized else ''
+    mat_file = base_path / f"HCTSA{suffix}.mat"
+    csv_path = base_path / "data" / "hctsa_output_data"
 
+    with h5py.File(mat_file, 'r') as f:
+        TS_DataMat = f['/TS_DataMat'][()].T
 
-def describe_feature_scope(selected_count: int, total_count: int) -> str:
-    """Return a human-readable label describing feature coverage."""
-    if total_count <= 0:
-        return "All features"
-    if selected_count >= total_count:
-        return "All features"
-    return f"Top {selected_count} of {total_count} features"
+    timeseries = pd.read_csv(csv_path / f"TimeSeries{suffix}.csv")
+    operations = pd.read_csv(csv_path / f"Operations{suffix}.csv")
 
+    group_values = timeseries['Group'].unique()
+    gait_mod_names = {'gait_modulation', 'gaitMod', 'gait_mod', 'GM'}
+    found = [g for g in gait_mod_names if g in group_values]
 
-def sanitize_path_component(text: str) -> str:
-    """Convert human-readable labels into filesystem-safe components."""
-    if not text:
-        return "default"
-    normalized = text.strip().lower()
-    normalized = re.sub(r"[^a-z0-9._-]+", "_", normalized)
-    normalized = re.sub(r"_+", "_", normalized).strip("_")
-    return normalized or "default"
+    if found:
+        labels = np.where(timeseries['Group'].isin(found), 1, 0)
+        positive_class = found
+    else:
+        labels = np.where(timeseries['Group'] == group_values[0], 1, 0)
+        positive_class = group_values[0]
 
-
-def _canonical_channel_label(channel_name: str) -> str:
-    """
-    Strip descriptive suffixes (e.g., '-LFP_L0-3') from a channel label and
-    return the canonical 'channel_X' form expected by the segment cache.
-    """
-    if not channel_name:
-        return ''
-    match = re.search(r"(channel_\d+)", str(channel_name))
-    return match.group(1) if match else ''
-
-
-def _extract_canonical_channel(entry: Dict) -> str:
-    """
-    Resolve the canonical channel label from a channel-selection entry.
-
-    Supports multiple formats:
-      - 'best_channel' already contains 'channel_X'
-      - 'best_channel' contains descriptive suffix (e.g., 'channel_2-LFP_L0-2')
-      - 'best_channel_index' to infer channel_X
-      - 'best_channel_name' paired with 'channel_name_map'
-    """
-    best_channel = entry.get('best_channel')
-    canonical = _canonical_channel_label(best_channel)
-    if canonical:
-        return canonical
-
-    if 'best_channel_index' in entry and entry['best_channel_index'] is not None:
-        try:
-            return f"channel_{int(entry['best_channel_index'])}"
-        except (TypeError, ValueError):
-            pass
-
-    channel_name_map = entry.get('channel_name_map') or {}
-    best_name = entry.get('best_channel_name') or entry.get('best_channel')
-    if best_name and channel_name_map:
-        for ch_key, ch_name in channel_name_map.items():
-            if ch_name == best_name:
-                canonical = _canonical_channel_label(ch_key)
-                return canonical or ch_key
-
-    raise ValueError(f"Unable to determine canonical channel for entry: {entry}")
-
-
-def infer_segment_type_label(segment_cache_dir: Path) -> str:
-    """
-    Generate a human-readable label describing the segment cache type.
-    """
-    if not segment_cache_dir:
-        return "Segments"
-    cache_name = Path(segment_cache_dir).name.lower()
-    if "hctsa" in cache_name:
-        return "HCTSA segments"
-    if "raw" in cache_name:
-        return "Raw segments"
-    if "beta" in cache_name:
-        return "Beta-band segments"
-    return f"{Path(segment_cache_dir).name} segments"
-
-
-def format_channel_selection_label(method: str) -> str:
-    """
-    Create a short descriptor for the channel-selection method.
-    """
-    if not method:
-        return "Channel selection"
-    method_key = method.lower()
-    mapping = {
-        'logreg': "LogReg channel selection",
-        'logreg_channel_selection': "LogReg channel selection",
-        'logregf1': "LogReg channel selection",
-        'beta': "Beta-peak channel selection",
-        'beta_channel_selection': "Beta-peak channel selection",
-        'beta_peak': "Beta-peak channel selection",
-    }
-    if method_key in mapping:
-        return mapping[method_key]
-    cleaned = method_key.replace('_', ' ').strip()
-    return cleaned.title() if cleaned else method
-
-
-def load_subject_channel_map_from_summary(summary_path: Path, method: str, verbose: int = 1) -> Dict[str, str]:
-    """
-    Build the subject -> channel map from a combined channel selection summary.
-    """
-    summary_path = Path(summary_path)
-    if not summary_path.exists():
-        raise FileNotFoundError(f"Channel selection summary not found at {summary_path}")
-
-    with summary_path.open('r', encoding='utf-8') as fp:
-        summary = json.load(fp)
-
-    method_data = summary.get(method)
-    if not method_data:
-        available = ", ".join(summary.keys())
-        raise ValueError(
-            f"Channel selection method '{method}' not found in summary file. "
-            f"Available sections: {available}"
-        )
-
-    subject_map = {}
-    for subject, entry in method_data.items():
-        canonical = _extract_canonical_channel(entry)
-        subject_map[subject] = canonical
     if verbose >= 1:
-        logging.info(
-            "[CHANNELS] Loaded subject-specific channel map using method '%s' (%d subjects)",
-            method,
-            len(subject_map)
-        )
-    return subject_map
+        logging.info(f"[LOAD] Features: {TS_DataMat.shape}, "
+                     f"class counts: {np.bincount(labels)}, "
+                     f"positive={positive_class}")
 
-
-def load_subject_specific_data(cache_dir: Path, subject_channel_map: Dict[str, str], verbose: int = 1):
-    """
-    Load HCTSA data from the segment cache using per-subject channel assignments.
-    """
-    cache = HCTSASegmentCache(cache_dir)
-    if verbose >= 1:
-        logging.info(
-            "[LOAD] Using subject-specific channels from cache %s: %s",
-            cache_dir,
-            ", ".join(f"{ch}:{count}" for ch, count in pd.Series(subject_channel_map.values()).value_counts().items())
-        )
-    return cache.load_subject_channel_data(subject_channel_map)
+    return TS_DataMat, timeseries, operations, labels
 
 
 def filter_features(X, operations_df=None, variance_threshold=1e-8,
@@ -419,7 +253,6 @@ def compute_class_statistics(X, labels, feature_names=None):
         summary_df['feature_name'] = feature_names
     else:
         summary_df['feature_name'] = summary_df['feature_index'].astype(str)
-    summary_df['feature_name_display'] = summary_df['feature_name'].apply(clip_feature_name)
 
     return stats, summary_df
 
@@ -432,14 +265,10 @@ def clip_series(series, percentiles):
     return series.clip(lower, upper)
 
 
-def select_top_features(summary_df, top_k, metric='abs_mean_diff', ascending=False):
+def select_top_features(summary_df, top_k):
     if top_k is None or top_k <= 0 or top_k >= len(summary_df):
         return summary_df
-    if metric not in summary_df.columns:
-        metric = 'abs_mean_diff'
-    if ascending:
-        return summary_df.nsmallest(top_k, metric)
-    return summary_df.nlargest(top_k, metric)
+    return summary_df.nlargest(top_k, 'abs_mean_diff')
 
 
 def compute_discriminative_metrics(X, labels):
@@ -544,37 +373,49 @@ def compute_brunner_munzel_scores(X, y):
 
 
 def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
-                          clip_percentiles=None, top_k=None, title_suffix: str = "",
-                          total_features: int = None, top_metric='abs_mean_diff'):
+                          clip_percentiles=None, top_k=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     classes = sorted(stats.keys())
-    ascending = top_metric in ASCENDING_METRICS
-    summary_for_plots = select_top_features(summary_df, top_k, metric=top_metric, ascending=ascending)
-    selected_count = len(summary_for_plots)
-    total_count = total_features if total_features is not None else len(summary_df)
-    scope_label = describe_feature_scope(selected_count, total_count)
-    selection_label = describe_selection_method(top_metric)
-    count_label = f"n_features={selected_count}"
-    selection_text = f"selection: {selection_label}" if top_k is not None else "selection: all features"
+    summary_for_plots = select_top_features(summary_df, top_k)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(3, 2, figsize=(18, 16))
     ax = axes.flatten()
 
-    class_label_map = {
-        'mean_class0': 'Normal walking',
-        'mean_class1': 'Gait modulation'
-    }
+    counts = [stats[cls]['count'] for cls in classes]
+    ax[0].bar([str(cls) for cls in classes], counts, color='#1f77b4')
+    ax[0].set_title("Class Distribution")
+    ax[0].set_ylabel("Number of Samples")
+
+    mean_diff_vals = summary_for_plots['mean_diff']
+    if clip_percentiles:
+        mean_diff_vals = clip_series(mean_diff_vals, clip_percentiles)
+    ax[1].hist(mean_diff_vals, bins=60, color='#ff7f0e')
+    ax[1].set_title("Distribution of Mean Differences (class1 - class0)")
+    ax[1].set_xlabel("Mean Difference")
+
+    abs_mean_vals = summary_for_plots['abs_mean_diff']
+    if clip_percentiles:
+        abs_mean_vals = clip_series(abs_mean_vals, clip_percentiles)
+    ax[2].hist(abs_mean_vals, bins=60, color='#2ca02c')
+    ax[2].set_title("Absolute Mean Difference")
+    ax[2].set_xlabel("|Mean Difference|")
+
+    log_var_vals = summary_for_plots['log_var_ratio']
+    if clip_percentiles:
+        log_var_vals = clip_series(log_var_vals, clip_percentiles)
+    ax[3].hist(log_var_vals, bins=60, color='#9467bd')
+    ax[3].set_title("Log10 Variance Ratio (class1 / class0)")
+    ax[3].set_xlabel("log10(var_ratio)")
+
+    for axis in ax[:4]:
+        axis.grid(alpha=0.3)
+
     long_df = summary_for_plots.melt(
         id_vars=['feature_index'],
-        value_vars=list(class_label_map.keys()),
+        value_vars=['mean_class0', 'mean_class1'],
         var_name='class',
         value_name='feature_mean'
     )
-    class_mean_values = {
-        class_label_map['mean_class0']: float(summary_for_plots['mean_class0'].mean()),
-        class_label_map['mean_class1']: float(summary_for_plots['mean_class1'].mean())
-    }
-    long_df['class'] = long_df['class'].map(class_label_map)
     if clip_percentiles:
         long_df['feature_mean'] = clip_series(long_df['feature_mean'], clip_percentiles)
 
@@ -584,59 +425,102 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         y='feature_mean',
         inner=None,
         palette='Pastel1',
-        ax=ax[0]
+        ax=ax[4]
     )
     sns.boxplot(
         data=long_df,
         x='class',
         y='feature_mean',
-        width=0.1,
-        boxprops=dict(facecolor='none', edgecolor='black', linewidth=1.2),
-        whiskerprops=dict(color='black', linewidth=1.0),
-        capprops=dict(color='black', linewidth=1.0),
-        medianprops=dict(color='black', linewidth=1.2),
-        showfliers=True,
-        flierprops=dict(marker='o', markerfacecolor='black', markeredgecolor='black', markersize=4, alpha=0.6),
-        ax=ax[0]
+        width=0.2,
+        boxprops=dict(alpha=0.6),
+        ax=ax[4]
     )
-    ax[0].set_title(f"Feature Mean Distribution per Class\n({selection_text}; {count_label})", fontsize=11)
-    ax[0].set_xlabel("Class")
-    ax[0].set_ylabel("Feature Mean")
-    ordered_labels = [class_label_map['mean_class0'], class_label_map['mean_class1']]
-    for idx, cls in enumerate(ordered_labels):
-        mean_val = class_mean_values.get(cls)
-        if mean_val is None or not np.isfinite(mean_val):
-            continue
-        ax[0].plot(
-            [idx - 0.2, idx + 0.2],
-            [mean_val, mean_val],
-            color='red',
-            linewidth=2,
-            solid_capstyle='butt'
-        )
-    ax[0].plot([], [], color='red', linewidth=2, label='Mean (μ)')
-    ax[0].legend(loc='upper right', fontsize=9)
+    ax[4].set_title("Feature Mean Distribution per Class")
+    ax[4].set_xlabel("Class")
+    ax[4].set_ylabel("Feature Mean")
 
     for cls in sorted(stats.keys()):
         series = summary_for_plots[f"mean_class{cls}"]
         if clip_percentiles:
             series = clip_series(series, clip_percentiles)
-        label = 'Gait modulation' if cls == 1 else 'Normal walking'
-        sns.kdeplot(series, label=label, linewidth=2, ax=ax[1])
-    ax[1].set_title(f"Feature Mean Density per Class\n({selection_text}; {count_label})", fontsize=11)
-    ax[1].set_xlabel("Feature Mean")
-    ax[1].set_ylabel("Density")
-    ax[1].legend()
+        sns.kdeplot(series, label=f"class {cls}", linewidth=2, ax=ax[5])
+    ax[5].set_title("Feature Mean Density per Class")
+    ax[5].set_xlabel("Feature Mean")
+    ax[5].set_ylabel("Density")
+    ax[5].legend()
 
-    full_title = f"Feature Mean Comparisons\n({scope_label}; {selection_text}; {count_label})"
-    if title_suffix:
-        full_title = f"{full_title}\n{title_suffix}"
-    fig.suptitle(full_title, fontsize=14)
+    fig.suptitle("Class Distribution, Means, Variances, and Mean Distributions", fontsize=18)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     combined_path = output_dir / f"{base_name}_combined.png"
     fig.savefig(combined_path, dpi=200)
 
     return combined_path
+
+
+def create_statistical_summary(summary_df, output_dir: Path, base_name: str,
+                               top_k=30):
+    df = summary_df.replace([np.inf, -np.inf], np.nan)
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    ax = axes.flatten()
+
+    ax[0].hist(df['abs_mean_diff'].dropna(), bins=60, color='#1f77b4')
+    ax[0].set_title("|Mean Difference|")
+    ax[0].set_xlabel("Absolute mean difference")
+
+    ax[1].hist(df['log_var_ratio'].dropna(), bins=60, color='#ff7f0e')
+    ax[1].set_title("Log10 Variance Ratio (class1 / class0)")
+    ax[1].set_xlabel("log10(var_ratio)")
+
+    ax[2].hist(df['abs_skew_max'].dropna(), bins=60, color='#2ca02c')
+    ax[2].set_title("Max |Skewness| Across Classes")
+    ax[2].set_xlabel("Absolute skewness")
+
+    ax[3].scatter(
+        df['abs_mean_diff'],
+        df['neg_log_normal_p'],
+        s=5,
+        alpha=0.3,
+        color='#9467bd'
+    )
+    ax[3].set_title("|Mean Diff| vs. -log10 Normality p-value")
+    ax[3].set_xlabel("|Mean Difference|")
+    ax[3].set_ylabel("-log10 normality p (worst class)")
+
+    ax[4].scatter(
+        df['abs_mean_diff'],
+        df['neg_log_levene_p'],
+        s=5,
+        alpha=0.3,
+        color='#d62728'
+    )
+    ax[4].set_title("|Mean Diff| vs. -log10 Levene p-value")
+    ax[4].set_xlabel("|Mean Difference|")
+    ax[4].set_ylabel("-log10 Levene p (variance equality)")
+
+    ax[5].hist(df['cliffs_delta'].dropna(), bins=60, color='#8c564b')
+    ax[5].set_title("Cliff's Delta Distribution")
+    ax[5].set_xlabel("Cliff's delta")
+
+    ax[6].hist(df['roc_auc'].dropna(), bins=60, color='#17becf')
+    ax[6].set_title("ROC-AUC Distribution")
+    ax[6].set_xlabel("ROC-AUC")
+
+    ax[7].hist(df['pr_auc'].dropna(), bins=60, color='#bcbd22')
+    ax[7].set_title("PR-AUC Distribution")
+    ax[7].set_xlabel("PR-AUC")
+
+    ax[8].hist(df['mutual_info'].dropna(), bins=60, color='#7f7f7f')
+    ax[8].set_title("Mutual Information Distribution")
+    ax[8].set_xlabel("Mutual information")
+
+    for axis in ax[:8]:
+        axis.grid(alpha=0.3)
+
+    fig.suptitle("Class Statistic Summary for Test Selection", fontsize=18)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    summary_path = output_dir / f"{base_name}_summary.png"
+    fig.savefig(summary_path, dpi=200)
+    return summary_path
 
 
 def run_univariate_feature_analysis(X, operations, labels, config, verbose=1):
@@ -690,7 +574,6 @@ def run_univariate_feature_analysis(X, operations, labels, config, verbose=1):
         'cliffs_delta': 'univ_cliffs_delta'
     }
     df.rename(columns=rename_map, inplace=True)
-    df['feature_name_display'] = df['feature_name'].apply(clip_feature_name)
     df['univ_cliffs_delta_abs'] = df['univ_cliffs_delta'].abs()
     ranking_cols = [
         ('anova_rank', 'univ_anova_p', True),
@@ -771,7 +654,7 @@ def decide_univariate_method(summary_stats):
     return decision, rationale
 
 
-def create_topk_figure(df, top_k, output_path, title_suffix: str = ""):
+def create_topk_figure(df, top_k, output_path):
     cols = 3
     rows = max(1, ceil(len(METRICS) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows))
@@ -784,17 +667,15 @@ def create_topk_figure(df, top_k, output_path, title_suffix: str = ""):
         ax = axes[idx]
         column = metric_cfg['column']
         title = metric_cfg['title']
-        selection_label = describe_selection_method(metric_cfg['column'])
         ascending = metric_cfg['ascending']
         rank_col = metric_cfg.get('rank_column', column)
         selector = df.nsmallest if ascending else df.nlargest
         subset = (
-            selector(top_k, rank_col)[['feature_name', 'feature_name_display', column]]
+            selector(top_k, rank_col)[['feature_name', column]]
             .sort_values(column, ascending=ascending)
         )
-        label_col = 'feature_name_display' if 'feature_name_display' in subset else 'feature_name'
-        ax.barh(subset[label_col], subset[column], color=metric_cfg.get('color', '#1f77b4'))
-        ax.set_title(title, fontsize=12)
+        ax.barh(subset['feature_name'], subset[column], color='#1f77b4')
+        ax.set_title(title)
         ax.set_xlabel(metric_cfg.get('axis_label', 'Score'))
         ax.set_ylabel('')
         ax.tick_params(axis='y', labelsize=8)
@@ -804,23 +685,18 @@ def create_topk_figure(df, top_k, output_path, title_suffix: str = ""):
     for idx in range(len(METRICS), len(axes)):
         axes[idx].axis('off')
 
-    selected_count = min(top_k, len(df))
-    scope_label = describe_feature_scope(selected_count, len(df))
-    title = f'Top {selected_count} Features per Univariate Metric ({scope_label})'
-    if title_suffix:
-        title = f"{title} – {title_suffix}"
-    fig.suptitle(title, fontsize=16)
+    fig.suptitle(f'Top {top_k} Features per Univariate Metric', fontsize=16)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(output_path, dpi=200)
     return output_path
 
 
-def create_distribution_figure(df, output_path, baseline_values=None,
-                               threshold_values=None, title_suffix: str = ""):
+def create_distribution_figure(df, output_path, baseline_values=None, threshold_values=None):
     cols = 3
     rows = max(1, ceil(len(METRICS) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows))
     axes = np.asarray(axes).flatten()
+    colors = sns.color_palette('tab10', max(len(METRICS), 3))
 
     for ax in axes:
         ax.axis('off')
@@ -830,59 +706,36 @@ def create_distribution_figure(df, output_path, baseline_values=None,
         column = metric_cfg['column']
         title = metric_cfg['title']
         series = df[column].dropna()
-        ax.hist(series, bins=40, color=metric_cfg.get('color', '#1f77b4'), alpha=0.85)
+        ax.hist(series, bins=40, color=colors[idx % len(colors)], alpha=0.85)
         ax.set_title(f"{title} Distribution")
         ax.set_xlabel(metric_cfg.get('axis_label', 'Score'))
         ax.set_ylabel('Count')
         ax.grid(alpha=0.3)
         ax.axis('on')
-        legend_handles = []
-        legend_labels = []
         if baseline_values:
             baseline = baseline_values.get(column)
             if baseline is not None and np.isfinite(baseline):
-                baseline_line = ax.axvline(
-                    baseline,
-                    color=THRESHOLD_LINE_COLOR,
-                    linestyle=':',
-                    linewidth=THRESHOLD_LINE_WIDTH
-                )
-                legend_handles.append(baseline_line)
-                legend_labels.append(f"Baseline = {baseline:.3f}")
+                ax.axvline(baseline, color='black', linestyle='--', linewidth=1.5)
         if threshold_values:
             threshold = threshold_values.get(column)
             if threshold is not None and np.isfinite(threshold):
-                threshold_line = ax.axvline(
-                    threshold,
-                    color=THRESHOLD_LINE_COLOR,
-                    linestyle='--',
-                    linewidth=THRESHOLD_LINE_WIDTH
-                )
-                legend_handles.append(threshold_line)
-                legend_labels.append(f"Threshold = {threshold:.3f}")
-        if legend_handles:
-            ax.legend(legend_handles, legend_labels, fontsize=8)
+                ax.axvline(threshold, color='red', linestyle='-.', linewidth=1.5)
 
     for idx in range(len(METRICS), len(axes)):
         axes[idx].axis('off')
 
-    scope_label = describe_feature_scope(len(df), len(df))
-    title = f'Score Distributions per Univariate Metric ({scope_label})'
-    if title_suffix:
-        title = f"{title} – {title_suffix}"
-    fig.suptitle(title, fontsize=16)
+    fig.suptitle('Score Distributions per Univariate Metric', fontsize=16)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(output_path, dpi=200)
     return output_path
 
 
-def create_intersection_figure(df, top_k, output_path, title_suffix: str = ""):
-    label_col = 'feature_name_display' if 'feature_name_display' in df.columns else 'feature_name'
+def create_intersection_figure(df, top_k, output_path):
     top_sets = {
         metric_cfg['title']: set(
             (df.nsmallest if metric_cfg['ascending'] else df.nlargest)(
                 top_k, metric_cfg.get('rank_column', metric_cfg['column'])
-            )[label_col]
+            )['feature_name']
         )
         for metric_cfg in METRICS
     }
@@ -911,12 +764,7 @@ def create_intersection_figure(df, top_k, output_path, title_suffix: str = ""):
                 color='black' if matrix[i, j] < top_k / 2 else 'white'
             )
 
-    selected_count = min(top_k, len(df))
-    scope_label = describe_feature_scope(selected_count, len(df))
-    chart_title = f'Intersection Counts\n({scope_label}; selection: per-metric top {top_k})'
-    if title_suffix:
-        chart_title = f"{chart_title}\n{title_suffix}"
-    ax.set_title(chart_title, fontsize=12)
+    ax.set_title(f'Intersection Counts of Top {top_k} Features')
     fig.colorbar(im, ax=ax, label='Overlap Count')
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
@@ -930,20 +778,15 @@ def print_univariate_summary(df, top_k):
         title = metric_cfg['title']
         selector = df.nsmallest if metric_cfg['ascending'] else df.nlargest
         rank_col = metric_cfg.get('rank_column', column)
-        display_col = 'feature_name_display' if 'feature_name_display' in df.columns else 'feature_name'
-        subset = selector(top_k, rank_col)[[display_col, column]].rename(columns={display_col: 'Feature'})
+        subset = selector(top_k, rank_col)[['feature_name', column]]
         logging.info(f"\n{title}\n{'-' * len(title)}\n{subset.to_string(index=False, header=['Feature', metric_cfg.get('axis_label', 'Score')])}")
 
 
-def create_curve_figure(X, labels, df, rank_column, top_k, curve_type, output_path,
-                        baseline=None, title_suffix: str = ""):
+def create_curve_figure(X, labels, df, rank_column, top_k, curve_type, output_path, baseline=None):
     if rank_column not in df:
         raise ValueError(f"Rank column '{rank_column}' missing from dataframe")
 
     top_features = df.nsmallest(top_k, rank_column)
-    display_col = 'feature_name_display' if 'feature_name_display' in top_features.columns else 'feature_name'
-    scope_label = describe_feature_scope(min(top_k, len(df)), len(df))
-    selection_label = describe_selection_method(rank_column)
     fig, ax = plt.subplots(figsize=(8, 6))
     plotted = 0
 
@@ -960,12 +803,12 @@ def create_curve_figure(X, labels, df, rank_column, top_k, curve_type, output_pa
         if curve_type == 'roc':
             fpr, tpr, _ = roc_curve(y, x)
             auc = roc_auc_score(y, x)
-            ax.plot(fpr, tpr, label=f"{row[display_col]} (AUC={auc:.2f})")
+            ax.plot(fpr, tpr, label=f"{row['feature_name']} (AUC={auc:.2f})")
             plotted += 1
         elif curve_type == 'pr':
             precision, recall, _ = precision_recall_curve(y, x)
             ap = average_precision_score(y, x)
-            ax.plot(recall, precision, label=f"{row[display_col]} (AP={ap:.2f})")
+            ax.plot(recall, precision, label=f"{row['feature_name']} (AP={ap:.2f})")
             plotted += 1
         else:
             raise ValueError(f"Unsupported curve type: {curve_type}")
@@ -978,25 +821,13 @@ def create_curve_figure(X, labels, df, rank_column, top_k, curve_type, output_pa
             ax.plot([0, 1], [0, 1], linestyle='--', color='gray', alpha=0.5)
             ax.set_xlabel('False Positive Rate')
             ax.set_ylabel('True Positive Rate')
-            title = f'ROC Curves for Top {top_k} Features'
+            ax.set_title(f'ROC Curves for Top {top_k} Features')
         else:
             ax.set_xlabel('Recall')
             ax.set_ylabel('Precision')
-            title = f'Precision-Recall Curves for Top {top_k} Features'
-            ax.set_ylim(0, 1)
+            ax.set_title(f'Precision-Recall Curves for Top {top_k} Features')
             if baseline is not None:
-                ax.axhline(
-                    baseline,
-                    color=THRESHOLD_LINE_COLOR,
-                    linestyle='--',
-                    linewidth=THRESHOLD_LINE_WIDTH,
-                    label=f"Baseline = {baseline:.3f}"
-                )
-        detail_line = f"{scope_label}; selection: {selection_label}"
-        title = f"{title}\n({detail_line})"
-        if title_suffix:
-            title = f"{title}\n{title_suffix}"
-        ax.set_title(title, fontsize=12)
+                ax.axhline(baseline, color='black', linestyle='--', linewidth=1.2)
         ax.legend(fontsize=8, loc='lower right' if curve_type == 'roc' else 'upper right')
 
     ax.grid(alpha=0.3)
@@ -1005,78 +836,18 @@ def create_curve_figure(X, labels, df, rank_column, top_k, curve_type, output_pa
     return output_path
 
 
-def create_worst_curve_figure(X, labels, df, rank_column, worst_k, curve_type, output_path,
-                              baseline=None, title_suffix: str = ""):
-    if rank_column not in df:
-        raise ValueError(f"Rank column '{rank_column}' missing from dataframe")
-
-    worst_features = df.nlargest(worst_k, rank_column)
-    display_col = 'feature_name_display' if 'feature_name_display' in worst_features.columns else 'feature_name'
-    scope_label = describe_feature_scope(min(worst_k, len(df)), len(df))
-    selection_label = describe_selection_method(rank_column)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    plotted = 0
-
-    for _, row in worst_features.iterrows():
-        idx = int(row['feature_index'])
-        column = X[:, idx]
-        mask = np.isfinite(column)
-        if mask.sum() < 5:
-            continue
-        y = labels[mask]
-        x = column[mask]
-        if len(np.unique(y)) < 2:
-            continue
-        if curve_type == 'pr':
-            precision, recall, _ = precision_recall_curve(y, x)
-            ap = average_precision_score(y, x)
-            ax.plot(recall, precision, label=f"{row[display_col]} (AP={ap:.2f})")
-            plotted += 1
-        else:
-            raise ValueError(f"Unsupported curve type for worst plot: {curve_type}")
-
-    if plotted == 0:
-        ax.text(0.5, 0.5, "Insufficient data to plot curves",
-                ha='center', va='center', transform=ax.transAxes)
-    else:
-        ax.set_xlabel('Recall')
-        ax.set_ylabel('Precision')
-        ax.set_ylim(0, 1)
-        detail_line = f"{scope_label}; selection: {selection_label}"
-        title = f'Precision-Recall Curves – Worst {min(worst_k, len(df))}\n({detail_line})'
-        if baseline is not None:
-            ax.axhline(
-                baseline,
-                color=THRESHOLD_LINE_COLOR,
-                linestyle='--',
-                linewidth=THRESHOLD_LINE_WIDTH,
-                label=f"Baseline = {baseline:.3f}"
-            )
-        if title_suffix:
-            title = f"{title}\n{title_suffix}"
-        ax.set_title(title, fontsize=12)
-        ax.legend(fontsize=8, loc='upper right')
-
-    ax.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=200)
-    return output_path
-
-
-def create_correlation_matrix(X, df, rank_column, top_k, output_path, title_suffix: str = ""):
+def create_correlation_matrix(X, df, rank_column, top_k, output_path):
     if rank_column not in df:
         raise ValueError(f"Rank column '{rank_column}' missing from dataframe")
 
     top_features = df.nsmallest(top_k, rank_column)
     feature_indices = top_features['feature_index'].astype(int).values
     feature_names = top_features['feature_name'].values
-    display_map = dict(zip(top_features['feature_name'], top_features.get('feature_name_display', top_features['feature_name'])))
 
     corr_data = pd.DataFrame(X[:, feature_indices], columns=feature_names)
     corr_matrix = corr_data.corr(method='pearson')
     order = corr_matrix.abs().sum(axis=0).sort_values(ascending=False).index
     corr_matrix = corr_matrix.loc[order, order]
-    ordered_display = [display_map.get(col, col) for col in order]
 
     fig, ax = plt.subplots(figsize=(10, 8))
     sns.heatmap(
@@ -1087,13 +858,7 @@ def create_correlation_matrix(X, df, rank_column, top_k, output_path, title_suff
         square=True,
         cbar_kws={'label': 'Pearson Correlation'}
     )
-    scope_label = describe_feature_scope(min(top_k, len(df)), len(df))
-    title = f'Correlation Matrix – Top {min(top_k, len(df))} (rank: {rank_column}) ({scope_label})'
-    if title_suffix:
-        title = f"{title} – {title_suffix}"
-        ax.set_title(title, fontsize=12)
-    ax.set_xticklabels(ordered_display, rotation=45, ha='right')
-    ax.set_yticklabels(ordered_display, rotation=0)
+    ax.set_title(f'Correlation Matrix – Top {top_k} (rank: {rank_column})')
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     return output_path
@@ -1108,19 +873,17 @@ def main():
     )
 
     args = SimpleNamespace(
+        base_path=DEFAULT_BASE_PATH,
+        normalized=DEFAULT_NORMALIZED,
         output_dir=DEFAULT_OUTPUT_DIR,
         verbose=DEFAULT_VERBOSE,
         feature_normalization=DEFAULT_FEATURE_NORMALIZATION,
         clip_percentiles=DEFAULT_CLIP_PERCENTILES,
         top_features_for_plots=DEFAULT_TOP_FEATURES_FOR_PLOTS,
-        combined_figure_metric=DEFAULT_COMBINED_FIGURE_METRIC,
         normality_alpha=DEFAULT_NORMALITY_ALPHA,
         variance_alpha=DEFAULT_VARIANCE_ALPHA,
         mean_diff_threshold=DEFAULT_MEAN_DIFF_THRESHOLD,
-        univariate=univariate_config,
-        segment_cache_dir=DEFAULT_SEGMENT_CACHE_DIR,
-        channel_selection_summary=DEFAULT_CHANNEL_SELECTION_SUMMARY,
-        channel_selection_method=DEFAULT_CHANNEL_SELECTION_METHOD,
+        univariate=univariate_config
     )
 
     logging.basicConfig(
@@ -1128,14 +891,9 @@ def main():
         format="%(asctime)s - %(levelname)s - %(message)s"
     )
 
-    subject_channel_map = load_subject_channel_map_from_summary(
-        args.channel_selection_summary,
-        args.channel_selection_method,
-        verbose=args.verbose
-    )
-    X, timeseries, operations, labels = load_subject_specific_data(
-        args.segment_cache_dir,
-        subject_channel_map,
+    X, timeseries, operations, labels = load_hctsa_data(
+        base_path=args.base_path,
+        normalized=args.normalized,
         verbose=args.verbose
     )
     positive_prevalence = float(np.mean(labels))
@@ -1144,22 +902,6 @@ def main():
     if args.feature_normalization:
         logging.info("[STATS] Applying per-feature z-score normalization")
         X = normalize_features(X)
-
-    segment_type_label = infer_segment_type_label(args.segment_cache_dir)
-    channel_selection_label = format_channel_selection_label(args.channel_selection_method)
-    title_suffix = f"{segment_type_label} | {channel_selection_label}"
-    combined_top_k = args.top_features_for_plots
-    if "hctsa" not in segment_type_label.lower():
-        combined_top_k = None
-    segment_dir = sanitize_path_component(segment_type_label)
-    channel_dir = sanitize_path_component(channel_selection_label)
-    topk_label = combined_top_k if combined_top_k not in (None, 0) else 'all'
-    metric_dir = sanitize_path_component(args.combined_figure_metric)
-    topk_dir = f"topk_{topk_label}_{metric_dir}"
-    run_output_dir = Path(args.output_dir) / segment_dir / channel_dir / topk_dir
-    run_output_dir.mkdir(parents=True, exist_ok=True)
-    vis_dir = run_output_dir / "univariate_analysis"
-    vis_dir.mkdir(parents=True, exist_ok=True)
 
     if operations is not None and 'Name' in operations.columns:
         feature_names = operations['Name']
@@ -1171,19 +913,23 @@ def main():
 
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
     filename_prefix = "class_stats"
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     logging.info("[STEP] Creating class statistics visualizations")
     combined_path = create_visualizations(
         stats,
         summary_df,
-        vis_dir,
+        args.output_dir,
         filename_prefix,
         clip_percentiles=args.clip_percentiles,
-        top_k=combined_top_k,
-        title_suffix=title_suffix,
-        total_features=len(summary_df),
-        top_metric=args.combined_figure_metric
+        top_k=args.top_features_for_plots
+    )
+    logging.info("[STEP] Creating statistical summary plots")
+    summary_path = create_statistical_summary(
+        summary_df,
+        args.output_dir,
+        filename_prefix,
+        top_k=args.top_features_for_plots
     )
     logging.info("[STEP] Computing summary metrics")
     summary_stats = compute_summary_metrics(
@@ -1210,14 +956,15 @@ def main():
     )
 
     logging.info("[STEP] Generating univariate visualizations")
+    vis_dir = Path(args.output_dir) / "univariate_analysis"
+    vis_dir.mkdir(parents=True, exist_ok=True)
     topk_fig = vis_dir / "univariate_analysis_topk.png"
     dist_fig = vis_dir / "univariate_analysis_distributions.png"
     inter_fig = vis_dir / "univariate_analysis_intersection.png"
     roc_curve_fig = vis_dir / "univariate_analysis_roc_curves.png"
     pr_curve_fig = vis_dir / "univariate_analysis_pr_curves.png"
-    pr_curve_worst_fig = vis_dir / "univariate_analysis_pr_curves_worst.png"
     corr_fig = vis_dir / "univariate_analysis_correlation_matrix.png"
-    create_topk_figure(univariate_df, DEFAULT_VIS_TOP_K, topk_fig, title_suffix=title_suffix)
+    create_topk_figure(univariate_df, DEFAULT_VIS_TOP_K, topk_fig)
     baseline_values = {
         'univ_mutual_info': 0.0,
         'univ_cliffs_delta': 0.0,
@@ -1233,29 +980,22 @@ def main():
         univariate_df,
         dist_fig,
         baseline_values=baseline_values,
-        threshold_values=threshold_values,
-        title_suffix=title_suffix
+        threshold_values=threshold_values
     )
-    create_intersection_figure(univariate_df, DEFAULT_VIS_TOP_K, inter_fig, title_suffix=title_suffix)
-    create_curve_figure(X, labels, univariate_df, 'roc_rank', DEFAULT_VIS_TOP_K, 'roc', roc_curve_fig, title_suffix=title_suffix)
-    create_curve_figure(
-        X, labels, univariate_df, 'pr_rank', DEFAULT_VIS_TOP_K, 'pr', pr_curve_fig,
-        baseline=positive_prevalence, title_suffix=title_suffix
-    )
-    create_worst_curve_figure(
-        X, labels, univariate_df, 'pr_rank', DEFAULT_VIS_WORST_K, 'pr', pr_curve_worst_fig,
-        baseline=positive_prevalence, title_suffix=title_suffix
-    )
-    create_correlation_matrix(X, univariate_df, 'mi_rank', DEFAULT_VIS_TOP_K, corr_fig, title_suffix=title_suffix)
+    create_intersection_figure(univariate_df, DEFAULT_VIS_TOP_K, inter_fig)
+    create_curve_figure(X, labels, univariate_df, 'roc_rank', DEFAULT_VIS_TOP_K, 'roc', roc_curve_fig)
+    create_curve_figure(X, labels, univariate_df, 'pr_rank', DEFAULT_VIS_TOP_K, 'pr', pr_curve_fig, baseline=positive_prevalence)
+    create_correlation_matrix(X, univariate_df, 'mi_rank', DEFAULT_VIS_TOP_K, corr_fig)
     print_univariate_summary(univariate_df, DEFAULT_VIS_TOP_K)
 
-    univariate_for_merge = univariate_df.drop(columns=['feature_name_display'], errors='ignore')
-    merged_df = summary_df.merge(univariate_for_merge, on=['feature_index', 'feature_name'], how='left')
-    per_feature_path = run_output_dir / "analysis_results.csv"
+    merged_df = summary_df.merge(univariate_df, on=['feature_index', 'feature_name'], how='left')
+    per_feature_path = args.output_dir / "analysis_results.csv"
     merged_df.to_csv(per_feature_path, index=False)
 
     summary_results = {
         'timestamp': timestamp,
+        'base_path': str(args.base_path),
+        'normalized': args.normalized,
         'feature_normalization': args.feature_normalization,
         'clip_percentiles': args.clip_percentiles,
         'top_features_for_plots': args.top_features_for_plots,
@@ -1266,41 +1006,31 @@ def main():
             'rationale': rationale,
             'top_features': univariate_summary['top_features'],
         },
-        'data_loading': {
-            'segment_cache_dir': str(args.segment_cache_dir),
-            'channel_selection_summary': str(args.channel_selection_summary),
-            'channel_selection_method': args.channel_selection_method,
-            'segment_type_label': segment_type_label,
-            'channel_selection_label': channel_selection_label,
-            'combined_figure_metric': args.combined_figure_metric,
-            'subject_channel_map': subject_channel_map
-        },
-        'output_directory': str(run_output_dir),
         'visualizations': {
             'combined': str(combined_path),
+            'summary': str(summary_path),
             'topk': str(topk_fig),
             'distributions': str(dist_fig),
             'intersection': str(inter_fig),
             'roc_curves': str(roc_curve_fig),
             'pr_curves': str(pr_curve_fig),
-            'pr_curves_worst': str(pr_curve_worst_fig),
             'correlation_matrix': str(corr_fig),
         }
     }
 
-    summary_json_path = run_output_dir / "analysis_summary.json"
+    summary_json_path = args.output_dir / "analysis_summary.json"
     with open(summary_json_path, 'w') as f:
         json.dump(summary_results, f, indent=2)
 
     logging.info(f"[STATS] Saved per-feature CSV to {per_feature_path}")
     logging.info(f"[STATS] Saved summary JSON to {summary_json_path}")
     logging.info(f"[STATS] Saved combined visualization to {combined_path}")
+    logging.info(f"[STATS] Saved statistical summary plot to {summary_path}")
     logging.info(f"[UNIVARIATE] Saved top-k visualization to {topk_fig}")
     logging.info(f"[UNIVARIATE] Saved distribution visualization to {dist_fig}")
     logging.info(f"[UNIVARIATE] Saved intersection visualization to {inter_fig}")
     logging.info(f"[UNIVARIATE] Saved ROC curve visualization to {roc_curve_fig}")
     logging.info(f"[UNIVARIATE] Saved PR curve visualization to {pr_curve_fig}")
-    logging.info(f"[UNIVARIATE] Saved worst PR curve visualization to {pr_curve_worst_fig}")
     logging.info(f"[UNIVARIATE] Saved correlation matrix visualization to {corr_fig}")
     logging.info(f"[STATS] Final analysis complete")
 

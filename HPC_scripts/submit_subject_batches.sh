@@ -3,7 +3,7 @@
 # Helper script to submit multiple subject batches in sequence.
 
 set -euo pipefail
-CONFIG_NAME="hparams_lstm_roc_auc_refit.json"
+CONFIG_NAME="hparams_test.json"
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BATCH_SCRIPT="HPC_scripts/lstm_outer_subject_batch.sbatch"
@@ -15,13 +15,13 @@ fi
 
 # Define batches. Update this array to match your subject roster.
 declare -a SUBJECT_BATCHES=(
-    # "PW_EM59",
+    "PW_EM59",
     # "PW_FH57",
     # "PW_HK59",
     # "PW_HZ58",
     # "PW_SN61",
     # "PW_SN66",
-    "PW_US68"
+    # "PW_US68"
 )
 
 RUN_ID="${RUN_ID:-$(date +'%Y%m%d_%H%M%S')}"
