@@ -208,7 +208,7 @@ DEFAULT_REFIT_SCORING_METRIC = 'f1'
 DEFAULT_SELECTION_SCORE_METRIC = 'val_tuned_f1'
 DEFAULT_SELECTION_SCORE_AGGREGATION = 'median'
 DEFAULT_FEATURE_PARAMS: Dict[str, Any] = {}
-SUPPORTED_MODEL_TYPES: Tuple[str, ...] = ('lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
+SUPPORTED_MODEL_TYPES: Tuple[str, ...] = ('lstm', 'vanilla_lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
 DEFAULT_MODEL_TYPE = 'lstm'
 
 DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
@@ -3291,6 +3291,184 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
 # ===================================================================
 # LSTM CLASSIFIER SECTION
 # ===================================================================
+class VanillaLSTMClassifier(BaseEstimator, ClassifierMixin):
+    """
+    Vanilla LSTM classifier that operates on raw, unpadded segments.
+
+    Each sample represents a single segment shaped as (timesteps, 1).
+    """
+
+    def __init__(
+        self,
+        hidden_dims=None,
+        activations=None,
+        recurrent_activations=None,
+        dropout=0.2,
+        dense_units=1,
+        dense_activation='sigmoid',
+        optimizer='adam',
+        lr=1e-3,
+        patience=10,
+        epochs=50,
+        batch_size=64,
+        threshold=0.5,
+        loss='binary_crossentropy',
+        use_class_weights=True,
+        callbacks=None,
+    ):
+        self.hidden_dims = hidden_dims or [64, 64]
+        self.activations = activations or ['tanh']
+        self.recurrent_activations = recurrent_activations or ['sigmoid']
+        self.dropout = dropout
+        self.dense_units = dense_units
+        self.dense_activation = dense_activation
+        self.optimizer = optimizer
+        self.lr = lr
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.threshold = threshold
+        self.loss = loss
+        self.use_class_weights = use_class_weights
+        self.callbacks = callbacks or []
+        self.patience = patience
+
+        self.model = None
+        self.input_shape = None
+        self.history_ = []
+        self.classes_ = None
+
+    def _repeat_to_match_layers(self, values, fallback):
+        if not self.hidden_dims:
+            return []
+        if not values:
+            return [fallback] * len(self.hidden_dims)
+        if len(values) == len(self.hidden_dims):
+            return list(values)
+        if len(values) == 1:
+            return list(values) * len(self.hidden_dims)
+        raise ValueError("Activation lists must have length 1 or match hidden_dims.")
+
+    def _prepare_input(self, X):
+        X_array = np.asarray(X, dtype=np.float32)
+        if X_array.ndim == 2:
+            X_array = X_array.reshape(X_array.shape[0], X_array.shape[1], 1)
+        elif X_array.ndim != 3:
+            raise ValueError("VanillaLSTMClassifier expects 2D or 3D inputs.")
+        return X_array
+
+    def _prepare_labels(self, y):
+        y_array = np.asarray(y).reshape(-1, 1)
+        return y_array.astype(np.float32)
+
+    def _calculate_class_weights(self, y):
+        if not self.use_class_weights:
+            return None
+        classes = np.unique(y)
+        if classes.size <= 1:
+            return None
+        try:
+            weights = compute_class_weight(class_weight='balanced', classes=classes, y=y.ravel())
+            return {cls: weight for cls, weight in zip(classes, weights)}
+        except Exception as err:
+            logging.warning(format_warning_message(f"[VANILLA LSTM] Failed to compute class weights: {err}"))
+            return None
+
+    def build_model(self, input_shape):
+        model = Sequential()
+        model.add(Input(shape=input_shape))
+
+        activations = self._repeat_to_match_layers(self.activations, 'tanh')
+        recurrent = self._repeat_to_match_layers(self.recurrent_activations, 'sigmoid')
+
+        for idx, units in enumerate(self.hidden_dims):
+            return_sequences = idx < len(self.hidden_dims) - 1
+            model.add(
+                LSTM(
+                    units,
+                    activation=activations[idx],
+                    recurrent_activation=recurrent[idx],
+                    return_sequences=return_sequences,
+                )
+            )
+            if self.dropout and self.dropout > 0:
+                model.add(Dropout(self.dropout))
+
+        model.add(Dense(self.dense_units, activation=self.dense_activation))
+
+        if self.optimizer == 'adam':
+            optimizer = Adam(learning_rate=self.lr)
+        elif self.optimizer == 'RMSprop':
+            optimizer = RMSprop(learning_rate=self.lr)
+        elif self.optimizer == 'SGD':
+            optimizer = SGD(learning_rate=self.lr)
+        else:
+            raise ValueError(f"Unsupported optimizer: {self.optimizer}")
+
+        model.compile(
+            optimizer=optimizer,
+            loss=self.loss,
+            metrics=[
+                tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+                Precision(name='precision'),
+                Recall(name='recall'),
+                AUC(name='roc_auc', curve='ROC'),
+                AUC(name='pr_auc', curve='PR'),
+            ],
+        )
+        return model
+
+    def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
+        X_prepared = self._prepare_input(X)
+        y_prepared = self._prepare_labels(y)
+        self.input_shape = X_prepared.shape[1:]
+
+        training_callbacks = []
+        if callbacks:
+            training_callbacks.extend(callbacks)
+        training_callbacks.extend(self.callbacks)
+
+        strategy = tf.distribute.MirroredStrategy()
+        with strategy.scope():
+            self.model = self.build_model(self.input_shape)
+
+        class_weight = self._calculate_class_weights(y_prepared)
+        fit_kwargs = {
+            'epochs': self.epochs,
+            'batch_size': self.batch_size,
+            'verbose': 0,
+            'callbacks': training_callbacks,
+        }
+        if class_weight:
+            fit_kwargs['class_weight'] = class_weight
+
+        if validation_data is not None:
+            X_val, y_val = validation_data
+            fit_kwargs['validation_data'] = (self._prepare_input(X_val), self._prepare_labels(y_val))
+
+        history = self.model.fit(X_prepared, y_prepared, **fit_kwargs).history
+        self.history_.append(history)
+        self.classes_ = np.array([0, 1])
+        return self
+
+    def predict_proba(self, X):
+        if self.model is None:
+            raise ValueError("Model has not been fitted yet.")
+        X_prepared = self._prepare_input(X)
+        proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)
+        proba_pos = np.clip(proba_pos, 1e-7, 1 - 1e-7)
+        return np.column_stack([1 - proba_pos, proba_pos])
+
+    def predict(self, X):
+        proba = self.predict_proba(X)[:, 1]
+        return (proba > self.threshold).astype(int)
+
+    def summary(self):
+        if self.model:
+            self.model.summary()
+        else:
+            logging.info("Vanilla LSTM model not built yet.")
+
+
 class LSTMClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, hidden_dims=[64], activations=['tanh'], 
                  recurrent_activations=['sigmoid'],
@@ -4238,7 +4416,7 @@ def build_pipeline(model_type='lstm', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lstm')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lstm', 'vanilla_lstm')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -4256,13 +4434,17 @@ def build_pipeline(model_type='lstm', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    selector = FeatureSelector(x_mask_value=mask_values.get('X_mask', 0.0))
+    selector_mask_value = None if model_type == 'vanilla_lstm' else mask_values.get('X_mask', 0.0)
+    selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     
-    # Scaling step (mask-aware for LSTM)
+    # Scaling step (mask-aware for LSTM variants)
     if model_type == 'lstm':
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
         scaler = MaskAwareScaler(x_mask_value=mask_values.get('X_mask', 0.0), scaler_type='standard')
+    elif model_type == 'vanilla_lstm':
+        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for Vanilla LSTM (no masking applied)")
+        scaler = MaskAwareScaler(x_mask_value=None, scaler_type='standard')
     else:
         logging.info(f"[BUILD_PIPELINE] Adding StandardScaler for non-LSTM model")
         scaler = StandardScaler()
@@ -4330,6 +4512,30 @@ def build_pipeline(model_type='lstm', mask_values=None,
         if outer_fold is not None:
             logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
             logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
+    elif model_type == 'vanilla_lstm':
+        patience_value = 10
+        if params is not None:
+            patience_value = params.get('classifier__patience', 10)
+
+        callbacks, effective_monitor = create_nested_cv_callbacks(
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            hyperparameters=params,
+            inner_validation_subject=inner_validation_subject,
+            patience=patience_value,
+            monitor='f1',
+            save_models=False,
+            progress_frequency=1,
+            has_validation_data=has_validation_data,
+            is_refit=(inner_fold is None),
+        )
+
+        classifier = VanillaLSTMClassifier(callbacks=callbacks)
+        classifier._effective_monitor = effective_monitor
+        classifier._has_validation_data = has_validation_data
+        logging.info(f"[BUILD_PIPELINE] VanillaLSTMClassifier created for raw segments.")
     else:
         # Default to dummy classifier
         logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")
@@ -4507,7 +4713,7 @@ def run_nested_cv_classical(
     data_source=None
 ):
     """
-    Nested cross-validation for classical (non-LSTM) models at the epoch level.
+    Nested cross-validation for epoch-level models (classical + vanilla LSTM).
     
     Each sample corresponds to a single epoch (no padding), preserving LOSO CV
     by grouping epochs by subject.
@@ -6705,6 +6911,27 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source
+        )
+    elif selected_model_type == 'vanilla_lstm':
+        logging.info(f"[MAIN] Starting vanilla LSTM nested CV on raw segments (no padding)")
+        epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_nested_cv_classical(
+            TS_DataMat,
+            labels,
+            epoch_groups,
+            subject_names=subject_names,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters,
+            data_source=feature_source,
         )
     else:
         # Classical models operate per epoch (no padding)

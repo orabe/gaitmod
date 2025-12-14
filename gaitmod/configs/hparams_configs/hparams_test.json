@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_rf_raw",
-    "model_type": "rf",
+    "experiment_name": "hparams_lstm_raw",
+    "model_type": "lstm",
     "feature_data": {
       "source": "raw",
       "segment_cache_dir": "data/raw_segments"
@@ -79,6 +79,25 @@
     ],
     "other_params": {
       "classifier__dropout": [0.5],
+      "classifier__dense_units": [1],
+      "classifier__dense_activation": ["sigmoid"],
+      "classifier__optimizer": ["adam"],
+      "classifier__lr": [0.001],
+      "classifier__patience": [5],
+      "classifier__epochs": [60],
+      "classifier__batch_size": [64],
+      "classifier__threshold": [0.5]
+    }
+  },
+  "vanilla_lstm": {
+    "feature_params": {
+      "scaler__scaler_type": ["standard"]
+    },
+    "param_grid": {
+      "classifier__hidden_dims": [[64, 64]],
+      "classifier__activations": [["tanh", "tanh"]],
+      "classifier__recurrent_activations": [["sigmoid", "sigmoid"]],
+      "classifier__dropout": [0.3],
       "classifier__dense_units": [1],
       "classifier__dense_activation": ["sigmoid"],
       "classifier__optimizer": ["adam"],
