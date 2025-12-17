@@ -3112,7 +3112,7 @@ def run_nested_cv_classical(
     return outer_results, all_best_params, experiment_dir
 
 
-def run_loso_cv_lstm(X, y, groups, mask_values, 
+def run_loso_cv_lstm(X, y, groups, mask_values=None, 
                           subject_names=None,
                           model_type='seq2seq_lstm',
                           refit_scoring_metric='f1',
@@ -3126,21 +3126,27 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                           outer_test_subjects=None,
                           data_source=None):
     """
-    Nested cross-validation with pre-computed padding to optimize efficiency.
+    Nested cross-validation for LSTM models (seq2seq and seq2vec).
     
-    This implementation ensures computational efficiency by:
-    1. Computing padding length from ALL training data before CV begins
-    2. Computing mask values from ALL training data before CV begins  
-    3. No per-fold padding computation overhead during inner CV
-    4. Uses pre-padded data throughout all cross-validation operations
+    For seq2seq_lstm:
+        - Expects pre-padded 3D input (n_trials, max_seq_len, n_features)
+        - Uses mask_values for padding
+        - Operates on trial-level sequences
+    
+    For seq2vec_lstm:
+        - Expects 2D input (n_samples, n_features) at epoch level
+        - No padding required
+        - Operates on individual epochs
     
     Args:
-        X: Pre-padded trial arrays (n_trials, max_seq_len, n_features) - PADDED
-        y: Pre-padded trial label arrays (n_trials, max_seq_len) - PADDED
-        groups: Array indicating which subject each trial belongs to
-        mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length)
+        X: For seq2seq: Pre-padded trial arrays (n_trials, max_seq_len, n_features)
+           For seq2vec: Epoch arrays (n_epochs, n_features)
+        y: For seq2seq: Pre-padded trial label arrays (n_trials, max_seq_len)
+           For seq2vec: Epoch labels (n_epochs,)
+        groups: Array indicating which subject each sample belongs to
+        mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length) - required for seq2seq_lstm
         subject_names: List of subject names
-        model_type: Type of model (seq2seq LSTM only)
+        model_type: Type of model ('seq2seq_lstm' or 'seq2vec_lstm')
         refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
@@ -3180,10 +3186,18 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
-    if model_type != 'seq2seq_lstm':
-        raise ValueError("run_loso_cv_lstm only supports model_type='seq2seq_lstm'.")
-    if X.ndim != 3:
-        raise ValueError(f"run_loso_cv_lstm expects a 3D padded input array, got {X.ndim}D.")
+    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm'):
+        raise ValueError(f"run_loso_cv_lstm only supports model_type='seq2seq_lstm' or 'seq2vec_lstm', got '{model_type}'.")
+    
+    # Validate input dimensions based on model type
+    if model_type == 'seq2seq_lstm':
+        if X.ndim != 3:
+            raise ValueError(f"seq2seq_lstm expects a 3D padded input array, got {X.ndim}D.")
+        if mask_values is None:
+            raise ValueError("seq2seq_lstm requires mask_values parameter.")
+    elif model_type == 'seq2vec_lstm':
+        if X.ndim != 2:
+            raise ValueError(f"seq2vec_lstm expects a 2D input array, got {X.ndim}D.")
 
     result_metadata = {'model_type': model_type, 'data_source': data_source}
 
@@ -3345,11 +3359,14 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]     Inner train trials: {len(inner_train_idx)}, val trials: {len(inner_val_idx)}")
                     
-                    # Step 5: Use pre-computed mask values (no per-fold padding needed)
+                    # Step 5: Log mask/padding info based on model type
                     if verbose >= 2:
-                        logging.info(f"[CV_SKLEARN]     Pre-computed padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={mask_values['max_length']}")
+                        if model_type == 'seq2seq_lstm' and mask_values:
+                            logging.info(f"[CV_SKLEARN]     Pre-computed padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={mask_values['max_length']}")
+                        else:
+                            logging.info(f"[CV_SKLEARN]     Data shapes: train={X_inner_train.shape}, val={X_inner_val.shape}")
                     
-                    # Step 6: Create pipeline with pre-computed mask values
+                    # Step 6: Create pipeline with mask values (if applicable)
                     callbacks, effective_monitor = _prepare_sequence_model_callbacks(
                         model_type=model_type,
                         params=params,
@@ -3404,12 +3421,29 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
 
                     lstm_classifier = inner_pipeline.steps[-1][1]
                     configured_epochs = getattr(lstm_classifier, 'epochs', None)
-                    lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
-
-                    if verbose >= 2:
-                        logging.info(f"[CV_SKLEARN]       Training LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
-
-                    lstm_classifier.fit(X_train_transformed, y_inner_train)
+                    
+                    # Handle model-specific fitting
+                    if model_type == 'seq2vec_lstm':
+                        # Seq2Vec: Reshape 2D data to 3D (add timesteps dimension of 1)
+                        if X_train_transformed.ndim == 2:
+                            X_train_transformed = X_train_transformed.reshape(X_train_transformed.shape[0], 1, X_train_transformed.shape[1])
+                        if X_val_transformed.ndim == 2:
+                            X_val_transformed = X_val_transformed.reshape(X_val_transformed.shape[0], 1, X_val_transformed.shape[1])
+                        
+                        # Ensure y is 2D for Seq2VecLSTM
+                        y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
+                        y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
+                        
+                        lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Training Seq2Vec LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                        lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
+                    else:
+                        # Seq2Seq: Set validation data and fit
+                        lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Training Seq2Seq LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                        lstm_classifier.fit(X_train_transformed, y_inner_train)
 
                     history_metrics = {}
                     lstm_histories = getattr(lstm_classifier, 'history_', [])
@@ -3431,17 +3465,32 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                     y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
                     default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
                     base_confusion_components = None
-                    try:
-                        y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                        y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
-                        y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
-                        if y_val_pred_default.size == y_inner_val.size:
-                            y_val_pred_default = y_val_pred_default.reshape(y_inner_val.shape)
-                        base_confusion_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
-                            y_inner_val, y_val_pred_default, y_mask_val
-                        )
-                    except Exception as cm_error:
-                        logging.debug(f"[CV_SKLEARN]       Failed to compute baseline confusion matrix components: {cm_error}")
+                    
+                    # Handle model-specific metrics
+                    if model_type == 'seq2seq_lstm':
+                        try:
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
+                            y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
+                            if y_val_pred_default.size == y_inner_val.size:
+                                y_val_pred_default = y_val_pred_default.reshape(y_inner_val.shape)
+                            base_confusion_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
+                                y_inner_val, y_val_pred_default, y_mask_val
+                            )
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute baseline confusion matrix components: {cm_error}")
+                    else:
+                        # Seq2Vec: Standard confusion matrix (no masking)
+                        try:
+                            from sklearn.metrics import confusion_matrix
+                            y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
+                            y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
+                            cm = confusion_matrix(y_inner_val, y_val_pred_default)
+                            if cm.shape == (2, 2):
+                                tn, fp, fn, tp = cm.ravel()
+                                base_confusion_components = {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)}
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute baseline confusion matrix components: {cm_error}")
 
                     inner_val_predictions.append(y_val_proba)
                     inner_val_labels.append(y_inner_val)
@@ -3451,14 +3500,49 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                         logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
 
                     threshold_metrics = DEFAULT_THRESHOLD_METRICS
-                    threshold_results = lstm_classifier.optimize_thresholds_with_model(
-                        X_val=X_val_transformed,
-                        y_val=y_inner_val,
-                        metrics=threshold_metrics,
-                        verbose=(verbose >= 3)
-                    )
+                    
+                    # Handle model-specific threshold optimization
+                    if model_type == 'seq2seq_lstm':
+                        threshold_results = lstm_classifier.optimize_thresholds_with_model(
+                            X_val=X_val_transformed,
+                            y_val=y_inner_val,
+                            metrics=threshold_metrics,
+                            verbose=(verbose >= 3)
+                        )
+                        optimized_scores = threshold_results.get('optimized_scores', {})
+                        optimal_thresholds = threshold_results['optimal_thresholds']
+                    else:
+                        # Seq2Vec: Use standard threshold optimization without masking
+                        from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
+                        y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
+                        
+                        # Simple threshold search
+                        optimal_thresholds = {}
+                        optimized_scores = {}
+                        for metric_name in threshold_metrics:
+                            best_threshold = 0.5
+                            best_score = 0.0
+                            for threshold in np.linspace(0.1, 0.9, 81):
+                                y_pred = (y_val_proba_pos > threshold).astype(int)
+                                if metric_name == 'f1':
+                                    score = f1_score(y_inner_val, y_pred, zero_division=0)
+                                elif metric_name == 'accuracy':
+                                    score = accuracy_score(y_inner_val, y_pred)
+                                elif metric_name == 'precision':
+                                    score = precision_score(y_inner_val, y_pred, zero_division=0)
+                                elif metric_name == 'recall':
+                                    score = recall_score(y_inner_val, y_pred, zero_division=0)
+                                elif metric_name == 'balanced_accuracy':
+                                    score = balanced_accuracy_score(y_inner_val, y_pred)
+                                else:
+                                    continue
+                                if score > best_score:
+                                    best_score = score
+                                    best_threshold = threshold
+                            optimal_thresholds[metric_name] = best_threshold
+                            optimized_scores[metric_name] = best_score
+                        threshold_results = {'optimal_thresholds': optimal_thresholds, 'optimized_scores': optimized_scores}
 
-                    optimized_scores = threshold_results.get('optimized_scores', {})
                     fold_scores = standardize_metric_names(optimized_scores, stage='val', tuned=True)
                     if history_metrics:
                         fold_scores.update(history_metrics)
@@ -3474,17 +3558,36 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
 
                     score = _extract_selection_score(fold_scores)
 
-                    try:
-                        y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                        conf_threshold = optimal_thresholds.get('f1', 0.5)
-                        y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
-                        y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
-                        if y_val_pred_conf.size == y_inner_val.size:
-                            y_val_pred_conf = y_val_pred_conf.reshape(y_inner_val.shape)
-                        cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_conf, y_mask_val)
-                    except Exception as cm_error:
-                        logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
-                        cm_components = None
+                    # Handle model-specific confusion matrix at tuned threshold
+                    if model_type == 'seq2seq_lstm':
+                        try:
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            conf_threshold = optimal_thresholds.get('f1', 0.5)
+                            y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
+                            y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
+                            if y_val_pred_conf.size == y_inner_val.size:
+                                y_val_pred_conf = y_val_pred_conf.reshape(y_inner_val.shape)
+                            cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_conf, y_mask_val)
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
+                            cm_components = None
+                    else:
+                        # Seq2Vec: Standard confusion matrix
+                        try:
+                            from sklearn.metrics import confusion_matrix
+                            conf_threshold = optimal_thresholds.get('f1', 0.5)
+                            y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
+                            y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
+                            cm = confusion_matrix(y_inner_val, y_val_pred_conf)
+                            if cm.shape == (2, 2):
+                                tn, fp, fn, tp = cm.ravel()
+                                cm_components = {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)}
+                            else:
+                                cm_components = None
+                        except Exception as cm_error:
+                            logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
+                            cm_components = None
+                            
                     if cm_components is not None:
                         fold_scores['val_tuned_confusion_matrix_components'] = cm_components
                     else:
@@ -3910,8 +4013,12 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
             train_metrics = {}
             test_metrics = {}
             refit_learning_rate_history = None
-            if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
-                raise ValueError('run_loso_cv_lstm requires 3D padded inputs for final retraining.')
+            if model_type == 'seq2seq_lstm':
+                if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
+                    raise ValueError('run_loso_cv_lstm with seq2seq_lstm requires 3D padded inputs for final retraining.')
+            elif model_type == 'seq2vec_lstm':
+                if X_outer_train.ndim != 2 or X_outer_test.ndim != 2:
+                    raise ValueError('run_loso_cv_lstm with seq2vec_lstm requires 2D inputs for final retraining.')
 
             preprocessing_steps = final_pipeline.steps[:-1]
             lstm_classifier = final_pipeline.steps[-1][1]
@@ -3971,6 +4078,28 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                 X_test_final = transformer.transform(X_test_final)
             test_shape_for_logging = X_test_final.shape
 
+            # Prepare reshaped data for seq2vec_lstm BEFORE adding callbacks
+            if model_type == 'seq2vec_lstm':
+                # Reshape for seq2vec LSTM
+                if X_train_final.ndim == 2:
+                    X_train_final_for_fit = X_train_final.reshape(X_train_final.shape[0], 1, X_train_final.shape[1])
+                else:
+                    X_train_final_for_fit = X_train_final
+                    
+                if X_test_final.ndim == 2:
+                    X_test_final_for_callbacks = X_test_final.reshape(X_test_final.shape[0], 1, X_test_final.shape[1])
+                else:
+                    X_test_final_for_callbacks = X_test_final
+                    
+                y_outer_train_for_fit = y_outer_train.reshape(-1, 1) if y_outer_train.ndim == 1 else y_outer_train
+                y_outer_test_for_callbacks = y_outer_test.reshape(-1, 1) if y_outer_test.ndim == 1 else y_outer_test
+            else:
+                # Seq2Seq: No reshaping
+                X_train_final_for_fit = X_train_final
+                X_test_final_for_callbacks = X_test_final
+                y_outer_train_for_fit = y_outer_train
+                y_outer_test_for_callbacks = y_outer_test
+
             # Add test evaluation callbacks (CSV + TensorBoard)
             if preserved_callbacks:
                 # Find CSVLogger and TensorBoard positions in callbacks list
@@ -3984,11 +4113,14 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                         tensorboard_dir = cb.log_dir
                 
                 if csv_logger_idx is not None:
+                    # Determine mask value based on model type
+                    mask_value_for_test = mask_values.get('y_mask', -1) if model_type == 'seq2seq_lstm' else None
+                    
                     # Add CSV logger for test metrics
                     test_eval_callback = TestEvaluationCSVLogger(
-                        X_test=X_test_final,
-                        y_test=y_outer_test,
-                        mask_value=mask_values.get('y_mask', -1),
+                        X_test=X_test_final_for_callbacks,
+                        y_test=y_outer_test_for_callbacks,
+                        mask_value=mask_value_for_test,
                         log_frequency=1
                     )
                     # Insert BEFORE CSVLogger so test metrics are added to logs before CSV write
@@ -3999,10 +4131,10 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                     # Add TensorBoard logger for test metrics
                     if tensorboard_dir:
                         test_tensorboard_callback = TestTensorBoardLogger(
-                            X_test=X_test_final,
-                            y_test=y_outer_test,
+                            X_test=X_test_final_for_callbacks,
+                            y_test=y_outer_test_for_callbacks,
                             tensorboard_dir=tensorboard_dir,
-                            mask_value=mask_values.get('y_mask', -1),
+                            mask_value=mask_value_for_test,
                             log_frequency=1
                         )
                         lstm_classifier.callbacks.append(test_tensorboard_callback)
@@ -4010,7 +4142,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                             logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
 
             # Fit the LSTM classifier with fixed epoch schedule
-            lstm_classifier.fit(X_train_final, y_outer_train)
+            lstm_classifier.fit(X_train_final_for_fit, y_outer_train_for_fit)
             lstm_histories = getattr(lstm_classifier, 'history_', [])
             history_metrics = {}
             last_history = None
@@ -4070,7 +4202,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                 logging.info(f"[CV_SKLEARN] Using stable thresholds: {stable_threshold_summary}")
 
             # Apply stable thresholds to test predictions
-            y_test_pred_proba = lstm_classifier.predict_proba(X_test_final)
+            y_test_pred_proba = lstm_classifier.predict_proba(X_test_final_for_callbacks)
 
             # Get positive class probabilities
             if y_test_pred_proba.ndim > 2:
@@ -4081,12 +4213,20 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
             else:
                 y_test_proba_pos = y_test_pred_proba.ravel()
             
-            # Apply masking to test data
+            # Handle model-specific test metrics
             default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
-            y_test_flat = y_outer_test.ravel()
-            y_test_proba_flat = y_test_proba_pos.ravel()
-            y_mask_val = mask_values.get('y_mask', -1)
-            mask = y_test_flat != y_mask_val
+            
+            if model_type == 'seq2seq_lstm':
+                # Seq2Seq: Apply masking to test data
+                y_test_flat = y_outer_test.ravel()
+                y_test_proba_flat = y_test_proba_pos.ravel()
+                y_mask_val = mask_values.get('y_mask', -1)
+                mask = y_test_flat != y_mask_val
+            else:
+                # Seq2Vec: No masking needed
+                y_test_flat = y_outer_test.ravel()
+                y_test_proba_flat = y_test_proba_pos.ravel()
+                mask = np.ones(len(y_test_flat), dtype=bool)
             
             if np.sum(mask) > 0:
                 y_test_valid = y_test_flat[mask]
@@ -4115,11 +4255,22 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
                 # Base confusion matrix components
                 try:
                     y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
-                    if y_test_pred_default_full.size == y_outer_test.size:
-                        y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
-                    cm_base = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
-                        y_outer_test, y_test_pred_default_full, y_mask_val
-                    )
+                    if model_type == 'seq2seq_lstm':
+                        if y_test_pred_default_full.size == y_outer_test.size:
+                            y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
+                        y_mask_val = mask_values.get('y_mask', -1)
+                        cm_base = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
+                            y_outer_test, y_test_pred_default_full, y_mask_val
+                        )
+                    else:
+                        # Seq2Vec: Standard confusion matrix
+                        from sklearn.metrics import confusion_matrix
+                        cm = confusion_matrix(y_outer_test.ravel(), y_test_pred_default_full.ravel())
+                        if cm.shape == (2, 2):
+                            tn, fp, fn, tp = cm.ravel()
+                            cm_base = {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)}
+                        else:
+                            cm_base = None
                     test_metrics['test_confusion_matrix_components'] = cm_base
                 except Exception as cm_error:
                     logging.warning(f"[CV_SKLEARN] Failed to compute base test confusion matrix: {cm_error}")
@@ -4168,9 +4319,22 @@ def run_loso_cv_lstm(X, y, groups, mask_values,
             try:
                 confusion_threshold = optimal_thresholds.get('f1', 0.5)
                 y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
-                if y_test_pred_conf.size == y_outer_test.size:
-                    y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
-                cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
+                
+                if model_type == 'seq2seq_lstm':
+                    if y_test_pred_conf.size == y_outer_test.size:
+                        y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
+                    y_mask_val = mask_values.get('y_mask', -1)
+                    cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
+                else:
+                    # Seq2Vec: Standard confusion matrix
+                    from sklearn.metrics import confusion_matrix
+                    cm = confusion_matrix(y_outer_test.ravel(), y_test_pred_conf.ravel())
+                    if cm.shape == (2, 2):
+                        tn, fp, fn, tp = cm.ravel()
+                        cm_components = {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp)}
+                    else:
+                        cm_components = None
+                        
                 test_metrics['test_tuned_confusion_matrix_components'] = cm_components
             except Exception as e:
                 logging.warning(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}")
@@ -4774,10 +4938,11 @@ def main(argv=None):
         logging.info(f"[MAIN] Starting seq2vec LSTM nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_nested_cv_classical(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
             TS_DataMat,
             labels,
             epoch_groups,
+            mask_values=None,
             subject_names=subject_names,
             model_type=selected_model_type,
             refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,

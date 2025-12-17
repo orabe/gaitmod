@@ -179,8 +179,11 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         if class_weight:
             fit_kwargs['class_weight'] = class_weight
 
-        if validation_data is not None:
-            X_val, y_val = validation_data
+        # Check for validation data (either passed directly or stored as attribute)
+        validation_data_to_use = validation_data or getattr(self, '_validation_data', None)
+        
+        if validation_data_to_use is not None:
+            X_val, y_val = validation_data_to_use
             X_val = np.asarray(X_val, dtype=np.float32)
             y_val = np.asarray(y_val, dtype=np.float32)
             
@@ -194,7 +197,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
             fit_kwargs['validation_data'] = (X_val, y_val)
             logging.info(f"[LSTM FIT] Using validation data: X_val={X_val.shape}, y_val={y_val.shape}")
         
-        if validation_data is None:
+        if validation_data_to_use is None:
             logging.info(f"[LSTM FIT] No validation data provided - training only")                    
         
         # Try GPU first, fall back to CPU if needed
