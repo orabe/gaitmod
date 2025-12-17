@@ -1,7 +1,7 @@
 {
   "global_settings": {
     "experiment_name": "beta_100feat",
-    "model_type": "lstm",
+    "model_type": "seq2seq_lstm",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -75,7 +75,7 @@
     ],
     "feature_selector__correlation_threshold": [0.5]
   },
-  "lstm": {
+  "seq2seq_lstm": {
     "feature_params": {
       "scaler__scaler_type": ["standard"]
     },

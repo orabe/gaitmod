@@ -28,7 +28,7 @@ from sklearn.feature_selection import f_classif, mutual_info_classif
 from sklearn.metrics import (average_precision_score, precision_recall_curve,
                              roc_auc_score, roc_curve)
 
-from examples.hctsa_segments import HCTSASegmentCache
+from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 
 
 # --------------------------------------------------------------------------

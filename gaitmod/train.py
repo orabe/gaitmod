@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+import types
 import uuid
 import warnings
 from datetime import timedelta
@@ -15,24 +16,36 @@ from functools import lru_cache
 from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 import psutil
-from joblib import Parallel, delayed
+import h5py
+import numpy as np
+import pandas as pd
 
-def log_memory_usage():
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    mem_gb = mem_info.rss / (1024**3)
-    logging.info(f"[MEMORY] Current RAM usage: {mem_gb:.2f} GB")
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import LeaveOneGroupOut, ParameterGrid
+from collections import Counter
+
+# Configure TensorFlow environment variables before importing TF to silence low-level warnings
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
+os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
+
+
+from gaitmod.models import seq2seq_lstm as lstm_classifier_module
+from gaitmod.models.seq2seq_lstm import Seq2SeqLSTM
+from gaitmod.models.seq2vec_lstm import Seq2VecLSTM
+from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
+from gaitmod.feat_preproc import filter_features, parse_epoch_metadata, pad_trials, group_epochs_by_trial
+
+from gaitmod.pipelines import build_pipeline
 
 # Initialize TensorFlow
+import tensorflow as tf
 from gaitmod.utils.utils import initialize_tf
 initialize_tf()
 
 try:
     # TensorFlow configuration for stability and performance  
-    import tensorflow as tf
-    
     # DISABLE eager execution for better performance with data pipelines
     tf.config.run_functions_eagerly(False)  # Changed from True - eager execution causes validation slowdown
     tf.config.experimental.enable_mixed_precision_graph_rewrite(False)
@@ -61,57 +74,30 @@ except Exception as e:
     logging.info(f"TensorFlow initialization warning: {e}")
     # tensorflow already imported above
 
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import save_model, load_model, Sequential
-from tensorflow.keras.utils import plot_model
-from tensorflow.keras.layers import Masking, Input, LSTM, Dropout, Dense, TimeDistributed
-from tensorflow.keras.optimizers import Adam, RMSprop, SGD
-from tensorflow.keras.metrics import Precision, Recall, AUC
-from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, LearningRateScheduler, ModelCheckpoint, CSVLogger
-from tensorflow.keras.losses import binary_crossentropy
-from tensorflow.keras import backend as K
-
 try:
     from tensorboard.plugins.hparams import api as hp
     HPARAMS_AVAILABLE = True
 except ImportError:
     HPARAMS_AVAILABLE = False
-    logging.warning(format_warning_message("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited."))
-    
-# ===================================================================
-# Color Formatting Utilities
-# ===================================================================
-
-class Colors:
-    """
-    Placeholder for backward compatibility with the previous colored logging.
-    ANSI codes are intentionally empty so console output remains conventional.
-    """
-    RED = ''
-    GREEN = ''
-    YELLOW = ''
-    BLUE = ''
-    MAGENTA = ''
-    CYAN = ''
-    BOLD = ''
-    UNDERLINE = ''
-    RESET = ''
-
-def red_text(text):
-    """Return plain text to keep logs conventional."""
-    return text
-
-def format_error_message(message):
-    """Return a plain error message (no ANSI codes)."""
-    return message
-
-def format_warning_message(message):
-    """Return a plain warning message (no ANSI codes)."""
-    return message
+    logging.warning("TensorBoard HParams plugin not available. Hyperparameter visualization will be limited.")
 
 
-# Prefixes used to identify detailed log lines that should stay off the console
-# unless the user explicitly asks for verbose output.
+warnings.filterwarnings('ignore')
+
+from tensorflow.keras.callbacks import Callback, TensorBoard, EarlyStopping, ReduceLROnPlateau, ModelCheckpoint, CSVLogger
+from tensorflow.keras import backend as K
+
+
+
+
+def log_memory_usage():
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    mem_gb = mem_info.rss / (1024**3)
+    logging.info(f"[MEMORY] Current RAM usage: {mem_gb:.2f} GB")
+
+# Prefixes that mark highly detailed log lines. These are filtered out of the console
+# unless the user explicitly enables verbose output.
 DETAILED_CONSOLE_PREFIXES = (
     "[BUILD_MODEL]",
     "[BUILD_PIPELINE]",
@@ -150,45 +136,7 @@ class ConsoleVerbosityFilter(logging.Filter):
             return True
 
         return not any(message.startswith(prefix) for prefix in DETAILED_CONSOLE_PREFIXES)
-
-import h5py
-import numpy as np
-import pandas as pd
-
-warnings.filterwarnings('ignore')
-
-# Add TensorFlow stability fixes
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
-
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV, LeaveOneGroupOut, cross_val_score, ParameterGrid
-from sklearn.metrics import make_scorer, accuracy_score, f1_score, roc_auc_score, confusion_matrix, precision_score, recall_score, average_precision_score, balanced_accuracy_score
-from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
-from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, mutual_info_classif
-from sklearn.base import BaseEstimator, TransformerMixin, ClassifierMixin
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.dummy import DummyClassifier
-from sklearn.utils.class_weight import compute_class_weight
-
-from collections import defaultdict, Counter
-
-from scipy.stats import pearsonr
-from scipy import stats
-
-try:
-    from xgboost import XGBClassifier
-    XGBOOST_AVAILABLE = True
-except ImportError:
-    XGBOOST_AVAILABLE = False
-    XGBClassifier = None
-
-from examples.hctsa_segments import HCTSASegmentCache
-
+    
 HYPERPARAM_CONFIG_PATH: Optional[Path] = None
 GLOBAL_HPARAM_CONFIG: Dict[str, Any] = {}
 GLOBAL_SETTINGS: Dict[str, Any] = {}
@@ -208,8 +156,17 @@ DEFAULT_REFIT_SCORING_METRIC = 'f1'
 DEFAULT_SELECTION_SCORE_METRIC = 'val_tuned_f1'
 DEFAULT_SELECTION_SCORE_AGGREGATION = 'median'
 DEFAULT_FEATURE_PARAMS: Dict[str, Any] = {}
-SUPPORTED_MODEL_TYPES: Tuple[str, ...] = ('lstm', 'vanilla_lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
-DEFAULT_MODEL_TYPE = 'lstm'
+
+SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
+    'seq2seq_lstm',
+    'seq2vec_lstm',
+    'rf',
+    'svm',
+    'xgb',
+    'logreg',
+    'dummy',
+)
+DEFAULT_MODEL_TYPE = 'seq2seq_lstm'
 
 DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
 DEFAULT_THRESHOLD_STEPS: int = 81
@@ -287,7 +244,7 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     if legacy_cache_dir and 'segment_cache_dir' not in feature_data:
         feature_data['segment_cache_dir'] = legacy_cache_dir
     FEATURE_DATA_SETTINGS = feature_data
-    DEFAULT_FEATURE_SOURCE = str(FEATURE_DATA_SETTINGS.get('source', 'hctsa')).strip().lower() or 'hctsa'
+    DEFAULT_FEATURE_SOURCE = str(FEATURE_DATA_SETTINGS.get('source', 'hctsa')).strip().lower()
 
     DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
     DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_sweep_thresholds', 81))
@@ -310,14 +267,23 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
     feature_params_cfg = GLOBAL_HPARAM_CONFIG.get('feature_params')
     DEFAULT_FEATURE_PARAMS = copy.deepcopy(feature_params_cfg) if isinstance(feature_params_cfg, dict) else {}
-    configured_model_type = str(GLOBAL_SETTINGS.get('model_type', DEFAULT_MODEL_TYPE or 'lstm')).strip().lower()
+    configured_model_type_raw = GLOBAL_SETTINGS.get('model_type', DEFAULT_MODEL_TYPE)
+    configured_model_type = str(configured_model_type_raw).strip().lower()
     if configured_model_type not in SUPPORTED_MODEL_TYPES:
-        logging.warning(format_warning_message(
-            f"Unsupported model_type '{configured_model_type}' in config. "
-            f"Falling back to 'lstm'. Available: {', '.join(SUPPORTED_MODEL_TYPES)}"
-        ))
-        configured_model_type = 'lstm'
+        logging.warning(
+            f"Unsupported model_type '{configured_model_type_raw}' in config. "
+            f"Falling back to 'seq2seq_lstm'. Available: {', '.join(SUPPORTED_MODEL_TYPES)}"
+        )
+        configured_model_type = 'seq2seq_lstm'
     DEFAULT_MODEL_TYPE = configured_model_type
+
+    # Keep the standalone LSTM classifier module synchronized with the config-driven defaults
+    lstm_classifier_module.configure_lstm_defaults(
+        threshold_range=DEFAULT_THRESHOLD_RANGE,
+        threshold_steps=DEFAULT_THRESHOLD_STEPS,
+        threshold_metrics=list(DEFAULT_THRESHOLD_METRICS) if DEFAULT_THRESHOLD_METRICS else None,
+        y_mask_value=DEFAULT_Y_MASK_VALUE,
+    )
 
 
 def _merge_feature_params(model_specific: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -329,9 +295,72 @@ def _merge_feature_params(model_specific: Optional[Dict[str, Any]]) -> Dict[str,
     return merged
 
 
+def _fit_pipeline_with_validation(
+    pipeline: Pipeline,
+    X_train,
+    y_train,
+    validation_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+):
+    """
+    Manually fit a pipeline so that the final estimator (e.g., Seq2VecLSTM)
+    receives preprocessed validation data for Keras metrics logging.
+    """
+    preprocessing_steps = pipeline.steps[:-1]
+    classifier = pipeline.steps[-1][1]
+
+    X_train_processed = X_train
+    X_val_processed = None
+    y_val_processed = None
+    if validation_data is not None:
+        X_val_processed, y_val_processed = validation_data
+
+    for _, transformer in preprocessing_steps:
+        if hasattr(transformer, "fit_transform"):
+            X_train_processed = transformer.fit_transform(X_train_processed, y_train)
+        else:
+            transformer.fit(X_train_processed, y_train)
+            X_train_processed = transformer.transform(X_train_processed)
+        if X_val_processed is not None:
+            X_val_processed = transformer.transform(X_val_processed)
+
+    X_train_processed = np.asarray(X_train_processed, dtype=np.float32)
+    if X_train_processed.ndim == 2:
+        X_train_processed = X_train_processed[:, :, np.newaxis]
+    elif X_train_processed.ndim != 3:
+        raise ValueError(
+            f"Expected training data to be 3D after preprocessing, got shape {X_train_processed.shape}"
+        )
+    y_train_processed = np.asarray(y_train).reshape(-1, 1).astype(np.float32)
+    if X_train_processed.shape[0] != y_train_processed.shape[0]:
+        raise ValueError(
+            f"Mismatched training samples: X has {X_train_processed.shape[0]}, "
+            f"y has {y_train_processed.shape[0]}"
+        )
+
+    fit_kwargs = {}
+    if X_val_processed is not None and y_val_processed is not None:
+        X_val_processed = np.asarray(X_val_processed, dtype=np.float32)
+        if X_val_processed.ndim == 2:
+            X_val_processed = X_val_processed[:, :, np.newaxis]
+        elif X_val_processed.ndim != 3:
+            raise ValueError(
+                f"Expected validation data to be 3D after preprocessing, got shape {X_val_processed.shape}"
+            )
+        y_val_processed = np.asarray(y_val_processed).reshape(-1, 1).astype(np.float32)
+        if X_val_processed.shape[0] != y_val_processed.shape[0]:
+            raise ValueError(
+                f"Mismatched validation samples: X_val has {X_val_processed.shape[0]}, "
+                f"y_val has {y_val_processed.shape[0]}"
+            )
+        fit_kwargs["validation_data"] = (X_val_processed, y_val_processed)
+
+    classifier.fit(X_train_processed, y_train_processed, **fit_kwargs)
+    return pipeline
+
+
 def resolve_feature_cache_directory() -> str:
     """Determine which segment cache directory to load based on the config."""
-    feature_source = (DEFAULT_FEATURE_SOURCE or 'hctsa').strip().lower()
+    feature_source = DEFAULT_FEATURE_SOURCE.strip().lower()
     configured_dir = FEATURE_DATA_SETTINGS.get('segment_cache_dir')
     if configured_dir:
         return str(Path(configured_dir).expanduser())
@@ -401,7 +430,7 @@ class HyperparameterTuningLogger:
         This defines what hyperparameters and metrics will be tracked.
         """
         if not HPARAMS_AVAILABLE:
-            logging.warning(format_warning_message("TensorBoard HParams not available - skipping setup"))
+            logging.warning("TensorBoard HParams not available - skipping setup")
             return
             
         try:
@@ -476,7 +505,7 @@ class HyperparameterTuningLogger:
             logging.info(f"[HPARAMS] Initialized experiment '{self.experiment_name}' with {len(hparams)} hyperparameters and {len(metrics)} metrics")
             
         except Exception as e:
-            logging.error(format_error_message(f"Failed to setup hyperparameter experiment: {e}"))
+            logging.error(f"Failed to setup hyperparameter experiment: {e}")
             
     def log_hyperparameter_trial(self, trial_params, trial_results, session_id=None,
                                  subject_identifier=None, outer_fold=None):
@@ -534,7 +563,7 @@ class HyperparameterTuningLogger:
             logging.debug(f"[HPARAMS] Logged trial {session_id} with {len(clean_hparams)} hyperparameters and {len(trial_results)} metrics")
             
         except Exception as e:
-            logging.warning(format_warning_message(f"Failed to log hyperparameter trial {session_id}: {e}"))
+            logging.warning(f"Failed to log hyperparameter trial {session_id}: {e}")
             
     def create_hyperparameter_summary(self, all_trials_results):
         """
@@ -575,7 +604,7 @@ class HyperparameterTuningLogger:
             logging.info(f"[HPARAMS] Created summary for {len(all_trials_results)} trials")
             
         except Exception as e:
-            logging.warning(format_warning_message(f"Failed to create hyperparameter summary: {e}"))
+            logging.warning(f"Failed to create hyperparameter summary: {e}")
 
 
 # ===================================================================
@@ -618,7 +647,7 @@ class HyperparameterTensorBoardCallback(TensorBoard):
                                 tf.summary.scalar(f'hparams/{clean_key}', float(value), step=0)
                             
             except Exception as e:
-                logging.warning(format_warning_message(f"Failed to log hyperparameters to TensorBoard: {e}"))
+                logging.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
 
 # ==================================================================
 # Streamlined Training Progress Logger
@@ -1011,7 +1040,23 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
     if hyperparams and isinstance(hyperparams, dict):
         # Create a shorter parameter string for directory names, excluding certain keys
-        exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+        exclude_keys = {
+            'mask_values',
+            'loss',
+            'patience',
+            'threshold',
+            'activations',
+            'dense_activations',
+            'recurrent_activations',
+            'scaler_type',
+            'correlation_threshold',
+            'variance_threshold',
+            'optimizer',
+            'dense_units',
+            'dense_activation',
+            'batch_size',
+            'enabled',
+        }
         
         # Map parameter names to shorter versions
         param_name_map = {
@@ -1075,11 +1120,14 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         param_str = "refit" if is_refit else "default"
 
     if is_refit:
+        base_dir = os.path.join(outer_fold_dir, "refit")
+        os.makedirs(base_dir, exist_ok=True)
         param_dir_name = param_str
     else:
+        base_dir = outer_fold_dir
         param_dir_name = _resolve_hparam_dirname(outer_fold_dir, param_str, create_if_missing=True)
     run_id = f"{unique_id}--{param_dir_name}"
-    hyperparams_dir = os.path.join(outer_fold_dir, param_dir_name)
+    hyperparams_dir = os.path.join(base_dir, param_dir_name)
 
     if inner_fold is not None and inner_validation_subject is not None:
         inner_fold_dir = os.path.join(hyperparams_dir, f"inner_fold_{inner_fold:02d}_val_{inner_validation_subject}")
@@ -1229,6 +1277,43 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     
     return callbacks, effective_monitor
 
+
+def _prepare_sequence_model_callbacks(
+    model_type: str,
+    params: Optional[Dict[str, Any]],
+    experiment_dir: Optional[str],
+    outer_fold: Optional[int],
+    inner_fold: Optional[int],
+    outer_test_subject: Optional[str],
+    inner_validation_subject: Optional[str],
+    has_validation_data: bool,
+) -> Tuple[Optional[List[Any]], Optional[str]]:
+    """
+    Helper to create callbacks only for sequence models that require them.
+    """
+    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm'):
+        return None, None
+
+    patience_value = 10
+    if params is not None:
+        patience_value = params.get('classifier__patience', patience_value)
+
+    callbacks, effective_monitor = create_nested_cv_callbacks(
+        experiment_dir=experiment_dir,
+        outer_fold=outer_fold,
+        inner_fold=inner_fold,
+        outer_test_subject=outer_test_subject,
+        hyperparameters=params,
+        inner_validation_subject=inner_validation_subject,
+        patience=patience_value,
+        monitor='f1',
+        save_models=False,
+        progress_frequency=1,
+        has_validation_data=has_validation_data,
+        is_refit=(inner_fold is None),
+    )
+    return callbacks, effective_monitor
+
 def setup_hyperparameter_experiment(experiment_dir, param_grid):
     """
     Setup TensorBoard hyperparameter experiment for visualization.
@@ -1240,7 +1325,7 @@ def setup_hyperparameter_experiment(experiment_dir, param_grid):
     Returns:
         HyperparameterTuningLogger instance
     """
-    hparam_logger = HyperparameterTuningLogger(experiment_dir, "lstm_hctsa_tuning")
+    hparam_logger = HyperparameterTuningLogger(experiment_dir, "seq_model_tuning")
     hparam_logger.setup_hparams_experiment(param_grid)
     return hparam_logger
 
@@ -1296,8 +1381,6 @@ class NumpyEncoder(json.JSONEncoder):
 
 def convert_numpy_types(obj):
     """Recursively convert numpy types to native Python types and filter out non-serializable objects"""
-    import types
-    
     # Filter out functions and other non-serializable objects
     if callable(obj) or isinstance(obj, (types.FunctionType, types.MethodType, types.LambdaType)):
         return None
@@ -1765,7 +1848,23 @@ def _create_hyperparameter_string(hyperparams):
     if not hyperparams or not isinstance(hyperparams, dict):
         return "default"
     
-    exclude_keys = {'mask_values', 'loss', 'patience', 'threshold', 'activations', 'dense_activations', 'recurrent_activations', 'scaler_type'}
+    exclude_keys = {
+        'mask_values',
+        'loss',
+        'patience',
+        'threshold',
+        'activations',
+        'dense_activations',
+        'recurrent_activations',
+        'scaler_type',
+        'correlation_threshold',
+        'variance_threshold',
+        'optimizer',
+        'dense_units',
+        'dense_activation',
+        'batch_size',
+        'enabled',
+    }
     param_name_map = {
         'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
         'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
@@ -1856,12 +1955,12 @@ def build_feature_mapping(selected_features, feature_names=None):
     return mapped_names, details, index_to_name
 
 
-def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold_results, 
-                                     selected_features, hyperparams, train_info, val_info,
-                                     feature_names=None, trained_epochs=None,
-                                     configured_epochs=None, restored_epoch=None,
-                                     learning_rate_history=None,
-                                     feature_selection_report=None):
+def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
+                                      threshold_results, 
+                                      selected_features, hyperparams, train_info, val_info,
+                                      feature_names=None, trained_epochs=None,
+                                      configured_epochs=None, restored_epoch=None,learning_rate_history=None,
+                                      feature_selection_report=None):
     """
     Create a comprehensive results dictionary for storage.
     
@@ -1954,2679 +2053,9 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds, threshold
     }
 
 # ===================================================================
-# Preprocessing features
-# ===================================================================
-def load_hctsa_data(base_path: str, normalized: bool = True, verbose: int = 1):
-    """Load HCTSA data with validation."""
-    base_path = Path(base_path)
-    suffix = '_N' if normalized else ''
-    
-    if verbose >= 1:
-        logging.info(f"[LOAD] Loading HCTSA data from {base_path}")
-    
-    # Load feature matrix
-    mat_file = base_path / f'HCTSA{suffix}.mat'
-    with h5py.File(mat_file, 'r') as f:
-        TS_DataMat = f['/TS_DataMat'][()].T
-    
-    # Load CSV files
-    csv_path = base_path / 'data' / 'hctsa_output_data'
-    timeseries = pd.read_csv(csv_path / f'TimeSeries{suffix}.csv')
-    operations = pd.read_csv(csv_path / f'Operations{suffix}.csv')
-    
-    # Create binary labels - flexible group matching
-    group_values = timeseries['Group'].unique()
-    
-    # Try different possible names for gait modulation
-    gait_mod_names = {'gait_modulation', 'gaitMod', 'gait_mod', 'GM'}
-    found_gait_mod = [name for name in gait_mod_names if name in group_values]
-    
-    if found_gait_mod:
-        labels = np.where(timeseries['Group'].isin(found_gait_mod), 1, 0)
-        positive_class = found_gait_mod
-    else:
-        # Fallback to first group as positive
-        labels = np.where(timeseries['Group'] == group_values[0], 1, 0)
-        positive_class = group_values[0]
-    
-    # Data validation
-    if verbose >= 1:
-        logging.info(f"[LOAD] Data loaded - Shapes: Features={TS_DataMat.shape}, TimeSeries={timeseries.shape}, Operations={operations.shape}")
-        logging.info(f"[LOAD] Labels: {labels.shape}, distribution={dict(zip(['negative', 'positive'], np.bincount(labels)))}, positive_class={positive_class}")
-    
-    return TS_DataMat, timeseries, operations, labels
-
-def filter_features(X, operations_df=None, variance_threshold=1e-8, 
-                   missing_threshold=0.0, outlier_iqr_factor=3.0, 
-                   outlier_contamination_threshold=0.1, verbose: int = 1):
-    """
-    Filter out invalid features from HCTSA feature matrix using univariate criteria only.
-    
-    This function removes features that are:
-    1. Contain too many NaN/infinite values
-    2. Have excessive outliers that could destabilize training  
-    3. Are constant or near-constant after outlier removal (low variance)
-    
-    Note: Multivariate filtering (correlation analysis) is NOT performed here as it will
-    be handled by the feature selection pipeline within LOSO CV to prevent data leakage.
-    
-    The order is important: outliers are removed before variance assessment to get
-    accurate variance estimates on cleaned data.
-    
-    Parameters:
-    -----------
-    X : np.ndarray
-        Feature matrix of shape (n_samples, n_features)
-    operations_df : pd.DataFrame, optional
-        Operations dataframe with feature metadata (for logging feature names)
-    variance_threshold : float
-        Minimum variance threshold for feature retention (default: 1e-8)
-    missing_threshold : float
-        Maximum fraction of missing/invalid values allowed (default: 0.0)
-        0.0 = only features with all valid values, 0.05 = allow up to 5% missing/NaN/Inf
-    outlier_iqr_factor : float
-        IQR multiplier for outlier detection (default: 3.0, use 0 to disable)
-        Common values: 1.5 (strict, Tukey's rule), 3.0 (moderate), 4.5 (lenient)
-    outlier_contamination_threshold : float
-        Maximum fraction of outliers allowed per feature (default: 0.1)
-        Common values: 0.05 (5%, strict), 0.1 (10%, moderate), 0.2 (20%, lenient)
-    verbose : int
-        Verbosity level
-        
-    Returns:
-    --------
-    X_filtered : np.ndarray
-        Filtered feature matrix
-    valid_features : np.ndarray
-        Boolean mask of valid features
-    filter_report : dict
-        Dictionary with filtering statistics
-    """
-    
-    if verbose >= 1:
-        logging.info(f"[FILTER] Starting univariate feature filtering for {X.shape[1]} features")
-    
-    n_samples, n_features = X.shape
-    valid_features = np.ones(n_features, dtype=bool)
-    filter_stats = {
-        'original_features': n_features,
-        'nan_inf_removed': 0,
-        'low_variance_removed': 0,
-        'outlier_removed': 0,
-        'final_features': 0
-    }
-    
-    # Step 1: Remove features with too many NaN/Inf values
-    if verbose >= 2:
-        logging.info(f"[FILTER] Step 1: Checking for NaN/Inf values...")
-    
-    nan_inf_mask = np.isnan(X) | np.isinf(X)
-    nan_inf_fraction = nan_inf_mask.sum(axis=0) / n_samples
-    nan_inf_invalid = nan_inf_fraction > missing_threshold
-    
-    valid_features &= ~nan_inf_invalid
-    filter_stats['nan_inf_removed'] = np.sum(nan_inf_invalid)
-    
-    if verbose >= 1 and filter_stats['nan_inf_removed'] > 0:
-        logging.info(f"[FILTER] Removed {filter_stats['nan_inf_removed']} features with >{missing_threshold*100:.1f}% NaN/Inf values")
-    
-    # Step 2: Remove features with excessive outliers (IQR-based detection)
-    if outlier_iqr_factor > 0:
-        if verbose >= 2:
-            logging.info(f"[FILTER] Step 2: Checking for outlier contamination...")
-        
-        valid_indices = np.where(valid_features)[0]
-        outlier_invalid = np.zeros(n_features, dtype=bool)
-        
-        for feat_idx in valid_indices:
-            feat_data = X[:, feat_idx]
-            finite_mask = np.isfinite(feat_data)
-            
-            if np.sum(finite_mask) < 10:  # Need sufficient data for robust outlier detection
-                continue
-                
-            finite_data = feat_data[finite_mask]
-            
-            # IQR-based outlier detection
-            q1 = np.percentile(finite_data, 25)
-            q3 = np.percentile(finite_data, 75)
-            iqr = q3 - q1
-            
-            if iqr > 0:  # Avoid division by zero
-                lower_bound = q1 - outlier_iqr_factor * iqr
-                upper_bound = q3 + outlier_iqr_factor * iqr
-                
-                outlier_mask = (finite_data < lower_bound) | (finite_data > upper_bound)
-                outlier_fraction = np.sum(outlier_mask) / len(finite_data)
-                
-                if outlier_fraction > outlier_contamination_threshold:
-                    outlier_invalid[feat_idx] = True
-        
-        valid_features &= ~outlier_invalid
-        filter_stats['outlier_removed'] = np.sum(outlier_invalid)
-        
-        if verbose >= 1 and filter_stats['outlier_removed'] > 0:
-            logging.info(f"[FILTER] Removed {filter_stats['outlier_removed']} features with >{outlier_contamination_threshold*100:.1f}% outliers (IQR factor={outlier_iqr_factor})")
-    
-    # Step 3: Remove constant or near-constant features (low variance on cleaned data)
-    if verbose >= 2:
-        logging.info(f"[FILTER] Step 3: Checking feature variance after outlier removal...")
-    
-    # Calculate variance only for currently valid features with finite values
-    valid_indices = np.where(valid_features)[0]
-    variances = np.zeros(n_features)
-    
-    for i, feat_idx in enumerate(valid_indices):
-        feat_data = X[:, feat_idx]
-        finite_mask = np.isfinite(feat_data)
-        if np.sum(finite_mask) > 1:  # Need at least 2 finite values to compute variance
-            variances[feat_idx] = np.var(feat_data[finite_mask])
-        else:
-            variances[feat_idx] = 0.0  # Mark as zero variance if insufficient data
-    
-    low_variance_mask = variances <= variance_threshold
-    valid_features &= ~low_variance_mask
-    filter_stats['low_variance_removed'] = np.sum(low_variance_mask & np.ones(n_features, dtype=bool))
-    
-    if verbose >= 1 and filter_stats['low_variance_removed'] > 0:
-        logging.info(f"[FILTER] Removed {filter_stats['low_variance_removed']} features with variance <= {variance_threshold} (after outlier removal)")
-    
-    # Final statistics
-    filter_stats['final_features'] = np.sum(valid_features)
-    removal_rate = (filter_stats['original_features'] - filter_stats['final_features']) / filter_stats['original_features']
-    
-    # Create filtered feature matrix
-    X_filtered = X[:, valid_features]
-    
-    # Create detailed report
-    filter_report = {
-        'statistics': filter_stats,
-        'removal_rate': removal_rate,
-        'valid_feature_indices': np.where(valid_features)[0],
-        'removed_feature_indices': np.where(~valid_features)[0]
-    }
-    
-    if verbose >= 1:
-        logging.info(f"[FILTER] Univariate feature filtering completed:")
-        logging.info(f"[FILTER]   Original features: {filter_stats['original_features']}")
-        logging.info(f"[FILTER]   NaN/Inf removed: {filter_stats['nan_inf_removed']}")
-        logging.info(f"[FILTER]   Low variance removed: {filter_stats['low_variance_removed']}")
-        logging.info(f"[FILTER]   Outlier contaminated removed: {filter_stats['outlier_removed']}")
-        logging.info(f"[FILTER]   Final features: {filter_stats['final_features']}")
-        logging.info(f"[FILTER]   Removal rate: {removal_rate:.2%}")
-        logging.info(f"[FILTER] Note: Correlation filtering will be handled by feature selection pipeline")
-    
-    # Log removed feature names if operations_df is provided
-    if operations_df is not None and verbose >= 2:
-        removed_indices = np.where(~valid_features)[0]
-        if len(removed_indices) > 0 and len(removed_indices) <= 20:  # Only show if not too many
-            removed_names = operations_df.iloc[removed_indices]['Name'].tolist()
-            logging.info(f"[FILTER] Removed features: {removed_names}")
-        elif len(removed_indices) > 20:
-            logging.info(f"[FILTER] {len(removed_indices)} features removed (too many to list)")
-    
-    return X_filtered, valid_features, filter_report
-
-def parse_epoch_metadata(timeseries_df: pd.DataFrame, verbose: int = 0):
-    """Parse epoch metadata from timeseries names."""
-    if verbose >= 1:
-        logging.info(f"[PARSE] Parsing metadata for {len(timeseries_df)} epochs")
-    
-    parsed_data = []
-    for original_idx, row in timeseries_df.iterrows():
-        name_str = row['Name']
-        
-        # Try different regex patterns
-        patterns = [
-            r'(.*?)_trial(\d+)_epoch(\d+)',
-            r'([^_]+)_trial(\d+)_epoch(\d+)',
-            r'(.+?)_(\d+)_(\d+)'
-        ]
-        
-        matched = False
-        for pattern in patterns:
-            match = re.match(pattern, name_str)
-            if match:
-                patient_id_str = match.group(1)
-                trial_num = int(match.group(2))
-                epoch_num_in_trial = int(match.group(3))
-                
-                parsed_data.append({
-                    'original_flat_idx': original_idx,
-                    'patient_id_str': patient_id_str,
-                    'trial_num': trial_num,
-                    'epoch_num_in_trial': epoch_num_in_trial,
-                })
-                matched = True
-                break
-        
-        if not matched:
-            raise ValueError(f"Could not parse name: {name_str}")
-    
-    parsed_df = pd.DataFrame(parsed_data)
-    
-    # Add subject group mapping
-    subject_ids_unique = sorted(parsed_df['patient_id_str'].unique())
-    patient_group_mapper = {pid: i for i, pid in enumerate(subject_ids_unique)}
-    parsed_df['patient_group_idx'] = parsed_df['patient_id_str'].map(patient_group_mapper)
-    
-    if verbose >= 1:
-        n_trials = len(parsed_df.groupby(['patient_id_str', 'trial_num']))
-        logging.info(f"[PARSE] Parsed {len(parsed_df)} epochs from {len(subject_ids_unique)} subjects ({n_trials} trials)")
-        logging.debug(f"[PARSE] Subjects: {subject_ids_unique}")
-    
-    return parsed_df, subject_ids_unique
-
-def group_epochs_by_trial(X_flat, y_flat, parsed_df, verbose: int = 0):
-    """Group epochs by trial."""
-    if verbose >= 1:
-        logging.info(f"[GROUP] Grouping {len(parsed_df)} epochs by trial")
-    
-    
-    X_list, y_list, groups, metadata = [], [], [], []
-    
-    for (patient_str, trial_num), trial_df in parsed_df.groupby(['patient_id_str', 'trial_num']):
-        trial_df = trial_df.sort_values('epoch_num_in_trial')
-        indices = trial_df['original_flat_idx'].values
-        
-        X_list.append(X_flat[indices])
-        y_list.append(y_flat[indices])
-        groups.append(trial_df['patient_group_idx'].iloc[0])
-        metadata.append({
-            'patient_id_str': patient_str,
-            'trial_num': trial_num,
-            'num_epochs': len(indices)
-        })
-    
-    if verbose >= 1:
-        epoch_counts = [len(x) for x in X_list]
-        logging.info(f"[GROUP] Created {len(X_list)} trials from {len(parsed_df)} epochs (epochs/trial: {min(epoch_counts)}-{max(epoch_counts)}, avg={np.mean(epoch_counts):.1f})")
-    
-    return X_list, y_list, np.array(groups), metadata
-
-def find_unique_mask_value(data_array, max_search=10000, global_mask_value=None, verbose=0):
-    """
-    Find a unique mask value using a large constant approach with fallback.
-    
-    This implementation:
-    1. First tries a configurable large constant (from the hyperparameter config) that sits safely outside typical scaled data ranges
-    2. Falls back to systematic search if the constant conflicts with existing data
-    3. Provides percentile-based final fallback
-    
-    The large constant approach works because:
-    - Scaled data typically stays within [-10, 10] range
-    - The configured mask value is safely outside this range
-    - Masked entries are never transformed by scalers (filtered out first)
-    - This makes collisions virtually impossible even with data drift
-    
-    Parameters:
-    -----------
-    data_array : np.array
-        Array of data values
-    max_search : int
-        Maximum range to search (default: 10000)
-    global_mask_value : float
-        Preferred mask value to try first (default pulled from runtime config)
-    verbose : int
-        Verbosity level
-        
-    Returns:
-    --------
-    float
-        Unique mask value
-    """
-    if global_mask_value is None:
-        global_mask_value = DEFAULT_GLOBAL_X_MASK_VALUE
-
-    # Convert to set for fast lookup
-    data_set = set(data_array.flatten())
-    
-    # Global constant approach: Try configurable constant first
-    GLOBAL_X_MASK = np.float32(global_mask_value)
-    
-    if verbose >= 2:
-        logging.debug(f"[MASK SEARCH] Trying global mask value: {GLOBAL_X_MASK}")
-    
-    if GLOBAL_X_MASK not in data_set:
-        if verbose >= 1:
-            logging.info(f"[MASK SEARCH] Using global mask value: {GLOBAL_X_MASK}")
-        return GLOBAL_X_MASK
-    
-    if verbose >= 1:
-        logging.warning(f"[MASK SEARCH] Global mask value {GLOBAL_X_MASK} conflicts with data, falling back to systematic search")
-    
-    # Fallback: First attempt - Search upward from 0 (0, 1, 2, 3, ...)
-    if verbose >= 2:
-        logging.debug(f"[MASK SEARCH] Starting upward search from 0...")
-    
-    for candidate in range(0, max_search):
-        candidate_f32 = np.float32(candidate)
-        if candidate_f32 not in data_set:
-            if verbose >= 2:
-                logging.info(f"[MASK SEARCH] Found unique value (upward search): {candidate_f32}")
-            return candidate_f32
-    
-    # Second attempt: Search downward from -1 (-1, -2, -3, ...)
-    if verbose >= 1:
-        logging.debug(f"[MASK SEARCH] Upward search failed, trying downward from -1...")
-    
-    for candidate in range(-1, -max_search, -1):
-        candidate_f32 = np.float32(candidate)
-        if candidate_f32 not in data_set:
-            if verbose >= 2:
-                logging.info(f"[MASK SEARCH] Found unique value (downward): {candidate_f32}")
-            return candidate_f32
-    
-    # If both systematic searches fail, use percentile-based fallback
-    if verbose >= 1:
-        logging.warning(format_warning_message(f"[MASK SEARCH] Both systematic searches failed, using percentile fallback"))
-    
-    # Percentile-based fallback - go far below minimum
-    p1 = np.percentile(data_array, 1)
-    data_range = np.max(data_array) - np.min(data_array)
-    fallback_value = np.float32(p1 - 10 * data_range)
-    
-    # Ensure fallback value is unique
-    iteration = 0
-    while fallback_value in data_set and iteration < 100:
-        fallback_value = np.float32(fallback_value * 1.1 - 1000)
-        iteration += 1
-    
-    if fallback_value in data_set:
-        raise ValueError(format_error_message(f"Could not find unique mask value even with percentile fallback!"))
-    
-    if verbose >= 2:
-        logging.info(f"[MASK SEARCH] Using percentile fallback value: {fallback_value}")
-    
-    return fallback_value
-
-def pad_trials(X_list, y_list, max_length=None, verbose: int = 0):
-    """
-    Systematic padding with unique mask values found by searching from zero.
-    
-    This implementation:
-    - Starts from 0 and searches systematically upward/downward
-    - Ensures mask values never occur in actual data
-    - Uses exact integer representation in float32/64
-    - Is safe for tf.keras.layers.Masking
-    - Provides comprehensive validation
-    - Allows custom max_length specification
-    
-    Args:
-        X_list: List of trial arrays for features
-        y_list: List of trial arrays for labels
-        max_length: Optional maximum sequence length. If None, uses max length from data
-        verbose: Verbosity level
-    """
-    if verbose >= 1:
-        logging.info(f"[PAD] Padding {len(X_list)} trials using systematic mask value search")
-    
-    # Concatenate all data for comprehensive analysis
-    all_X = np.concatenate(X_list, axis=0)
-    all_y = np.concatenate(y_list, axis=0)
-    
-    if verbose >= 1:
-        logging.info(f"[PAD] Analyzing combined data: X_shape={all_X.shape}, y_shape={all_y.shape}")
-        logging.info(f"[PAD] X data range: [{np.min(all_X):.6e}, {np.max(all_X):.6e}]")
-        logging.info(f"[PAD] Y unique values: {np.unique(all_y)}")
-    
-    # Find unique X mask value starting from 0 and going upward
-    if verbose >= 1:
-        logging.info(f"[PAD] Searching for unique X mask value (starting from 0, upward)...")
-    X_mask = find_unique_mask_value(all_X, verbose=verbose)
-    
-    # Set Y mask value to always be -1 (simple and reliable for binary labels)
-    y_mask = -1
-    if verbose >= 1:
-        logging.info(f"[PAD] Using fixed Y mask value: {y_mask}")
-    
-    # Validation: Ensure mask values are truly unique
-    X_mask_valid = not np.any(all_X == X_mask)
-    y_mask_valid = not np.any(all_y == y_mask)
-    
-    if not X_mask_valid:
-        raise ValueError(f"X_mask validation failed! {X_mask} found in data.")
-    if not y_mask_valid:
-        raise ValueError(f"y_mask validation failed! {y_mask} found in data.")
-    
-    if verbose >= 1:
-        logging.info(f"[PAD] Found valid mask values: X_mask={X_mask}, y_mask={y_mask}")
-        logging.info(f"[PAD] Mask validation: X_mask_valid={X_mask_valid}, y_mask_valid={y_mask_valid}")
-    
-    # Pad sequences with validated mask values
-    if max_length is None:
-        # Use maximum length from the data
-        X_padded = pad_sequences(X_list, dtype='float32', padding='post', value=X_mask)
-        y_padded = pad_sequences(y_list, dtype='int32', padding='post', value=y_mask)
-        effective_max_length = X_padded.shape[1]
-    else:
-        # Use specified max_length
-        X_padded = pad_sequences(X_list, maxlen=max_length, dtype='float32', padding='post', value=X_mask)
-        y_padded = pad_sequences(y_list, maxlen=max_length, dtype='int32', padding='post', value=y_mask)
-        effective_max_length = max_length
-    
-    # Final validation after padding
-    X_data_mask = X_padded != X_mask
-    y_data_mask = y_padded != y_mask
-    
-    n_X_padded = np.sum(~X_data_mask)
-    n_y_padded = np.sum(~y_data_mask)
-    
-    # Double-check: ensure no conflicts after padding
-    X_data_values = X_padded[X_data_mask]
-    if len(X_data_values) > 0 and np.any(X_data_values == X_mask):
-        raise ValueError(f"Post-padding validation failed! X_mask {X_mask} found in data values.")
-    
-    y_data_values = y_padded[y_data_mask]
-    if len(y_data_values) > 0 and np.any(y_data_values == y_mask):
-        raise ValueError(f"Post-padding validation failed! y_mask {y_mask} found in data values.")
-    
-    mask_values = {
-        'X_mask': X_mask,
-        'y_mask': y_mask,
-        'max_length': effective_max_length,
-        'X_padded_count': n_X_padded,
-        'y_padded_count': n_y_padded,
-        'validation_passed': True
-    }
-    
-    if verbose >= 1:
-        logging.info(f"[PAD] Padded arrays: X={X_padded.shape}, y={y_padded.shape}, max_length={effective_max_length}")
-        logging.info(f"[PAD] Mask values: X_mask={X_mask:.2e}, y_mask={y_mask}")
-    
-    return X_padded, y_padded, mask_values
-
-
-# ===================================================================
-# LSTM CLASSIFIER AND RELATED CLASSES
-# ===================================================================
-
-class MonitoringMaskedAccuracy(tf.keras.metrics.Metric):
-    """Real-time masked accuracy monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_accuracy', **kwargs):
-        super(MonitoringMaskedAccuracy, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-        self.total = self.add_weight(name='total', initializer='zeros')
-        self.count = self.add_weight(name='count', initializer='zeros')
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
-
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_rounded = tf.round(y_pred)
-        
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-        
-        # Only compute on valid (non-masked) elements
-        values = tf.cast(tf.equal(y_true_masked, y_pred_rounded), tf.float32) * sample_weight
-        self.total.assign_add(tf.reduce_sum(values))
-        self.count.assign_add(tf.reduce_sum(sample_weight))
-
-    def result(self):
-        return self.total / (self.count + K.epsilon())
-
-    def reset_states(self):
-        self.total.assign(0)
-        self.count.assign(0)
-        
-class MonitoringMaskedF1Score(tf.keras.metrics.Metric):
-    """Real-time masked F1 score monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_f1_score', **kwargs):
-        super(MonitoringMaskedF1Score, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
-        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
-        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
-
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_rounded = tf.round(y_pred)
-
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-
-        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
-        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * sample_weight)
-        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
-
-        # Use assign_add() correctly
-        self.tp.assign_add(tp)
-        self.fp.assign_add(fp)
-        self.fn.assign_add(fn)
-
-    def result(self):
-        precision = self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
-        recall = self.tp / (self.tp + self.fn + tf.keras.backend.epsilon())
-        f1_score = 2 * (precision * recall) / (precision + recall + tf.keras.backend.epsilon())
-        return f1_score
-
-    def reset_state(self):
-        self.tp.assign(0)
-        self.fp.assign(0)
-        self.fn.assign(0)
-            
-class MonitoringMaskedPrecision(tf.keras.metrics.Metric):
-    """Real-time masked precision monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_precision', **kwargs):
-        super(MonitoringMaskedPrecision, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
-        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_rounded = tf.round(y_pred)
-
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-
-        tp = tf.reduce_sum(tf.cast(y_true_masked * y_pred_rounded, tf.float32) * sample_weight)
-        fp = tf.reduce_sum(tf.cast((1 - y_true_masked) * y_pred_rounded, tf.float32) * sample_weight)
-
-        # Assign scalar values directly
-        self.tp.assign_add(tp)
-        self.fp.assign_add(fp)
-
-    def result(self):
-        return self.tp / (self.tp + self.fp + tf.keras.backend.epsilon())
-
-    def reset_states(self):
-        self.tp.assign(0.0)
-        self.fp.assign(0.0)
-        
-class MonitoringMaskedRecall(tf.keras.metrics.Metric):
-    """Real-time masked recall monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_recall', **kwargs):
-        super(MonitoringMaskedRecall, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
-        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_rounded = tf.round(y_pred)
-
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-
-        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
-        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
-
-        self.tp.assign_add(tf.cast(tp, tf.float32))
-        self.fn.assign_add(tf.cast(fn, tf.float32))
-
-    def result(self):
-        return self.tp / (self.tp + self.fn + K.epsilon())
-
-    def reset_states(self):
-        self.tp.assign(0.0)
-        self.fn.assign(0.0)
-        
-class MonitoringMaskedBalancedAccuracy(tf.keras.metrics.Metric):
-    """Real-time masked balanced accuracy metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_balanced_accuracy', **kwargs):
-        super(MonitoringMaskedBalancedAccuracy, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-        self.tp = self.add_weight(name='tp', initializer='zeros', dtype=tf.float32)
-        self.tn = self.add_weight(name='tn', initializer='zeros', dtype=tf.float32)
-        self.fp = self.add_weight(name='fp', initializer='zeros', dtype=tf.float32)
-        self.fn = self.add_weight(name='fn', initializer='zeros', dtype=tf.float32)
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_rounded = tf.round(y_pred)
-
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask
-
-        tp = tf.reduce_sum(y_true_masked * y_pred_rounded * sample_weight)
-        tn = tf.reduce_sum((1 - y_true_masked) * (1 - y_pred_rounded) * sample_weight)
-        fp = tf.reduce_sum((1 - y_true_masked) * y_pred_rounded * sample_weight)
-        fn = tf.reduce_sum(y_true_masked * (1 - y_pred_rounded) * sample_weight)
-
-        self.tp.assign_add(tf.cast(tp, tf.float32))
-        self.tn.assign_add(tf.cast(tn, tf.float32))
-        self.fp.assign_add(tf.cast(fp, tf.float32))
-        self.fn.assign_add(tf.cast(fn, tf.float32))
-
-    def result(self):
-        tpr = tf.math.divide_no_nan(self.tp, self.tp + self.fn + K.epsilon())
-        tnr = tf.math.divide_no_nan(self.tn, self.tn + self.fp + K.epsilon())
-        return (tpr + tnr) / 2.0
-
-    def reset_states(self):
-        self.tp.assign(0.0)
-        self.tn.assign(0.0)
-        self.fp.assign(0.0)
-        self.fn.assign(0.0)
-        
-class MonitoringMaskedROC_AUC(tf.keras.metrics.AUC):
-    """Real-time masked ROC AUC monitoring metric for TensorFlow/Keras models"""
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_roc_auc', **kwargs):
-        super(MonitoringMaskedROC_AUC, self).__init__(name=name, **kwargs)
-        self.y_mask_value = y_mask_value
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_clipped = tf.clip_by_value(y_pred, 0, 1)
-
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-
-        super().update_state(y_true_masked, y_pred_clipped, sample_weight)
-
-class MonitoringMaskedPR_AUC(tf.keras.metrics.AUC):
-    """
-    Real-time masked Precision-Recall Area Under Curve monitoring metric for TensorFlow/Keras models.
-    Computes PR AUC while ignoring masked/padded values in sequences.
-    """
-    def __init__(self, y_mask_value=-1, name='monitoring_masked_pr_auc', **kwargs):
-        # Initialize AUC with curve='PR' for Precision-Recall curve
-        super(MonitoringMaskedPR_AUC, self).__init__(name=name, curve='PR', **kwargs)
-        self.y_mask_value = y_mask_value
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it is 1
-            
-        mask = tf.cast(tf.not_equal(y_true, self.y_mask_value), tf.float32)
-        y_true_masked = tf.cast(tf.clip_by_value(y_true, 0, 1), tf.float32)
-        y_pred_clipped = tf.clip_by_value(y_pred, 0, 1)
-
-        # Apply mask to sample weight if provided
-        if sample_weight is not None:
-            sample_weight = tf.cast(sample_weight, tf.float32) * mask
-        else:
-            sample_weight = mask  # Use mask as the sample weight if none is provided
-
-        super().update_state(y_true_masked, y_pred_clipped, sample_weight)
-
-
-# ===================================================================
-# MASK-AWARE SCALER SECTION
-# ===================================================================
-class MaskAwareScaler(BaseEstimator, TransformerMixin):
-    """
-    Scaler that handles masked values in sequences.
-    Uses RobustScaler by default to prevent overflow issues with large feature values.
-    """
-    def __init__(self, x_mask_value=None, scaler_type='robust'):
-        self.x_mask_value = x_mask_value
-        self.scaler_type = scaler_type
-        self.scalers_ = None
-        self.n_features_ = None
-
-    def _create_base_scaler(self):
-        """Instantiate a fresh scaler of the configured type."""
-        if self.scaler_type == 'standard':
-            return StandardScaler()
-        if self.scaler_type == 'robust':
-            return RobustScaler()
-        if self.scaler_type == 'minmax':
-            return MinMaxScaler()
-        raise ValueError(f"Unsupported scaler_type: {self.scaler_type}")
-        
-    def fit(self, X, y=None):
-        """Fit scaler on non-masked values."""
-        X_array = np.asarray(X)
-        if X_array.ndim == 3:
-            _, _, n_features = X_array.shape
-            X_flat = X_array.reshape(-1, n_features)
-        elif X_array.ndim == 2:
-            n_features = X_array.shape[1]
-            X_flat = X_array
-        else:
-            raise ValueError("MaskAwareScaler expects 2D or 3D input arrays")
-
-        self.n_features_ = n_features
-        self.scalers_ = []
-
-        for feature_idx in range(n_features):
-            base_scaler = self._create_base_scaler()
-            column = X_flat[:, feature_idx]
-
-            if self.x_mask_value is not None:
-                valid_mask = column != self.x_mask_value
-                column_valid = column[valid_mask]
-            else:
-                column_valid = column
-
-            if column_valid.size == 0:
-                # Fit on a neutral value to keep scaler parameters defined
-                base_scaler.fit(np.zeros((1, 1)))
-            else:
-                column_clipped = np.clip(column_valid, -1e10, 1e10)
-                base_scaler.fit(column_clipped.reshape(-1, 1))
-
-            self.scalers_.append(base_scaler)
-        
-        return self
-    
-    def transform(self, X):
-        """Transform data while preserving masked values."""
-        if self.scalers_ is None or self.n_features_ is None:
-            raise ValueError("MaskAwareScaler instance is not fitted yet")
-
-        X_array = np.asarray(X)
-        if X_array.ndim == 3:
-            original_shape = X_array.shape
-            X_flat = X_array.reshape(-1, original_shape[2]).astype(np.float32)
-        elif X_array.ndim == 2:
-            original_shape = X_array.shape
-            X_flat = X_array.reshape(-1, original_shape[1]).astype(np.float32)
-        else:
-            raise ValueError("MaskAwareScaler expects 2D or 3D input arrays")
-
-        if self.n_features_ != X_flat.shape[1]:
-            raise ValueError("Input feature dimension does not match fitted data")
-
-        for feature_idx, scaler in enumerate(self.scalers_):
-            column = X_flat[:, feature_idx]
-            if self.x_mask_value is not None:
-                valid_mask = column != self.x_mask_value
-            else:
-                valid_mask = np.ones_like(column, dtype=bool)
-
-            if not np.any(valid_mask):
-                continue
-
-            valid_values = np.clip(column[valid_mask], -1e10, 1e10).reshape(-1, 1)
-            transformed = scaler.transform(valid_values).flatten()
-            transformed = np.clip(transformed, -10, 10).astype(np.float32)
-            column[valid_mask] = transformed
-            X_flat[:, feature_idx] = column
-
-        X_transformed = X_flat.reshape(original_shape)
-        return X_transformed.astype(np.float32)
-
-# ===================================================================
-# ADVANCED FEATURE SELECTION SECTION
-# ===================================================================
-class FeatureSelector(BaseEstimator, TransformerMixin):
-    """
-    Advanced feature selection pipeline with multiple criteria.
-    """
-    
-    def __init__(self, 
-                 n_features=100,
-                 variance_threshold=1e-8,
-                 correlation_threshold=0.95,
-                 x_mask_value=None,
-                 selection_method='mutual_info',
-                 scoring_weights=None,
-                 enabled=True):  # <-- This parameter
-        self.n_features = n_features
-        self.variance_threshold = variance_threshold
-        self.correlation_threshold = correlation_threshold
-        self.x_mask_value = x_mask_value
-        self.selection_method = selection_method
-        if scoring_weights:
-            logging.info("FeatureSelector now uses a single univariate metric; provided scoring_weights are ignored.")
-        self.scoring_weights = None
-        self.enabled = bool(enabled)
-        
-        # Store feature selection results
-        self.selected_features_ = None
-        self.feature_scores_ = None
-        self.variance_selector_ = None
-        self.selection_report_ = None
-
-    def _init_selection_report(self, n_features):
-        """Initialize structured tracking for each feature-selection stage."""
-        return {
-            'initial_features': int(n_features),
-            'fallback_used': False,
-            'final_feature_strategy': None,
-            'final_feature_strategy_details': {},
-            'steps': {
-                'variance_filter': {'status': 'pending'},
-                'univariate_scoring': {'status': 'pending'},
-                'top_k_selection': {'status': 'pending'},
-                'correlation_filter': {'status': 'pending'},
-                'final_selection': {'status': 'pending'},
-            }
-        }
-
-    def _update_step_report(self, step_name, status, **details):
-        """Update per-step status with sanitized detail values."""
-        if self.selection_report_ is None:
-            self.selection_report_ = self._init_selection_report(0)
-        step_entry = self.selection_report_.setdefault('steps', {}).setdefault(step_name, {})
-        step_entry['status'] = status
-        if details:
-            sanitized = {}
-            for key, value in details.items():
-                if isinstance(value, (np.integer, np.floating)):
-                    sanitized[key] = value.item()
-                elif isinstance(value, np.ndarray):
-                    sanitized[key] = value.tolist()
-                else:
-                    sanitized[key] = value
-            step_entry['details'] = sanitized
-
-    def _mark_fallback(self):
-        if self.selection_report_ is None:
-            self.selection_report_ = self._init_selection_report(0)
-        self.selection_report_['fallback_used'] = True
-
-    def _mark_pending_steps(self, status='skipped', reason=None):
-        if self.selection_report_ is None:
-            return
-        for step_name, step_data in self.selection_report_.get('steps', {}).items():
-            if step_data.get('status') == 'pending':
-                details = {'reason': reason} if reason else {}
-                self._update_step_report(step_name, status, **details)
-    
-    def _set_final_strategy(self, strategy_name, **details):
-        if self.selection_report_ is None:
-            self.selection_report_ = self._init_selection_report(0)
-        self.selection_report_['final_feature_strategy'] = strategy_name
-        if details:
-            sanitized = {}
-            for key, value in details.items():
-                if isinstance(value, (np.integer, np.floating)):
-                    sanitized[key] = value.item()
-                elif isinstance(value, np.ndarray):
-                    sanitized[key] = value.tolist()
-                else:
-                    sanitized[key] = value
-            self.selection_report_['final_feature_strategy_details'] = sanitized
-        
-    def _calculate_masked_variance(self, X):
-        """Calculate variance ignoring masked values."""
-        # Handle both 2D and 3D data
-        if len(X.shape) == 3:
-            # For 3D data (samples, timesteps, features), flatten across samples and timesteps
-            n_samples, n_timesteps, n_features = X.shape
-            X_flat = X.reshape(-1, n_features)
-        else:
-            X_flat = X
-            n_features = X.shape[1]
-
-        if self.x_mask_value is None:
-            return np.var(X_flat, axis=0)
-        
-        variances = []
-        for i in range(n_features):
-            feature_values = X_flat[:, i]
-            valid_mask = feature_values != self.x_mask_value
-            if np.sum(valid_mask) > 1:
-                variances.append(np.var(feature_values[valid_mask]))
-            else:
-                variances.append(0.0)
-        
-        return np.array(variances)
-    
-    def _compute_metric_scores(self, X_flat, y_flat, metric):
-        if metric == 'anova':
-            try:
-                selector = SelectKBest(score_func=f_classif, k='all')
-                selector.fit(X_flat, y_flat)
-                return selector.scores_
-            except Exception:
-                return np.zeros(X_flat.shape[1])
-        if metric == 'mutual_info':
-            try:
-                return mutual_info_classif(X_flat, y_flat, random_state=42)
-            except Exception:
-                return np.zeros(X_flat.shape[1])
-        if metric == 'mann_whitney':
-            scores = np.zeros(X_flat.shape[1])
-            for i in range(X_flat.shape[1]):
-                g0 = X_flat[y_flat == 0, i]
-                g1 = X_flat[y_flat == 1, i]
-                mask0 = np.isfinite(g0)
-                mask1 = np.isfinite(g1)
-                if mask0.sum() < 2 or mask1.sum() < 2:
-                    continue
-                try:
-                    score, _ = stats.mannwhitneyu(g0[mask0], g1[mask1], alternative='two-sided')
-                    scores[i] = score
-                except Exception:
-                    scores[i] = 0.0
-            return scores
-        if metric == 'roc_auc':
-            scores = np.zeros(X_flat.shape[1])
-            for i in range(X_flat.shape[1]):
-                col = X_flat[:, i]
-                mask = np.isfinite(col)
-                if len(np.unique(y_flat[mask])) < 2:
-                    continue
-                try:
-                    scores[i] = roc_auc_score(y_flat[mask], col[mask])
-                except Exception:
-                    scores[i] = 0.0
-            return scores
-        if metric == 'pr_auc':
-            scores = np.zeros(X_flat.shape[1])
-            for i in range(X_flat.shape[1]):
-                col = X_flat[:, i]
-                mask = np.isfinite(col)
-                if len(np.unique(y_flat[mask])) < 2:
-                    continue
-                try:
-                    scores[i] = average_precision_score(y_flat[mask], col[mask])
-                except Exception:
-                    scores[i] = 0.0
-            return scores
-        if metric == 'cliffs_delta':
-            scores = np.zeros(X_flat.shape[1])
-            for i in range(X_flat.shape[1]):
-                g0 = X_flat[y_flat == 0, i]
-                g1 = X_flat[y_flat == 1, i]
-                mask0 = np.isfinite(g0)
-                mask1 = np.isfinite(g1)
-                g0 = g0[mask0]
-                g1 = g1[mask1]
-                if g0.size < 2 or g1.size < 2:
-                    continue
-                try:
-                    res = stats.mannwhitneyu(g1, g0, alternative='greater', method='auto')
-                    delta = 2 * res.statistic / (len(g1) * len(g0)) - 1
-                    scores[i] = delta
-                except Exception:
-                    scores[i] = 0.0
-            return scores
-        return np.zeros(X_flat.shape[1])
-
-    def _calculate_univariate_scores(self, X, y):
-        """Calculate univariate feature scores."""
-        # Handle both 2D and 3D data
-        if len(X.shape) == 3:
-            # For 3D data, we need to flatten appropriately
-            n_samples, n_timesteps, n_features = X.shape
-            X_flat = X.reshape(-1, n_features)
-            
-            # For y, we need to handle the case where it might also be 3D
-            if len(y.shape) == 2:
-                # y is also padded with timesteps, flatten it
-                y_flat = y.reshape(-1)
-            else:
-                # y is 1D, repeat it for each timestep
-                y_flat = np.repeat(y, n_timesteps)
-        else:
-            X_flat = X
-            y_flat = y
-            n_features = X.shape[1]
-
-        metric_name = self.selection_method or 'mutual_info'
-        metric_scores = self._compute_metric_scores(X_flat, y_flat, metric_name)
-        if metric_scores is None:
-            return np.zeros(n_features)
-
-        metric_scores = np.nan_to_num(metric_scores, nan=0.0, posinf=0.0, neginf=0.0)
-        if np.all(metric_scores == 0):
-            return np.zeros(n_features)
-
-        # Normalize to 0-1 so downstream selection uses consistent scale
-        return (metric_scores - np.min(metric_scores)) / (np.ptp(metric_scores) + 1e-12)
-    
-    def _remove_correlated_features(self, X, selected_indices):
-        """Remove highly correlated features."""
-        if len(selected_indices) <= 1:
-            return selected_indices
-        
-        X_selected = X[:, selected_indices] if len(X.shape) == 2 else X[:, :, selected_indices]
-        
-        # Handle 3D data by flattening across samples and timesteps
-        if len(X_selected.shape) == 3:
-            # Reshape from (samples, timesteps, features) to (samples*timesteps, features)
-            n_samples, n_timesteps, n_features = X_selected.shape
-            X_flat = X_selected.reshape(-1, n_features)
-
-            # Remove masked values if x_mask_value is specified
-            if self.x_mask_value is not None:
-                # Create mask for valid (non-masked) entries
-                valid_mask = X_flat != self.x_mask_value
-                # Only calculate correlation on features that have enough valid samples
-                min_valid_samples = max(10, n_samples // 2)  # At least 10 or half the samples
-                feature_valid_counts = np.sum(valid_mask, axis=0)
-                valid_features_mask = feature_valid_counts >= min_valid_samples
-                
-                if np.sum(valid_features_mask) <= 1:
-                    # Not enough features with sufficient valid data
-                    return selected_indices
-                
-                # Filter to features with enough valid data
-                X_for_corr = X_flat[:, valid_features_mask]
-                valid_selected_indices = [idx for i, idx in enumerate(selected_indices) if valid_features_mask[i]]
-                
-                # Calculate correlation only on valid (non-masked) values
-                try:
-                    # For each pair of features, calculate correlation using only valid entries
-                    n_valid_features = X_for_corr.shape[1]
-                    corr_matrix = np.eye(n_valid_features)  # Initialize with identity
-                    
-                    for i in range(n_valid_features):
-                        for j in range(i + 1, n_valid_features):
-                            # Get valid entries for both features
-                            valid_i = X_for_corr[:, i] != self.x_mask_value
-                            valid_j = X_for_corr[:, j] != self.x_mask_value
-                            common_valid = valid_i & valid_j
-                            
-                            if np.sum(common_valid) >= 10:  # Need at least 10 common valid entries
-                                try:
-                                    corr_val = np.corrcoef(X_for_corr[common_valid, i], X_for_corr[common_valid, j])[0, 1]
-                                    corr_matrix[i, j] = corr_matrix[j, i] = corr_val if not np.isnan(corr_val) else 0.0
-                                except:
-                                    corr_matrix[i, j] = corr_matrix[j, i] = 0.0
-                except:
-                    # Fallback: return original indices if correlation calculation fails
-                    return selected_indices
-            else:
-                # No masking, standard correlation calculation
-                try:
-                    corr_matrix = np.corrcoef(X_flat.T)
-                    corr_matrix = np.nan_to_num(corr_matrix)
-                    valid_selected_indices = selected_indices
-                except:
-                    return selected_indices
-        else:
-            # 2D data - original logic
-            if self.x_mask_value is not None:
-                # Calculate correlation ignoring masked values
-                try:
-                    corr_matrix = np.corrcoef(X_selected.T)
-                    # Replace NaN with 0
-                    corr_matrix = np.nan_to_num(corr_matrix)
-                except:
-                    return selected_indices
-            else:
-                try:
-                    corr_matrix = np.corrcoef(X_selected.T)
-                except:
-                    return selected_indices
-            valid_selected_indices = selected_indices
-        
-        # Find highly correlated pairs
-        to_remove = set()
-        for i in range(len(corr_matrix)):
-            for j in range(i + 1, len(corr_matrix)):
-                if abs(corr_matrix[i, j]) > self.correlation_threshold:
-                    # Remove feature with lower score (use valid_selected_indices for indexing)
-                    idx_i = valid_selected_indices[i] if len(X_selected.shape) == 3 else selected_indices[i]
-                    idx_j = valid_selected_indices[j] if len(X_selected.shape) == 3 else selected_indices[j]
-                    
-                    if self.feature_scores_[idx_i] < self.feature_scores_[idx_j]:
-                        to_remove.add(idx_i)
-                    else:
-                        to_remove.add(idx_j)
-        
-        # Remove correlated features
-        final_indices = [idx for idx in selected_indices if idx not in to_remove]
-        
-        return final_indices
-    
-    def fit(self, X, y):
-        """Fit feature selector."""
-        X = np.asarray(X)
-        # Determine number of features (handle both 2D and 3D data)
-        n_features = X.shape[-1]  # Last dimension is always features
-        self.selection_report_ = self._init_selection_report(n_features)
-        
-        if not self.enabled:
-            self.selected_features_ = list(range(n_features))
-            self.feature_scores_ = np.ones(n_features)
-            self._mark_pending_steps(status='skipped', reason='feature selector disabled')
-            self._set_final_strategy(
-                'disabled_passthrough',
-                selected_features=int(n_features),
-                reason='Feature selector disabled via config'
-            )
-            logging.info("Feature selection disabled; passing through all %d features", n_features)
-            return self
-        
-        try:
-            # Step 1: Variance filtering
-            variance_input = int(n_features)
-            try:
-                variances = self._calculate_masked_variance(X)
-                high_variance_mask = variances > self.variance_threshold
-                high_variance_indices = np.where(high_variance_mask)[0]
-                retained = int(len(high_variance_indices))
-                
-                if retained == 0:
-                    logging.info(f"Warning: No features pass variance threshold {self.variance_threshold}, using all features")
-                    high_variance_indices = np.arange(n_features)
-                    self._update_step_report(
-                        'variance_filter',
-                        'warning',
-                        input_features=variance_input,
-                        output_features=int(len(high_variance_indices)),
-                        removed=0,
-                        threshold=float(self.variance_threshold),
-                        note="No feature passed threshold; reverted to all features"
-                    )
-                else:
-                    removed = variance_input - retained
-                    self._update_step_report(
-                        'variance_filter',
-                        'success',
-                        input_features=variance_input,
-                        output_features=retained,
-                        removed=removed,
-                        threshold=float(self.variance_threshold)
-                    )
-            except Exception as variance_error:
-                self._update_step_report(
-                    'variance_filter',
-                    'failed',
-                    input_features=variance_input,
-                    output_features=0,
-                    error=str(variance_error)
-                )
-                raise
-            
-            # Step 2: Univariate feature scoring
-            if len(X.shape) == 3:
-                X_filtered = X[:, :, high_variance_indices]
-            else:
-                X_filtered = X[:, high_variance_indices]
-                
-            self.feature_scores_ = np.zeros(n_features)
-            
-            univariate_input = int(len(high_variance_indices))
-            scoring_method = self.selection_method or 'mutual_info'
-            try:
-                univariate_scores = self._calculate_univariate_scores(X_filtered, y)
-                self._update_step_report(
-                    'univariate_scoring',
-                    'success',
-                    input_features=univariate_input,
-                    output_features=univariate_input,
-                    scoring_method=scoring_method
-                )
-            except Exception as univariate_error:
-                self._update_step_report(
-                    'univariate_scoring',
-                    'failed',
-                    input_features=univariate_input,
-                    output_features=0,
-                    scoring_method=scoring_method,
-                    error=str(univariate_error)
-                )
-                raise
-            self.feature_scores_[high_variance_indices] = univariate_scores
-            
-            # Step 3: Select top features
-            top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features * 2, len(high_variance_indices))]
-            self._update_step_report(
-                'top_k_selection',
-                'success',
-                input_features=univariate_input,
-                output_features=int(len(top_indices)),
-                selection_budget=int(self.n_features),
-                selection_multiplier=2
-            )
-            
-            # Step 4: Remove correlated features (with error handling)
-            correlation_input = int(len(top_indices))
-            try:
-                final_indices = self._remove_correlated_features(X, top_indices)
-                correlation_output = int(len(final_indices))
-                removed = max(correlation_input - correlation_output, 0)
-                self._update_step_report(
-                    'correlation_filter',
-                    'success',
-                    input_features=correlation_input,
-                    output_features=correlation_output,
-                    removed=int(removed),
-                    threshold=float(self.correlation_threshold)
-                )
-            except Exception as e:
-                logging.info(f"Warning: Correlation filtering failed ({e}), using top features without correlation filtering")
-                final_indices = top_indices
-                self._mark_fallback()
-                self._update_step_report(
-                    'correlation_filter',
-                    'failed',
-                    input_features=correlation_input,
-                    output_features=correlation_input,
-                    error=str(e),
-                    action="Reverted to top-ranked features without correlation filtering"
-                )
-            
-            # Step 5: Final selection
-            final_input = int(len(final_indices))
-            final_indices = final_indices[:self.n_features]  # Ensure we don't exceed n_features
-            self.selected_features_ = sorted(final_indices)
-            selected_count = int(len(self.selected_features_))
-            removed = max(final_input - selected_count, 0)
-            self._update_step_report(
-                'final_selection',
-                'success',
-                input_features=final_input,
-                output_features=selected_count,
-                requested_n_features=int(self.n_features),
-                removed=removed
-            )
-            self._set_final_strategy(
-                'correlation_pruned_top_k',
-                requested_n_features=int(self.n_features),
-                available_features=final_input,
-                selected_features=selected_count
-            )
-            
-            logging.info(f"Feature selection: {len(self.selected_features_)} features selected from {n_features}")
-            
-        except Exception as e:
-            logging.info(f"Feature selection failed: {e}. Using first {min(self.n_features, n_features)} features")
-            self.selected_features_ = list(range(min(self.n_features, n_features)))
-            self.feature_scores_ = np.ones(n_features)  # Dummy scores
-            self._mark_fallback()
-            self._update_step_report(
-                'final_selection',
-                'fallback',
-                input_features=int(n_features),
-                output_features=int(len(self.selected_features_)),
-                requested_n_features=int(self.n_features),
-                error=str(e),
-                n_selected=int(len(self.selected_features_) if self.selected_features_ is not None else 0)
-            )
-            self._set_final_strategy(
-                'fallback_first_n',
-                requested_n_features=int(self.n_features),
-                selected_features=int(len(self.selected_features_)),
-                reason=str(e)
-            )
-            self._mark_pending_steps(status='skipped', reason='Exception triggered fallback selection')
-            
-        return self
-    
-    def transform(self, X):
-        """Transform data using selected features."""
-        X = np.asarray(X)
-        if not self.enabled:
-            return X
-        if self.selected_features_ is None:
-            raise ValueError("Selector not fitted yet")
-        
-        if len(X.shape) == 3:
-            return X[:, :, self.selected_features_]
-        else:
-            return X[:, self.selected_features_]
-
-# ===================================================================
-# LSTM CLASSIFIER SECTION
-# ===================================================================
-class VanillaLSTMClassifier(BaseEstimator, ClassifierMixin):
-    """
-    Vanilla LSTM classifier that operates on raw, unpadded segments.
-
-    Each sample represents a single segment shaped as (timesteps, 1).
-    """
-
-    def __init__(
-        self,
-        hidden_dims=None,
-        activations=None,
-        recurrent_activations=None,
-        dropout=0.2,
-        dense_units=1,
-        dense_activation='sigmoid',
-        optimizer='adam',
-        lr=1e-3,
-        patience=10,
-        epochs=50,
-        batch_size=64,
-        threshold=0.5,
-        loss='binary_crossentropy',
-        use_class_weights=True,
-        callbacks=None,
-    ):
-        self.hidden_dims = hidden_dims or [64, 64]
-        self.activations = activations or ['tanh']
-        self.recurrent_activations = recurrent_activations or ['sigmoid']
-        self.dropout = dropout
-        self.dense_units = dense_units
-        self.dense_activation = dense_activation
-        self.optimizer = optimizer
-        self.lr = lr
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.threshold = threshold
-        self.loss = loss
-        self.use_class_weights = use_class_weights
-        self.callbacks = callbacks or []
-        self.patience = patience
-
-        self.model = None
-        self.input_shape = None
-        self.history_ = []
-        self.classes_ = None
-
-    def _repeat_to_match_layers(self, values, fallback):
-        if not self.hidden_dims:
-            return []
-        if not values:
-            return [fallback] * len(self.hidden_dims)
-        if len(values) == len(self.hidden_dims):
-            return list(values)
-        if len(values) == 1:
-            return list(values) * len(self.hidden_dims)
-        raise ValueError("Activation lists must have length 1 or match hidden_dims.")
-
-    def _prepare_input(self, X):
-        X_array = np.asarray(X, dtype=np.float32)
-        if X_array.ndim == 2:
-            X_array = X_array.reshape(X_array.shape[0], X_array.shape[1], 1)
-        elif X_array.ndim != 3:
-            raise ValueError("VanillaLSTMClassifier expects 2D or 3D inputs.")
-        return X_array
-
-    def _prepare_labels(self, y):
-        y_array = np.asarray(y).reshape(-1, 1)
-        return y_array.astype(np.float32)
-
-    def _calculate_class_weights(self, y):
-        if not self.use_class_weights:
-            return None
-        classes = np.unique(y)
-        if classes.size <= 1:
-            return None
-        try:
-            weights = compute_class_weight(class_weight='balanced', classes=classes, y=y.ravel())
-            return {cls: weight for cls, weight in zip(classes, weights)}
-        except Exception as err:
-            logging.warning(format_warning_message(f"[VANILLA LSTM] Failed to compute class weights: {err}"))
-            return None
-
-    def build_model(self, input_shape):
-        model = Sequential()
-        model.add(Input(shape=input_shape))
-
-        activations = self._repeat_to_match_layers(self.activations, 'tanh')
-        recurrent = self._repeat_to_match_layers(self.recurrent_activations, 'sigmoid')
-
-        for idx, units in enumerate(self.hidden_dims):
-            return_sequences = idx < len(self.hidden_dims) - 1
-            model.add(
-                LSTM(
-                    units,
-                    activation=activations[idx],
-                    recurrent_activation=recurrent[idx],
-                    return_sequences=return_sequences,
-                )
-            )
-            if self.dropout and self.dropout > 0:
-                model.add(Dropout(self.dropout))
-
-        model.add(Dense(self.dense_units, activation=self.dense_activation))
-
-        if self.optimizer == 'adam':
-            optimizer = Adam(learning_rate=self.lr)
-        elif self.optimizer == 'RMSprop':
-            optimizer = RMSprop(learning_rate=self.lr)
-        elif self.optimizer == 'SGD':
-            optimizer = SGD(learning_rate=self.lr)
-        else:
-            raise ValueError(f"Unsupported optimizer: {self.optimizer}")
-
-        model.compile(
-            optimizer=optimizer,
-            loss=self.loss,
-            metrics=[
-                tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-                Precision(name='precision'),
-                Recall(name='recall'),
-                AUC(name='roc_auc', curve='ROC'),
-                AUC(name='pr_auc', curve='PR'),
-            ],
-        )
-        return model
-
-    def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
-        X_prepared = self._prepare_input(X)
-        y_prepared = self._prepare_labels(y)
-        self.input_shape = X_prepared.shape[1:]
-
-        training_callbacks = []
-        if callbacks:
-            training_callbacks.extend(callbacks)
-        training_callbacks.extend(self.callbacks)
-
-        strategy = tf.distribute.MirroredStrategy()
-        with strategy.scope():
-            self.model = self.build_model(self.input_shape)
-
-        class_weight = self._calculate_class_weights(y_prepared)
-        fit_kwargs = {
-            'epochs': self.epochs,
-            'batch_size': self.batch_size,
-            'verbose': 0,
-            'callbacks': training_callbacks,
-        }
-        if class_weight:
-            fit_kwargs['class_weight'] = class_weight
-
-        if validation_data is not None:
-            X_val, y_val = validation_data
-            fit_kwargs['validation_data'] = (self._prepare_input(X_val), self._prepare_labels(y_val))
-
-        history = self.model.fit(X_prepared, y_prepared, **fit_kwargs).history
-        self.history_.append(history)
-        self.classes_ = np.array([0, 1])
-        return self
-
-    def predict_proba(self, X):
-        if self.model is None:
-            raise ValueError("Model has not been fitted yet.")
-        X_prepared = self._prepare_input(X)
-        proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)
-        proba_pos = np.clip(proba_pos, 1e-7, 1 - 1e-7)
-        return np.column_stack([1 - proba_pos, proba_pos])
-
-    def predict(self, X):
-        proba = self.predict_proba(X)[:, 1]
-        return (proba > self.threshold).astype(int)
-
-    def summary(self):
-        if self.model:
-            self.model.summary()
-        else:
-            logging.info("Vanilla LSTM model not built yet.")
-
-
-class LSTMClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, hidden_dims=[64], activations=['tanh'], 
-                 recurrent_activations=['sigmoid'],
-                 dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
-                 lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
-                 loss='binary_crossentropy', mask_values=None, 
-                 use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
-                 outer_test_subject=None, inner_validation_subject=None,
-                 threshold_range=None, n_thresholds=None):
-        """
-        LSTM Classifier for sequence-to-sequence binary classification.
-        
-        Now follows a cleaner design where callbacks are created externally and passed 
-        to the fit method, rather than being created inside the classifier. Also includes
-        integrated threshold optimization functionality.
-        
-        Args:
-            threshold_range: Range of thresholds to search during optimization (min, max)
-            n_thresholds: Number of threshold values to test during optimization
-        """
-        # LSTM architecture parameters
-        self.hidden_dims = hidden_dims
-        self.activations = activations
-        self.recurrent_activations = recurrent_activations
-        self.dropout = dropout
-        self.dense_units = dense_units
-        self.dense_activation = dense_activation
-        
-        # Training parameters
-        self.optimizer = optimizer
-        self.lr = lr
-        self.patience = patience
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.threshold = threshold
-        self.loss = loss
-        self.callbacks = callbacks if callbacks is not None else []
-        
-        if mask_values is None:
-            mask_values = {'X_mask': 0.0, 'y_mask': DEFAULT_Y_MASK_VALUE}
-        
-        # Masking parameters
-        self.mask_values = mask_values
-        self.use_class_weights = use_class_weights
-        
-        # Threshold optimization parameters
-        self.threshold_range = threshold_range or DEFAULT_THRESHOLD_RANGE
-        self.n_thresholds = n_thresholds or DEFAULT_THRESHOLD_STEPS
-        
-        # Subject and fold tracking parameters
-        self.experiment_dir = experiment_dir
-        self.outer_fold = outer_fold
-        self.inner_fold = inner_fold
-        self.outer_test_subject = outer_test_subject
-        self.inner_validation_subject = inner_validation_subject
-        
-        # Model state
-        self.model = None
-        self.classes_ = None
-        self.history_ = []
-        self.input_shape = None
-        self.X_mask_ = None
-        self.y_mask_ = None
-                
-    def build_model(self, input_shape):
-        """Build the LSTM model with the given input shape."""
-        logging.info(f"\n[BUILD_MODEL] {'='*60}")
-        logging.info(f"[BUILD_MODEL] LSTM MODEL CONSTRUCTION")
-        logging.info(f"[BUILD_MODEL] {'='*60}")
-        logging.info(f"[BUILD_MODEL] Input shape: {input_shape}")
-        logging.info(f"[BUILD_MODEL] Architecture:")
-        logging.info(f"[BUILD_MODEL] LSTM Architecture: {len(self.hidden_dims)} layers {self.hidden_dims}, dropout={self.dropout}")
-        logging.info(f"[BUILD_MODEL] Activations: {self.activations}, recurrent: {self.recurrent_activations}")
-        logging.info(f"[BUILD_MODEL] Masking: value-based (X_mask={self.mask_values['X_mask']:.2e})")
-        
-        model = Sequential()
-        
-        # Add Input layer
-        model.add(Input(shape=input_shape))
-        
-        # Add masking layer for value-based masking
-        model.add(Masking(mask_value=self.mask_values['X_mask']))
-       
-        # Add LSTM layers with dropout
-        for i in range(len(self.hidden_dims)):
-            model.add(LSTM(self.hidden_dims[i], 
-                           activation=self.activations[i], 
-                           recurrent_activation=self.recurrent_activations[i], 
-                           return_sequences=True))  # Always return sequences for sequence-to-sequence
-            model.add(Dropout(self.dropout))
-        
-        # Add TimeDistributed output layer
-        model.add(TimeDistributed(Dense(self.dense_units, activation=self.dense_activation)))
-
-        # Configure optimizer
-        if self.optimizer == 'adam':
-            optimizer = Adam(learning_rate=self.lr)
-        elif self.optimizer == 'RMSprop':
-            optimizer = RMSprop(learning_rate=self.lr)
-        elif self.optimizer == 'SGD':
-            optimizer = SGD(learning_rate=self.lr)
-        else:
-            raise ValueError(f"Unsupported optimizer: {self.optimizer}")
-        
-        logging.info(f"[BUILD_MODEL] Optimizer: {self.optimizer}(lr={self.lr})")
-        
-        # Configure compilation
-        y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else -1
-        logging.info(f"[BUILD_MODEL] Compiling with masked metrics (y_mask_val={y_mask_val})")
-        
-        model.compile(
-            optimizer=optimizer,
-            loss=self.weighted_masked_binary_crossentropy_loss,
-            metrics=[
-                MonitoringMaskedAccuracy(y_mask_value=y_mask_val, name='accuracy'),
-                MonitoringMaskedF1Score(y_mask_value=y_mask_val, name='f1_score'),
-                MonitoringMaskedPrecision(y_mask_value=y_mask_val, name='precision'),
-                MonitoringMaskedRecall(y_mask_value=y_mask_val, name='recall'),
-                MonitoringMaskedBalancedAccuracy(y_mask_value=y_mask_val, name='balanced_accuracy'),
-                MonitoringMaskedROC_AUC(y_mask_value=y_mask_val, name='roc_auc'),
-                MonitoringMaskedPR_AUC(y_mask_value=y_mask_val, name='pr_auc'),
-            ],
-        )
-
-        logging.info(f"[BUILD_MODEL] Model compiled with {optimizer.__class__.__name__}(lr={self.lr}) and {len(model.layers)} layers")
-        logging.debug(f"[BUILD_MODEL] Model summary:")
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            model.summary()
-        
-        return model
-
-    def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
-        """Fit the LSTM model - sklearn compatible interface.
-        
-        Args:
-            X: Input features
-            y: Target labels
-            callbacks: Pre-created callbacks list (if None, simple defaults will be used)
-            validation_data: Optional (X_val, y_val) tuple for validation monitoring
-            **kwargs: Additional parameters (allows GridSearchCV to pass extra params)
-        """
-        logging.info(f"[FIT] Training LSTM: X={X.shape}, y={y.shape}, epochs={self.epochs}, batch_size={self.batch_size}, patience={self.patience}")
-        
-        # Handle input shape determination and reshaping
-        if len(X.shape) == 2:
-            # Reshape for LSTM: (samples, timesteps, features)
-            logging.info(f"[LSTM FIT] Reshaping 2D input to 3D for LSTM")
-            self.input_shape = (1, X.shape[1])
-            X = X.reshape(X.shape[0], 1, X.shape[1])
-        else:
-            self.input_shape = X.shape[1:]
-        
-        logging.debug(f"[FIT] Final shapes: X={X.shape}, y={y.shape}, input_shape={self.input_shape}")
-        
-        # Build model with determined input shape
-        strategy = tf.distribute.MirroredStrategy()
-        with strategy.scope():
-            self.model = self.build_model(self.input_shape)
-        
-        # Calculate and store class weights for the loss function (if enabled)
-        self.classes_ = np.unique(y[y != self.mask_values['y_mask']])
-        class_weights = None
-
-        if self.use_class_weights:
-            class_weights = self.calculate_class_weights(y)
-            self._class_weights = class_weights  # Loss function will access this during training
-            logging.debug(f"[FIT] Class weights calculated: {class_weights}")
-            logging.info(f"[FIT] Class weights will be applied during training via loss function: {class_weights}")
-        else:
-            self._class_weights = None
-            logging.info(f"[FIT] Class weighting disabled - using balanced loss function")
-
-        # Setup callbacks - use provided callbacks or create simple defaults
-        if callbacks is not None:
-            final_callbacks = callbacks.copy()
-            final_callbacks.extend(self.callbacks)
-        else:
-            final_callbacks = self.callbacks.copy()
-            
-        # Prepare training arguments
-        fit_kwargs = {
-            'epochs': self.epochs,
-            'batch_size': self.batch_size,
-            'verbose': 0,  # rely on ProgressTrainingLogger for clean output
-            'callbacks': final_callbacks,
-            # 'class_weight': class_weights,  # NOTE: excluded for sequence-to-sequence tasks to prevent shape mismatch          
-        }
-        
-        # Check for validation data (either passed directly or stored as attribute)
-        validation_data_to_use = validation_data or getattr(self, '_validation_data', None)
-        
-        if validation_data_to_use is not None:
-            X_val, y_val = validation_data_to_use
-            
-            # Validate shapes and data integrity before training
-            if X_val.shape[0] == 0 or y_val.shape[0] == 0:
-                logging.warning("[LSTM FIT] Empty validation data detected - skipping validation")
-                validation_data_to_use = None
-            elif X_val.shape[0] != y_val.shape[0]:
-                logging.warning(f"[LSTM FIT] Validation data shape mismatch: X_val={X_val.shape[0]} vs y_val={y_val.shape[0]} - skipping validation")
-                validation_data_to_use = None
-            else:
-                # Handle reshaping for validation data consistency
-                if len(X_val.shape) == 2 and self.input_shape is not None:
-                    if self.input_shape[0] == 1:  # Was reshaped during training
-                        X_val = X_val.reshape(X_val.shape[0], 1, X_val.shape[1])
-                
-                fit_kwargs['validation_data'] = (X_val, y_val)
-                logging.info(f"[LSTM FIT] Using validation data: X_val={X_val.shape}, y_val={y_val.shape}")
-        
-        if validation_data_to_use is None:
-            logging.info(f"[LSTM FIT] No validation data provided - training only")
-        
-        # For sequence-to-sequence tasks (TimeDistributed output), class_weight parameter causes shape conflicts
-        # Class balancing is now handled in the custom masked loss function instead
-        logging.info(f"[LSTM FIT] Class weighting applied via custom loss function (avoids shape conflicts)")
-        if class_weights is not None:
-            logging.info(f"[LSTM FIT] Class weights: {class_weights}")
-        else:
-            logging.info(f"[LSTM FIT] Class weights: None (disabled)")
-        
-        # Log training configuration
-        logging.info(f"[LSTM FIT] Final training kwargs keys: {list(fit_kwargs.keys())}")
-        
-        # Try GPU training first, fallback to CPU if issues occur
-        available_gpus = tf.config.list_physical_devices('GPU')
-        using_gpu = bool(available_gpus)
-        logging.info(f"[LSTM FIT] Training device: {'GPU' if using_gpu else 'CPU'}")
-
-        if using_gpu:
-            try:
-                with tf.device('/device:GPU:0'):
-                    if 'validation_data' in fit_kwargs:
-                        X_val, y_val = fit_kwargs['validation_data']
-                        # Ensure validation data is properly formatted and cached
-                        X_val = tf.convert_to_tensor(X_val, dtype=tf.float32)
-                        y_val = tf.convert_to_tensor(y_val, dtype=tf.float32)
-                        fit_kwargs['validation_data'] = (X_val, y_val)
-                        logging.info(f"[LSTM FIT] Validation data optimized: X_val={X_val.shape}, y_val={y_val.shape}")
-                    
-                    history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[LSTM FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}")
-                    
-            except (KeyboardInterrupt, Exception) as e:
-                logging.warning(format_warning_message(f"[LSTM FIT] GPU training interrupted/failed: {e}"))
-                logging.info("[LSTM FIT] Falling back to CPU training")
-                with tf.device('/CPU:0'):
-                    history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
-        else:
-            with tf.device('/CPU:0'):
-                history = self.model.fit(X, y, **fit_kwargs).history
-                logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
-        
-        # Store the training history for each fold (for backward compatibility)
-        self.history_.append(history)
-        
-        # Clear validation data after training to prevent issues
-        if hasattr(self, '_validation_data'):
-            delattr(self, '_validation_data')
-        
-        return self
-    
-    def calculate_class_weights(self, y):
-        # Flatten the array and filter out padding values
-        y_flat = y.reshape(-1)
-        y_flat = y_flat[y_flat != self.mask_values['y_mask']].flatten()  # Ignore padding values
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_flat), y=y_flat)
-        return dict(enumerate(class_weights))
-    
-    def weighted_masked_binary_crossentropy_loss(self, y_true, y_pred, sample_weight=None):
-        # Ensure the inputs are in the correct type for calculations
-        y_true = tf.cast(y_true, tf.float32)  # Convert to float32 for consistency
-        y_pred = tf.cast(y_pred, tf.float32)  # Convert to float32 for consistency
-
-        # Handle shape mismatch: squeeze y_pred if it has an extra dimension
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            y_pred = tf.squeeze(y_pred, axis=-1)  # Remove last dimension if it's 1
-
-        # Use value-based masking
-        mask = tf.cast(tf.not_equal(y_true, self.mask_values['y_mask']), tf.float32)
-        
-        y_true_clipped = tf.clip_by_value(y_true, 0, 1)  # Ensure y_true is between 0 and 1
-
-        # Clip y_pred values to avoid log(0) errors and ensure stability
-        epsilon = tf.keras.backend.epsilon()  # Small constant to avoid log(0)
-        y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-
-        # Calculate the binary cross-entropy loss manually
-        loss = - y_true_clipped * tf.math.log(y_pred) - (1 - y_true_clipped) * tf.math.log(1 - y_pred)
-
-        # Apply class weighting if available
-        if hasattr(self, '_class_weights') and self._class_weights is not None:
-            # Create class weight tensor: [weight_for_class_0, weight_for_class_1]
-            class_weights_tensor = tf.constant([
-                self._class_weights.get(0, 1.0),
-                self._class_weights.get(1, 1.0)
-            ], dtype=tf.float32)
-            
-            # Apply class weights per timestep
-            # y_true_clipped is 0 or 1, so we can use it as indices
-            class_weights_per_sample = tf.gather(class_weights_tensor, tf.cast(y_true_clipped, tf.int32))
-            
-            # Apply class weights to loss
-            loss = loss * class_weights_per_sample
-            
-        # Apply the mask to ignore padded values
-        loss = loss * mask  # Element-wise multiplication with the mask
-
-        # Normalize by the sum of the mask to account for the number of valid timesteps
-        # Ensure that we return a scalar value
-        total_loss = tf.reduce_sum(loss)  # Sum of the loss over all timesteps and batch
-        total_weight = tf.reduce_sum(mask)  # Sum of the mask over all timesteps and batch
-        
-        # Return the average loss across the valid timesteps
-        masked_loss = total_loss / (total_weight + 1e-8)  
-
-        return masked_loss
-
-    def predict(self, X):
-        """Make predictions - sklearn compatible interface."""
-        if self.model is None:
-            raise ValueError("Model has not been fitted yet.")
-        
-        # Handle reshaping for consistency with training
-        if len(X.shape) == 2 and self.input_shape is not None:
-            if self.input_shape[0] == 1:  # Was reshaped during training
-                X = X.reshape(X.shape[0], 1, X.shape[1])
-        
-        y_pred = self.model.predict(X, verbose=0)
-        
-        # Handle different output shapes
-        if len(y_pred.shape) == 3 and y_pred.shape[-1] == 1:
-            # Shape: (samples, timesteps, 1) -> (samples, timesteps)
-            y_pred = y_pred.squeeze(axis=-1)
-        
-        # For sequence-to-sequence tasks, return 2D predictions
-        y_pred_binary = (y_pred > self.threshold).astype("int32")
-        
-        # Only flatten if we have single timestep data
-        if len(y_pred_binary.shape) == 2 and y_pred_binary.shape[1] == 1:
-            return y_pred_binary.ravel()
-        else:
-            # Keep 2D shape for sequence-to-sequence tasks
-            return y_pred_binary
-
-    def predict_proba(self, X):
-        """Predict class probabilities - sklearn compatible interface."""
-        if self.model is None:
-            raise ValueError("Model has not been fitted yet.")
-        
-        # Handle reshaping for consistency with training
-        if len(X.shape) == 2 and self.input_shape is not None:
-            if self.input_shape[0] == 1:  # Was reshaped during training
-                X = X.reshape(X.shape[0], 1, X.shape[1])
-        
-        proba = self.model.predict(X, verbose=0)
-        
-        # Handle different output shapes
-        if len(proba.shape) == 3 and proba.shape[-1] == 1:
-            # Shape: (samples, timesteps, 1) -> (samples, timesteps)
-            proba = proba.squeeze(axis=-1)
-        
-        # For sequence-to-sequence with single output, we only get positive class probabilities
-        # We need to return both class probabilities for sklearn compatibility
-        if len(proba.shape) == 2:  # Sequence-to-sequence case
-            # For binary classification, return probability for positive class only
-            # sklearn scoring functions will handle this appropriately for sequence data
-            return proba
-        elif len(proba.shape) == 1:  # Single timestep case
-            # Traditional binary classification - return both classes
-            proba_0 = 1 - proba
-            proba_1 = proba
-            return np.column_stack([proba_0, proba_1])
-        else:
-            return proba
-    
-    def summary(self):
-        if self.model:
-            self.model.summary()
-        else:
-            logging.info("Model is not built yet.")
-    
-     
-    @staticmethod
-    def lr_schedule(epoch, lr):
-        if epoch > 10:
-            return lr * 0.1  # Reduce LR by 10x after epoch 10
-        return lr
-    
-    @staticmethod
-    def _extract_positive_class_proba(y_pred_proba):
-        """
-        Convert model probability outputs into a 1D array of positive-class probabilities.
-        Handles outputs shaped as:
-          - (n_samples,)                    -> already positive-class probabilities
-          - (n_samples, timesteps)          -> positive probabilities per timestep
-          - (n_samples, timesteps, 1)       -> squeeze trailing singleton axis
-          - (n_samples, ..., 2)             -> two-class probabilities; take [:, ..., 1]
-        """
-        proba = np.asarray(y_pred_proba)
-        
-        if proba.ndim >= 2 and proba.shape[-1] == 1:
-            proba = np.squeeze(proba, axis=-1)
-        
-        if proba.ndim >= 2 and proba.shape[-1] == 2:
-            # Two-class probabilities – use positive class (index 1)
-            proba_pos = np.take(proba, indices=1, axis=-1)
-        else:
-            proba_pos = proba
-        
-        return np.ravel(proba_pos)
-    
-    @staticmethod
-    def eval_masked_accuracy_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked accuracy score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
-    
-    @staticmethod
-    def eval_masked_balanced_accuracy_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked balanced accuracy score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        from sklearn.metrics import balanced_accuracy_score
-        return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
-    
-    @staticmethod
-    def eval_masked_f1_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked F1 score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes for F1
-            return 0.0
-        return f1_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
-
-    @staticmethod
-    def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=-1):
-        """Evaluation-time masked ROC AUC score for sklearn compatibility."""
-        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
-        
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_proba_flat = y_pred_proba_pos.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.5
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes for AUC
-            return 0.5
-        return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
-
-    @staticmethod
-    def eval_masked_pr_auc_score(y_true, y_pred_proba, y_mask_val=-1):
-        """
-        Evaluation-time masked PR AUC score for sklearn compatibility.
-        Calculate PR AUC with masking support for sequence data.
-        
-        Args:
-            y_true: True labels (2D or flattened)
-            y_pred_proba: Predicted probabilities (should be 2D: [n_samples, n_classes])
-            y_mask_val: Value representing masked/padded positions
-            
-        Returns:
-            float: PR AUC score for valid (non-masked) positions
-        """
-        from sklearn.metrics import average_precision_score
-        
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_proba_pos = LSTMClassifier._extract_positive_class_proba(y_pred_proba)
-        
-        # Create mask for valid positions
-        mask = y_true_flat != y_mask_val
-        
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-            
-        # Get valid data
-        y_true_valid = y_true_flat[mask]
-        y_pred_proba_valid = y_pred_proba_pos[mask]
-        
-        # Check if we have at least 2 classes
-        valid_classes = np.unique(y_true_valid)
-        if len(valid_classes) < 2:
-            return 0.0
-        
-        # Binary classification - use positive class probability
-        return average_precision_score(y_true_valid, y_pred_proba_valid)
-        
-    @staticmethod
-    def eval_masked_precision_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked precision score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        return precision_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
-
-    @staticmethod
-    def eval_masked_recall_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked recall score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        return recall_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
-    
-    @staticmethod
-    def eval_masked_specificity_score(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked specificity score for sklearn compatibility."""
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
-        valid_classes = np.unique(y_true_flat[mask])
-        if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        # Calculate specificity = TN / (TN + FP)
-        from sklearn.metrics import confusion_matrix
-        cm = confusion_matrix(y_true_flat[mask], y_pred_flat[mask])
-        if cm.shape == (2, 2):
-            tn, fp, fn, tp = cm.ravel()
-            return tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        return 0.0
-
-    @staticmethod
-    def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=-1):
-        """Evaluation-time masked confusion matrix for sklearn compatibility."""
-        from sklearn.metrics import confusion_matrix
-        # Flatten arrays for consistent processing
-        y_true_flat = y_true.ravel()
-        y_pred_flat = y_pred.ravel()
-        mask = y_true_flat != y_mask_val
-        
-        if np.sum(mask) == 0:  # No valid predictions
-            # Return empty 2x2 matrix for binary classification
-            return np.array([[0, 0], [0, 0]])
-        
-        # Extract valid data
-        y_true_valid = y_true_flat[mask]
-        y_pred_valid = y_pred_flat[mask]
-        
-        # Ensure binary values (clip to 0-1 range)
-        y_true_valid = np.clip(y_true_valid, 0, 1).astype(int)
-        y_pred_valid = np.clip(y_pred_valid, 0, 1).astype(int)
-        
-        # Check if we have at least 2 classes
-        valid_classes = np.unique(y_true_valid)
-        if len(valid_classes) < 2:
-            # If only one class present, create appropriate confusion matrix
-            if len(valid_classes) == 1:
-                single_class = valid_classes[0]
-                n_samples = len(y_true_valid)
-                if single_class == 0:
-                    # Only class 0 present
-                    return np.array([[n_samples, 0], [0, 0]])
-                else:
-                    # Only class 1 present
-                    return np.array([[0, 0], [0, n_samples]])
-            else:
-                # No valid classes
-                return np.array([[0, 0], [0, 0]])
-        
-        # Compute confusion matrix with proper labels to ensure 2x2 output
-        return confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
-    
-    @staticmethod
-    def eval_masked_confusion_matrix_components(y_true, y_pred, y_mask_val=-1):
-        """
-        Evaluation-time masked confusion matrix components for sklearn compatibility.
-        
-        Returns:
-            dict: Dictionary with 'tn', 'fp', 'fn', 'tp' components and 'n_valid_samples'
-        """
-        cm = LSTMClassifier.eval_masked_confusion_matrix(y_true, y_pred, y_mask_val)
-        
-        # Extract components from 2x2 confusion matrix
-        # Format: [[TN, FP], [FN, TP]]
-        tn, fp, fn, tp = cm.ravel()
-        
-        # Count valid samples
-        y_true_flat = y_true.ravel()
-        mask = y_true_flat != y_mask_val
-        n_valid_samples = np.sum(mask)
-        
-        return {
-            'tn': int(tn),
-            'fp': int(fp), 
-            'fn': int(fn),
-            'tp': int(tp),
-            'n_valid_samples': int(n_valid_samples)
-        }
-
-    # ===================================================================
-    # INTEGRATED THRESHOLD OPTIMIZATION METHODS
-    # ===================================================================
-    
-    def tune_threshold_for_metric(self, X_val, y_val, metric_name='f1', 
-                                  threshold_range=(0.1, 0.9), n_thresholds=81, 
-                                  store_details=False):
-        """
-        Tune threshold for a specific binary classification metric using the LSTM model.
-        
-        Args:
-            X_val: Validation features
-            y_val: Validation labels (with masking)
-            metric_name: Name of binary metric to optimize ('f1', 'accuracy', 'precision', 'recall', etc.)
-            threshold_range: Range of thresholds to search
-            n_thresholds: Number of thresholds to test
-            store_details: Whether to store detailed evaluation data for each threshold
-            
-        Returns:
-            tuple: (best_threshold, best_score, detailed_results)
-        """
-        if self.model is None:
-            raise ValueError("Model must be fitted before threshold optimization")
-        
-        # Get model predictions
-        y_pred_proba = self.predict_proba(X_val)
-        
-        # Handle different probability shapes to get positive class probabilities
-        if y_pred_proba.ndim > 1:
-            if y_pred_proba.shape[1] == 2:
-                y_pred_proba_pos = y_pred_proba[:, 1]
-            else:
-                y_pred_proba_pos = y_pred_proba.ravel()
-        else:
-            y_pred_proba_pos = y_pred_proba.ravel()
-        
-        # Create threshold array
-        thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
-        
-        # Get mask value from the model's configuration
-        y_mask_val = self.mask_values.get('y_mask', 2)
-        
-        # Initialize tracking variables
-        best_threshold = 0.5
-        best_score = 0.0
-        all_scores = []
-        detailed_evaluations = [] if store_details else None
-        
-        # Define metric function mapping using the LSTMClassifier's evaluation methods
-        metric_functions = {
-            'accuracy': self.eval_masked_accuracy_score,
-            'balanced_accuracy': self.eval_masked_balanced_accuracy_score,
-            'f1': self.eval_masked_f1_score,
-            'precision': self.eval_masked_precision_score,
-            'recall': self.eval_masked_recall_score,
-            'specificity': self.eval_masked_specificity_score,
-        }
-        
-        if metric_name not in metric_functions:
-            supported = list(metric_functions.keys())
-            raise ValueError(f"Unsupported metric: {metric_name}. Supported metrics: {supported}")
-        
-        metric_func = metric_functions[metric_name]
-        
-        # Sweep through thresholds
-        for i, threshold in enumerate(thresholds):
-            try:
-                # Apply threshold to get binary predictions
-                y_pred_binary = (y_pred_proba_pos > threshold).astype(int)
-                
-                # Compute metric score using masked evaluation
-                score = metric_func(y_val, y_pred_binary, y_mask_val)
-                all_scores.append(score)
-                
-                # Store detailed evaluation data if requested
-                if store_details:
-                    # Compute comprehensive metrics using LSTMClassifier evaluation methods
-                    # Get confusion matrix components
-                    cm_components = self.eval_masked_confusion_matrix_components(y_val, y_pred_binary, y_mask_val)
-                    
-                    detailed_evaluations.append({
-                        'threshold': threshold,
-                        'score': score,
-                        'metric': metric_name,
-                        'n_valid_samples': cm_components['n_valid_samples'],
-                        'accuracy': self.eval_masked_accuracy_score(y_val, y_pred_binary, y_mask_val),
-                        'balanced_accuracy': self.eval_masked_balanced_accuracy_score(y_val, y_pred_binary, y_mask_val),
-                        'f1': self.eval_masked_f1_score(y_val, y_pred_binary, y_mask_val),
-                        'precision': self.eval_masked_precision_score(y_val, y_pred_binary, y_mask_val),
-                        'recall': self.eval_masked_recall_score(y_val, y_pred_binary, y_mask_val),
-                        'specificity': self.eval_masked_specificity_score(y_val, y_pred_binary, y_mask_val),
-                        'true_positives': cm_components['tp'],
-                        'true_negatives': cm_components['tn'],
-                        'false_positives': cm_components['fp'],
-                        'false_negatives': cm_components['fn'],
-                        'is_optimal': False  # Will be updated below
-                    })
-                
-                # Track best score and threshold
-                if score > best_score:
-                    best_score = score
-                    best_threshold = threshold
-                    
-            except Exception as e:
-                # Handle any computation errors gracefully
-                all_scores.append(0.0)
-                if store_details:
-                    detailed_evaluations.append({
-                        'threshold': threshold,
-                        'score': 0.0,
-                        'metric': metric_name,
-                        'n_valid_samples': 0,
-                        'error': str(e)
-                    })
-        
-        # Mark the optimal threshold in detailed evaluations
-        if store_details and detailed_evaluations:
-            for eval_data in detailed_evaluations:
-                if abs(eval_data['threshold'] - best_threshold) < 1e-10:
-                    eval_data['is_optimal'] = True
-        
-        # Prepare results
-        if store_details:
-            detailed_results = {
-                'all_scores': all_scores,
-                'thresholds': thresholds.tolist(),
-                'detailed_evaluations': detailed_evaluations,
-                'best_threshold_index': np.argmax(all_scores) if all_scores else 0,
-                'metric_info': {
-                    'func': metric_func,
-                    'requires_both_classes': True if metric_name != 'accuracy' else False,
-                    'description': f'Masked {metric_name} score for binary classification'
-                }
-            }
-        else:
-            detailed_results = all_scores
-                
-        return best_threshold, best_score, detailed_results
-
-    def tune_all_thresholds(self, X_val, y_val, metrics=None, 
-                           threshold_range=None, n_thresholds=None, 
-                           verbose=True, store_details=False):
-        """
-        Tune thresholds for multiple binary classification metrics using the LSTM model.
-        
-        Args:
-            X_val: Validation features
-            y_val: Validation labels (with masking)
-            metrics: List of binary metrics to tune (default: standard binary metrics)
-            threshold_range: Range of thresholds to search
-            n_thresholds: Number of thresholds to test
-            verbose: Whether to print results
-            store_details: Whether to store detailed evaluation data for each threshold
-            
-        Returns:
-            dict: Dictionary containing optimal thresholds, scores, and detailed evaluation data
-        """
-        if self.model is None:
-            raise ValueError("Model must be fitted before threshold optimization")
-        
-        if metrics is None:
-            metrics = DEFAULT_THRESHOLD_METRICS
-
-        threshold_range = threshold_range or self.threshold_range
-        n_thresholds = n_thresholds or self.n_thresholds
-        results = {}
-        all_detailed_evaluations = {}  # Store all detailed evaluations for cross-metric analysis
-        
-        if verbose:
-            logging.info("Starting LSTM threshold tuning for {} metrics across {} threshold values...".format(
-                len(metrics), n_thresholds))
-        
-        # Tune threshold for each metric using the integrated method
-        for metric_name in metrics:
-            try:
-                optimal_threshold, optimal_score, detailed_results = self.tune_threshold_for_metric(
-                    X_val, y_val, metric_name, threshold_range, n_thresholds, store_details
-                )
-                
-                if store_details and isinstance(detailed_results, dict):
-                    results[metric_name] = {
-                        'optimal_threshold': optimal_threshold,
-                        'optimal_score': optimal_score,
-                        'all_scores': detailed_results['all_scores'],
-                        'detailed_evaluations': detailed_results['detailed_evaluations'],
-                        'best_threshold_index': detailed_results['best_threshold_index'],
-                        'metric_info': detailed_results['metric_info']
-                    }
-                    # Store for cross-metric analysis
-                    all_detailed_evaluations[metric_name] = detailed_results['detailed_evaluations']
-                else:
-                    results[metric_name] = {
-                        'optimal_threshold': optimal_threshold,
-                        'optimal_score': optimal_score,
-                        'all_scores': detailed_results if isinstance(detailed_results, list) else [0.0] * n_thresholds
-                    }
-                
-                if verbose:
-                    logging.info(f"  {metric_name.capitalize()}: threshold={optimal_threshold:.3f}, score={optimal_score:.4f}")
-                    
-            except Exception as e:
-                logging.warning(format_warning_message(f"Failed to tune threshold for {metric_name}: {e}"))
-                default_result = {
-                    'optimal_threshold': 0.5,
-                    'optimal_score': 0.0,
-                    'all_scores': [0.0] * n_thresholds
-                }
-                if store_details:
-                    default_result['detailed_evaluations'] = []
-                    default_result['error'] = str(e)
-                results[metric_name] = default_result
-        
-        # Add AUC scores (threshold-independent) using the model's built-in evaluation methods
-        try:
-            y_pred_proba = self.predict_proba(X_val)
-            y_mask_val = self.mask_values.get('y_mask', 2)
-            
-            results['roc_auc'] = {
-                'optimal_threshold': None,  # AUC is threshold-independent
-                'optimal_score': self.eval_masked_roc_auc_score(y_val, y_pred_proba, y_mask_val),
-                'all_scores': []
-            }
-            
-            results['pr_auc'] = {
-                'optimal_threshold': None,  # AUC is threshold-independent
-                'optimal_score': self.eval_masked_pr_auc_score(y_val, y_pred_proba, y_mask_val),
-                'all_scores': []
-            }
-            
-            if verbose:
-                logging.info(f"  ROC AUC: {results['roc_auc']['optimal_score']:.4f} (threshold-independent)")
-                logging.info(f"  PR AUC: {results['pr_auc']['optimal_score']:.4f} (threshold-independent)")
-                
-        except Exception as e:
-            logging.warning(format_warning_message(f"Failed to compute AUC scores: {e}"))
-            results['roc_auc'] = {'optimal_threshold': None, 'optimal_score': 0.5, 'all_scores': []}
-            results['pr_auc'] = {'optimal_threshold': None, 'optimal_score': 0.0, 'all_scores': []}
-        
-        # Add summary statistics if storing details
-        if store_details and all_detailed_evaluations:
-            results['_summary'] = {
-                'total_thresholds_evaluated': n_thresholds,
-                'threshold_range': {
-                    'min': float(threshold_range[0]),
-                    'max': float(threshold_range[1]),
-                    'step': float((threshold_range[1] - threshold_range[0]) / (n_thresholds - 1)) if n_thresholds > 1 else 0.0
-                },
-                'evaluation_timestamp': np.datetime64('now').astype(str),
-                'metrics_evaluated': metrics,
-                'model_info': {
-                    'model_type': 'LSTMClassifier',
-                    'mask_values': self.mask_values,
-                    'threshold': self.threshold
-                }
-            }
-        
-        return results
-
-    def optimize_thresholds_with_model(self, X_val, y_val, metrics=None, 
-                                      threshold_range=None, n_thresholds=None, verbose=False):
-        """
-        Unified threshold optimization method for the LSTM model - backward compatibility wrapper.
-        
-        Args:
-            X_val: Validation features
-            y_val: Validation labels (with masking)
-            metrics: List of metrics to optimize thresholds for
-            threshold_range: Range of thresholds to search
-            n_thresholds: Number of thresholds to test
-            verbose: Whether to print optimization details
-            
-        Returns:
-            dict: Optimized thresholds and scores for each metric (compatible with existing code)
-        """
-        metrics = metrics or DEFAULT_THRESHOLD_METRICS
-        threshold_range = threshold_range or self.threshold_range
-        n_thresholds = n_thresholds or self.n_thresholds
-        # Use the comprehensive threshold tuning method
-        tuning_results = self.tune_all_thresholds(
-            X_val, y_val, metrics=metrics, 
-            threshold_range=threshold_range, n_thresholds=n_thresholds, 
-            verbose=verbose, store_details=False
-        )
-        
-        # Extract optimized scores and thresholds in the expected format
-        optimized_scores = {}
-        optimal_thresholds = {}
-        
-        for metric_name in metrics:
-            if metric_name in tuning_results:
-                optimal_thresholds[metric_name] = tuning_results[metric_name]['optimal_threshold']
-                optimized_scores[metric_name] = tuning_results[metric_name]['optimal_score']
-            else:
-                optimal_thresholds[metric_name] = 0.5
-                optimized_scores[metric_name] = 0.0
-        
-        # Add AUC scores if computed
-        for auc_metric in ['roc_auc', 'pr_auc']:
-            if auc_metric in tuning_results:
-                optimized_scores[auc_metric] = tuning_results[auc_metric]['optimal_score']
-        
-        return {
-            'optimized_scores': optimized_scores,
-            'optimal_thresholds': optimal_thresholds,
-            'tuning_results': tuning_results
-        }
-
-
-# ===================================================================
 # Pipeline Building and Parameter Grid Functions
 # ===================================================================
-def build_pipeline(model_type='lstm', mask_values=None,
-                   experiment_dir=None, outer_fold=None, inner_fold=None,
-                   outer_test_subject=None, inner_validation_subject=None,
-                   params=None, has_validation_data=False):
-    """
-    Build a scikit-learn pipeline with sensible defaults.
-    
-    Always includes:
-    - Advanced feature selection
-    - Standard scaling (mask-aware for LSTM)
-    - The specified classifier
-    
-    Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lstm', 'vanilla_lstm')
-        mask_values: Full mask values dictionary (for LSTM)
-        outer_fold: Current outer fold number
-        inner_fold: Current inner fold number
-        outer_test_subject: Test subject for outer fold
-        inner_validation_subject: Validation subject for inner fold
-        
-    Returns:
-        tuple: (pipeline, scoring_functions)
-    """
-    logging.info(f"[BUILD_PIPELINE] Building pipeline for model_type: {model_type}")
-    from sklearn.pipeline import Pipeline
-    from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score
-    
-    # Pipeline steps
-    steps = []
-    
-    # Feature selection step (always use advanced)
-    selector_mask_value = None if model_type == 'vanilla_lstm' else mask_values.get('X_mask', 0.0)
-    selector = FeatureSelector(x_mask_value=selector_mask_value)
-    steps.append(('feature_selector', selector))
-    
-    # Scaling step (mask-aware for LSTM variants)
-    if model_type == 'lstm':
-        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
-        scaler = MaskAwareScaler(x_mask_value=mask_values.get('X_mask', 0.0), scaler_type='standard')
-    elif model_type == 'vanilla_lstm':
-        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for Vanilla LSTM (no masking applied)")
-        scaler = MaskAwareScaler(x_mask_value=None, scaler_type='standard')
-    else:
-        logging.info(f"[BUILD_PIPELINE] Adding StandardScaler for non-LSTM model")
-        scaler = StandardScaler()
-    steps.append(('scaler', scaler))
-    
-    # Model step
-    logging.info(f"[BUILD_PIPELINE] Creating classifier for model_type: {model_type}")
-    if model_type == 'dummy':
-        classifier = DummyClassifier()
-        logging.info(f"[BUILD_PIPELINE] Created DummyClassifier")
-    elif model_type == 'rf':
-        classifier = RandomForestClassifier(random_state=42)
-        logging.info(f"[BUILD_PIPELINE] Created RandomForestClassifier")
-    elif model_type == 'svm':
-        classifier = SVC(probability=True, random_state=42)
-        logging.info(f"[BUILD_PIPELINE] Created SVC")
-    elif model_type == 'logreg':
-        classifier = LogisticRegression(max_iter=1000, solver='lbfgs', random_state=42)
-        logging.info(f"[BUILD_PIPELINE] Created LogisticRegression")
-    elif model_type == 'xgb':
-        if XGBOOST_AVAILABLE:
-            classifier = XGBClassifier(random_state=42)
-            logging.info(f"[BUILD_PIPELINE] Created XGBClassifier")
-        else:
-            raise ImportError("XGBoost requested but not importable in this environment")
-    elif model_type == 'lstm':
-        patience_value = 10
-        if params is not None:
-            patience_value = params.get('classifier__patience', 10)
 
-        callbacks, effective_monitor = create_nested_cv_callbacks(
-            experiment_dir=experiment_dir, outer_fold=outer_fold, inner_fold=inner_fold,
-            outer_test_subject=outer_test_subject, hyperparameters=params, inner_validation_subject=inner_validation_subject,
-            patience=patience_value, monitor='f1', save_models=False, progress_frequency=1,
-            has_validation_data=has_validation_data, is_refit=(inner_fold is None))
-            
-        # Create the LSTM classifier with simplified configuration and subject tracking
-        if mask_values:
-            classifier = LSTMClassifier(
-                mask_values=mask_values,
-                experiment_dir=experiment_dir,
-                outer_fold=outer_fold,
-                inner_fold=inner_fold,
-                outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject,
-                callbacks=callbacks
-            )
-            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with provided mask_values: {mask_values}")
-        else:
-            classifier = LSTMClassifier(
-                mask_values={'X_mask': mask_values.get('X_mask', 0.0), 'y_mask': mask_values.get('y_mask', -1)},
-                experiment_dir=experiment_dir,
-                outer_fold=outer_fold,
-                inner_fold=inner_fold,
-                outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject,
-                callbacks=callbacks
-            )
-            logging.info(f"[BUILD_PIPELINE] Created LSTMClassifier with default mask_values")
-        
-        classifier._effective_monitor = effective_monitor
-        classifier._has_validation_data = has_validation_data
-        
-        logging.info(f"[BUILD_PIPELINE] LSTMClassifier created with subject tracking - callbacks will be handled externally")
-        if outer_fold is not None:
-            logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
-            logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
-    elif model_type == 'vanilla_lstm':
-        patience_value = 10
-        if params is not None:
-            patience_value = params.get('classifier__patience', 10)
-
-        callbacks, effective_monitor = create_nested_cv_callbacks(
-            experiment_dir=experiment_dir,
-            outer_fold=outer_fold,
-            inner_fold=inner_fold,
-            outer_test_subject=outer_test_subject,
-            hyperparameters=params,
-            inner_validation_subject=inner_validation_subject,
-            patience=patience_value,
-            monitor='f1',
-            save_models=False,
-            progress_frequency=1,
-            has_validation_data=has_validation_data,
-            is_refit=(inner_fold is None),
-        )
-
-        classifier = VanillaLSTMClassifier(callbacks=callbacks)
-        classifier._effective_monitor = effective_monitor
-        classifier._has_validation_data = has_validation_data
-        logging.info(f"[BUILD_PIPELINE] VanillaLSTMClassifier created for raw segments.")
-    else:
-        # Default to dummy classifier
-        logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")
-        classifier = DummyClassifier()
-    
-    steps.append(('classifier', classifier))
-    logging.info(f"[BUILD_PIPELINE] Added classifier to pipeline")
-    
-    # Create pipeline
-    pipeline = Pipeline(steps)
-    logging.info(f"[BUILD_PIPELINE] Created pipeline with {len(steps)} steps: {[step[0] for step in steps]}")
-    
-    # Scoring functions - use masked versions for LSTM, standard for others
-    logging.info(f"[BUILD_PIPELINE] Setting up scoring functions for {model_type}")
-    if model_type == 'lstm':
-        # Use masked scoring functions that match the training metrics
-        logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
-        scoring_functions = {
-            'accuracy': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_accuracy_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),
-            'balanced_accuracy': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_balanced_accuracy_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),            
-            'f1': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_f1_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),
-            'roc_auc': make_scorer(
-                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_roc_auc_score(
-                    y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                needs_proba=True,
-                greater_is_better=True
-            ),
-            'pr_auc': make_scorer(
-                lambda y_true, y_pred_proba, **kwargs: LSTMClassifier.eval_masked_pr_auc_score(
-                    y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                needs_proba=True,
-                greater_is_better=True
-            ),               
-            'precision': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_precision_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),
-            'recall': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_recall_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),         
-            'specificity': make_scorer(
-                lambda y_true, y_pred, **kwargs: LSTMClassifier.eval_masked_specificity_score(
-                    y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
-                ),
-                greater_is_better=True
-            ),        
-        }
-    else:
-        # Standard sklearn scoring functions for non-LSTM models
-        from sklearn.metrics import average_precision_score, precision_score, recall_score
-        scoring_functions = {
-            'accuracy': make_scorer(accuracy_score),
-            'balanced_accuracy': make_scorer(balanced_accuracy_score),
-            'f1': make_scorer(f1_score, average='weighted'),
-            'precision': make_scorer(precision_score, average='weighted'),
-            'recall': make_scorer(recall_score, average='weighted'),
-            'roc_auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
-            'pr_auc': make_scorer(average_precision_score, needs_proba=True, average='weighted'),
-        }
-    
-    return pipeline, scoring_functions
 
 def get_default_param_grid(model_type, mask_values=None):
     """
@@ -4648,13 +2077,18 @@ def get_default_param_grid(model_type, mask_values=None):
         raise RuntimeError("Hyperparameter configuration not loaded. Pass --hyperparams-config when running the script.")
     config = copy.deepcopy(GLOBAL_HPARAM_CONFIG)
     model_config = config.get(model_type)
+    if model_config is None and model_type == 'seq2vec_lstm':
+        # Allow the seq2vec LSTM to reuse the sequence-to-sequence configuration if absent
+        model_config = config.get('seq2seq_lstm')
+        if model_config is not None:
+            logging.info("[PARAM_GRID] No 'seq2vec_lstm' config found; reusing 'seq2seq_lstm' settings.")
     if model_config is None:
         raise ValueError(f"No hyperparameter configuration found for model_type='{model_type}'")
     
     param_grid: Any = {}
     
-    if model_type == 'lstm':
-        logging.info(f"[PARAM_GRID] Creating LSTM parameter grid from config")
+    if model_type in ('seq2seq_lstm', 'seq2vec_lstm'):
+        logging.info(f"[PARAM_GRID] Creating sequence-model parameter grid from config")
         feature_params = _merge_feature_params(model_config.get('feature_params'))
         architecture_configs = model_config.get('architecture_configs', [])
         other_params = model_config.get('other_params', {})
@@ -4692,7 +2126,7 @@ def get_default_param_grid(model_type, mask_values=None):
     return param_grid
 
 # ==================================================================
-# Nested Cross-Validation helpers
+# Nested Cross-Validation
 # ==================================================================
 
 def run_nested_cv_classical(
@@ -4713,7 +2147,7 @@ def run_nested_cv_classical(
     data_source=None
 ):
     """
-    Nested cross-validation for epoch-level models (classical + vanilla LSTM).
+    Nested cross-validation for epoch-level models (classical + seq2vec LSTM).
     
     Each sample corresponds to a single epoch (no padding), preserving LOSO CV
     by grouping epochs by subject.
@@ -4736,7 +2170,6 @@ def run_nested_cv_classical(
         except AttributeError:
             feature_names = list(feature_names)
 
-    selection_score_metric = (selection_score_metric or 'val_tuned_f1')
     selection_score_aggregation = (selection_score_aggregation or 'median').lower()
     if selection_score_aggregation not in {'median', 'mean'}:
         raise ValueError(
@@ -4775,7 +2208,7 @@ def run_nested_cv_classical(
         return {'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp), 'n_valid_samples': int(len(y_true_arr))}
 
     if verbose >= 1:
-        logging.info(f"\n[CV_SKLEARN] Starting epoch-level nested CV for model_type={model_type}")
+        logging.info(f"[CV_SKLEARN] Starting epoch-level nested CV for model_type={model_type}")
         logging.info(f"[CV_SKLEARN] Selection metric: {selection_score_metric} ({selection_score_aggregation})")
         if subject_name_filter:
             logging.info(f"[CV_SKLEARN] Evaluating only outer test subjects: {sorted(subject_name_filter)}")
@@ -4787,7 +2220,10 @@ def run_nested_cv_classical(
     n_outer_folds = len(outer_splits)
 
     param_grid = get_default_param_grid(model_type=model_type, mask_values={'X_mask': 0.0, 'y_mask': -1})
-    param_combinations = list(ParameterGrid(param_grid))
+    if isinstance(param_grid, list):
+        param_combinations = param_grid
+    else:
+        param_combinations = list(ParameterGrid(param_grid))
     hparam_trials = [] if hparam_logger else None
 
     if verbose >= 1:
@@ -4818,7 +2254,7 @@ def run_nested_cv_classical(
         processed_outer_folds += 1
 
         if verbose >= 1:
-            logging.info(f"\n[CV_SKLEARN] {'='*70}")
+            logging.info(f"[CV_SKLEARN] {'='*70}")
             logging.info(f"[CV_SKLEARN] OUTER FOLD {fold_number}/{n_outer_folds} (test={test_subject_name})")
             logging.info(f"[CV_SKLEARN] {'='*70}")
 
@@ -4855,6 +2291,16 @@ def run_nested_cv_classical(
                 )
 
                 try:
+                    callbacks, effective_monitor = _prepare_sequence_model_callbacks(
+                        model_type=model_type,
+                        params=params,
+                        experiment_dir=experiment_dir,
+                        outer_fold=outer_fold + 1,
+                        inner_fold=inner_fold + 1,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        has_validation_data=True,
+                    )
                     inner_pipeline, _ = build_pipeline(
                         model_type=model_type,
                         mask_values={'X_mask': 0.0, 'y_mask': -1},
@@ -4865,9 +2311,19 @@ def run_nested_cv_classical(
                         inner_validation_subject=val_subject_name,
                         params=params,
                         has_validation_data=True,
+                        callbacks=callbacks,
+                        effective_monitor=effective_monitor,
                     )
                     inner_pipeline.set_params(**params)
-                    inner_pipeline.fit(X_inner_train, y_inner_train)
+                    if model_type == 'seq2vec_lstm':
+                        _fit_pipeline_with_validation(
+                            inner_pipeline,
+                            X_inner_train,
+                            y_inner_train,
+                            validation_data=(X_inner_val, y_inner_val),
+                        )
+                    else:
+                        inner_pipeline.fit(X_inner_train, y_inner_train)
 
                     y_train_proba = inner_pipeline.predict_proba(X_inner_train)
                     if y_train_proba.ndim > 1 and y_train_proba.shape[1] >= 2:
@@ -5002,7 +2458,7 @@ def run_nested_cv_classical(
 
                 except Exception as e:
                     if verbose >= 1:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN] Inner fold {inner_fold + 1} failed: {e}"))
+                        logging.warning(f"[CV_SKLEARN] Inner fold {inner_fold + 1} failed: {e}")
                     inner_scores.append(0.0)
                     inner_all_metrics.append({})
                     inner_selected_features.append([])
@@ -5088,13 +2544,24 @@ def run_nested_cv_classical(
             best_score = 0.0
             best_features = []
             best_metrics = {}
-            logging.warning(format_warning_message("[CV_SKLEARN] No valid scores found, using default parameters"))
+            logging.warning("[CV_SKLEARN] No valid scores found, using default parameters")
 
         best_feature_names, best_feature_details, best_feature_index_map = build_feature_mapping(best_features, feature_names)
 
         if verbose >= 1:
             logging.info(f"[CV_SKLEARN] Best params: {best_params}")
             logging.info(f"[CV_SKLEARN] Best CV score: {best_score:.4f}")
+
+        callbacks, effective_monitor = _prepare_sequence_model_callbacks(
+            model_type=model_type,
+            params=best_params,
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold + 1,
+            inner_fold=None,
+            outer_test_subject=test_subject_name,
+            inner_validation_subject=None,
+            has_validation_data=False,
+        )
 
         final_pipeline, _ = build_pipeline(
             model_type=model_type,
@@ -5104,6 +2571,10 @@ def run_nested_cv_classical(
             inner_fold=None,
             outer_test_subject=test_subject_name,
             inner_validation_subject=None,
+            params=best_params,
+            has_validation_data=False,
+            callbacks=callbacks,
+            effective_monitor=effective_monitor,
         )
         final_pipeline.set_params(**best_params)
 
@@ -5117,7 +2588,10 @@ def run_nested_cv_classical(
             'balanced_accuracy': 0.5,
         }
 
-        final_pipeline.fit(X_outer_train, y_outer_train)
+        if model_type == 'seq2vec_lstm':
+            _fit_pipeline_with_validation(final_pipeline, X_outer_train, y_outer_train)
+        else:
+            final_pipeline.fit(X_outer_train, y_outer_train)
 
         # Train-set metrics (for completeness)
         y_train_proba = final_pipeline.predict_proba(X_outer_train)
@@ -5162,7 +2636,7 @@ def run_nested_cv_classical(
             }
             test_confusion_components = _calc_confusion_components(y_outer_test, y_test_pred)
         except Exception as e:
-            logging.warning(format_warning_message(f"[CV_SKLEARN] Could not compute test metrics: {e}"))
+            logging.warning(f"[CV_SKLEARN] Could not compute test metrics: {e}")
 
         base_test_metrics = standardize_metric_names(baseline_test_scores, stage='test', tuned=False)
         tuned_test_metrics = standardize_metric_names(baseline_test_scores, stage='test', tuned=True)
@@ -5252,7 +2726,7 @@ def run_nested_cv_classical(
                 immediate_save=True,
             )
         except Exception as e:
-            logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to save refit results: {e}"))
+            logging.warning(f"[CV_SKLEARN] Failed to save refit results: {e}")
 
         result_dict = {
             'fold': outer_fold + 1,
@@ -5287,7 +2761,7 @@ def run_nested_cv_classical(
             logging.info(f"[CV_SKLEARN] OUTER FOLD {outer_fold + 1} COMPLETED")
 
     if verbose >= 1:
-        logging.info(f"\n[CV_SKLEARN] {'='*80}")
+        logging.info(f"[CV_SKLEARN] {'='*80}")
         logging.info(f"[CV_SKLEARN] NESTED CROSS-VALIDATION COMPLETED")
         logging.info(f"[CV_SKLEARN] {'='*80}")
         if outer_results:
@@ -5302,7 +2776,7 @@ def run_nested_cv_classical(
         try:
             hparam_logger.create_hyperparameter_summary(hparam_trials)
         except Exception as summary_error:
-            logging.warning(format_warning_message(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}"))
+            logging.warning(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}")
 
     if processed_outer_folds == 0:
         raise ValueError("No outer folds were processed. Check outer fold/subject filters.")
@@ -5310,13 +2784,9 @@ def run_nested_cv_classical(
     return outer_results, all_best_params, experiment_dir
 
 
-# ==================================================================
-# Nested Cross-Validation with Pre-computed Padding (LSTM)
-# ==================================================================
-
 def run_nested_cv_sklearn(X, y, groups, mask_values, 
                           subject_names=None,
-                          model_type='lstm',
+                          model_type='seq2seq_lstm',
                           refit_scoring_metric='f1',
                           selection_score_metric: str = 'val_tuned_f1',
                           selection_score_aggregation: str = 'median',
@@ -5342,7 +2812,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         groups: Array indicating which subject each trial belongs to
         mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length)
         subject_names: List of subject names
-        model_type: Type of model ('lstm', 'rf', 'svm', 'xgb', 'logreg', 'dummy')
+        model_type: Type of model (seq2seq LSTM only)
         refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
@@ -5365,7 +2835,6 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         except AttributeError:
             feature_names = list(feature_names)
     
-    selection_score_metric = (selection_score_metric or 'val_tuned_f1')
     selection_score_aggregation = (selection_score_aggregation or 'median').lower()
     if selection_score_aggregation not in {'median', 'mean'}:
         raise ValueError(f"Invalid selection_score_aggregation='{selection_score_aggregation}'. "
@@ -5383,8 +2852,8 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
-    if model_type != 'lstm':
-        raise ValueError("run_nested_cv_sklearn only supports model_type='lstm'.")
+    if model_type != 'seq2seq_lstm':
+        raise ValueError("run_nested_cv_sklearn only supports model_type='seq2seq_lstm'.")
     if X.ndim != 3:
         raise ValueError(f"run_nested_cv_sklearn expects a 3D padded input array, got {X.ndim}D.")
 
@@ -5409,7 +2878,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             return 0.0
     
     if verbose >= 1:
-        logging.info(f"\n[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
+        logging.info(f"[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
         logging.info(f"[CV_SKLEARN] Model type: {model_type}")
         logging.info(f"[CV_SKLEARN] Refit metric: {refit_scoring_metric}")
         logging.info(f"[CV_SKLEARN] Hyperparameter selection metric: {selection_score_metric}")
@@ -5450,7 +2919,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     for outer_fold, (outer_train_idx, outer_test_idx) in enumerate(outer_splits):
         fold_number = outer_fold + 1
         if verbose >= 1:
-            logging.info(f"\n[CV_SKLEARN] {'='*70}")
+            logging.info(f"[CV_SKLEARN] {'='*70}")
             logging.info(f"[CV_SKLEARN] OUTER FOLD {fold_number}/{n_outer_folds}")
             logging.info(f"[CV_SKLEARN] {'='*70}")
         
@@ -5553,6 +3022,16 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         logging.info(f"[CV_SKLEARN]     Pre-computed padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={mask_values['max_length']}")
                     
                     # Step 6: Create pipeline with pre-computed mask values
+                    callbacks, effective_monitor = _prepare_sequence_model_callbacks(
+                        model_type=model_type,
+                        params=params,
+                        experiment_dir=experiment_dir,
+                        outer_fold=outer_fold + 1,
+                        inner_fold=inner_fold + 1,
+                        outer_test_subject=test_subject_name,
+                        inner_validation_subject=val_subject_name,
+                        has_validation_data=True,
+                    )
                     inner_pipeline, scoring_functions = build_pipeline(
                         model_type=model_type,
                         mask_values=mask_values,  # Use pre-computed mask values
@@ -5562,7 +3041,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         outer_test_subject=test_subject_name,
                         inner_validation_subject=val_subject_name,
                         params=params,
-                        has_validation_data=True  # Enable validation data monitoring
+                        has_validation_data=True,  # Enable validation data monitoring
+                        callbacks=callbacks,
+                        effective_monitor=effective_monitor,
                     )
                     inner_pipeline.set_params(**params)
                     
@@ -5628,7 +3109,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
                         if y_val_pred_default.size == y_inner_val.size:
                             y_val_pred_default = y_val_pred_default.reshape(y_inner_val.shape)
-                        base_confusion_components = LSTMClassifier.eval_masked_confusion_matrix_components(
+                        base_confusion_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
                             y_inner_val, y_val_pred_default, y_mask_val
                         )
                     except Exception as cm_error:
@@ -5672,7 +3153,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
                         if y_val_pred_conf.size == y_inner_val.size:
                             y_val_pred_conf = y_val_pred_conf.reshape(y_inner_val.shape)
-                        cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_conf, y_mask_val)
+                        cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_inner_val, y_val_pred_conf, y_mask_val)
                     except Exception as cm_error:
                         logging.debug(f"[CV_SKLEARN]       Failed to compute confusion matrix components: {cm_error}")
                         cm_components = None
@@ -5705,9 +3186,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                                 if isinstance(meta, dict) and meta.get('status') == 'failed'
                             ]
                             if failed_steps:
-                                logging.warning(format_warning_message(
+                                logging.warning(
                                     f"[FEATURE_SELECTOR] Steps failed during inner fold {inner_fold + 1}: {', '.join(failed_steps)}"
-                                ))
+                                )
                     
                     # === COMPREHENSIVE RESULT STORAGE FOR SKLEARN INNER FOLD ===
                     try:
@@ -5764,7 +3245,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             logging.info(f"[CV_SKLEARN]     Saved comprehensive results to: {os.path.basename(json_path)}")
                             
                     except Exception as save_error:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN]     Failed to save comprehensive inner fold results: {save_error}"))
+                        logging.warning(f"[CV_SKLEARN]     Failed to save comprehensive inner fold results: {save_error}")
                     
                     # Enhanced logging with multiple metrics
                     if verbose >= 2:
@@ -5785,14 +3266,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     lstm_classifier = inner_pipeline.named_steps['classifier']
                     if hasattr(lstm_classifier, 'model') and lstm_classifier.model is not None:
                         del lstm_classifier.model
-                    import tensorflow as tf
                     tf.keras.backend.clear_session()
-                    import gc
                     gc.collect()
                 
                 except Exception as e:
                     if verbose >= 1:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN]     Inner fold {inner_fold + 1} failed: {e}"))
+                        logging.warning(f"[CV_SKLEARN]     Inner fold {inner_fold + 1} failed: {e}")
                     inner_scores.append(0.0)  # Penalty for failed folds
                     inner_selected_features.append([])
                     inner_all_metrics.append({})  # Add empty metrics for failed folds
@@ -5904,24 +3383,24 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         for threshold in thresholds:
                             y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
                             
-                            # Use LSTMClassifier's evaluation methods for consistency
+                            # Use Seq2SeqLSTM's evaluation methods for consistency
                             y_mask_val = mask_values.get('y_mask', -1)
                             if metric == 'accuracy':
-                                score = LSTMClassifier.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                                score = Seq2SeqLSTM.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
                             elif metric == 'balanced_accuracy':
-                                score = LSTMClassifier.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)   
+                                score = Seq2SeqLSTM.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)   
                             elif metric == 'f1':
-                                score = LSTMClassifier.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)                                        
+                                score = Seq2SeqLSTM.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)                                        
                             elif metric == 'roc_auc':
-                                score = LSTMClassifier.eval_masked_roc_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
+                                score = Seq2SeqLSTM.eval_masked_roc_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
                             elif metric == 'pr_auc':
-                                score = LSTMClassifier.eval_masked_pr_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)                            
+                                score = Seq2SeqLSTM.eval_masked_pr_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)                            
                             elif metric == 'precision':
-                                score = LSTMClassifier.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
+                                score = Seq2SeqLSTM.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
                             elif metric == 'recall':
-                                score = LSTMClassifier.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
+                                score = Seq2SeqLSTM.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
                             elif metric == 'specificity':
-                                score = LSTMClassifier.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val) 
+                                score = Seq2SeqLSTM.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val) 
                             else:
                                 score = 0.0
                             
@@ -6023,7 +3502,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_inner_fold_details = param_inner_fold_details[best_param_idx] if param_inner_fold_details else []
             
             if verbose >= 1:
-                logging.info(f"\n[CV_SKLEARN] Best parameters: {best_params}")
+                logging.info(f"[CV_SKLEARN] Best parameters: {best_params}")
                 logging.info(f"[CV_SKLEARN] Best CV score: {best_score:.4f}")
                 logging.info(f"[CV_SKLEARN] Best feature set size: {len(best_features)}")
                 if best_metrics:
@@ -6042,7 +3521,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             best_aggregated_threshold_results = {}
             best_inner_fold_details = []
             if verbose >= 1:
-                logging.warning(format_warning_message(f"[CV_SKLEARN] No valid scores found, using default parameters"))
+                logging.warning(f"[CV_SKLEARN] No valid scores found, using default parameters")
         
         best_feature_names, best_feature_details, best_feature_index_map = build_feature_mapping(best_features, feature_names)
         if verbose >= 2 and best_feature_names:
@@ -6051,12 +3530,23 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         # Step 9: Final retrain using PRE-COMPUTED PADDING for efficiency
         if verbose >= 1:
-            logging.info(f"\n[CV_SKLEARN] Final retraining on full training set...")
+            logging.info(f"[CV_SKLEARN] Final retraining on full training set...")
         
         try:
             train_shape_for_logging = X_outer_train.shape if hasattr(X_outer_train, 'shape') else None
             test_shape_for_logging = X_outer_test.shape if hasattr(X_outer_test, 'shape') else None
             
+            callbacks, effective_monitor = _prepare_sequence_model_callbacks(
+                model_type=model_type,
+                params=best_params,
+                experiment_dir=experiment_dir,
+                outer_fold=outer_fold + 1,
+                inner_fold=None,
+                outer_test_subject=test_subject_name,
+                inner_validation_subject=None,
+                has_validation_data=False,
+            )
+
             # Create final pipeline with best parameters and subject information
             final_pipeline, final_scoring_functions = build_pipeline(
                 model_type=model_type,
@@ -6065,7 +3555,11 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 outer_fold=outer_fold + 1,
                 inner_fold=None,  # No inner fold for final training
                 outer_test_subject=test_subject_name,
-                inner_validation_subject=None
+                inner_validation_subject=None,
+                params=best_params,
+                has_validation_data=False,
+                callbacks=callbacks,
+                effective_monitor=effective_monitor,
             )
             final_pipeline.set_params(**best_params)
             final_feature_selection_report = None
@@ -6183,9 +3677,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             subject_name=test_subject_name
                         )
                     except Exception as history_error:
-                        logging.warning(format_warning_message(
+                        logging.warning(
                             f"[CV_SKLEARN] Failed to save refit history: {history_error}"
-                        ))
+                        )
             train_metrics = {k: v for k, v in history_metrics.items() if k.startswith('train_')}
 
             # Use stable thresholds computed on aggregated validation data from inner CV
@@ -6245,7 +3739,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     test_metrics['test_recall'] = recall_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
                     test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
                 except Exception as metric_error:
-                    logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}"))
+                    logging.warning(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}")
                     test_metrics.setdefault('test_f1', np.nan)
                     test_metrics.setdefault('test_accuracy', np.nan)
                     test_metrics.setdefault('test_precision', np.nan)
@@ -6257,12 +3751,12 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
                     if y_test_pred_default_full.size == y_outer_test.size:
                         y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
-                    cm_base = LSTMClassifier.eval_masked_confusion_matrix_components(
+                    cm_base = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
                         y_outer_test, y_test_pred_default_full, y_mask_val
                     )
                     test_metrics['test_confusion_matrix_components'] = cm_base
                 except Exception as cm_error:
-                    logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute base test confusion matrix: {cm_error}"))
+                    logging.warning(f"[CV_SKLEARN] Failed to compute base test confusion matrix: {cm_error}")
                     test_metrics['test_confusion_matrix_components'] = None
                 
                 # Calculate threshold-optimized metrics
@@ -6290,7 +3784,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                             from sklearn.metrics import balanced_accuracy_score
                             test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
                     except Exception as e:
-                        logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}"))
+                        logging.warning(f"[CV_SKLEARN] Could not calculate threshold-optimized {metric_name}: {e}")
                         test_metrics[metric_key] = np.nan
                 
                 # Add AUC scores (threshold-independent)
@@ -6300,7 +3794,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     pr_auc = average_precision_score(y_test_valid, y_test_proba_valid)
                     test_metrics['test_pr_auc'] = pr_auc
                 except Exception as e:
-                    logging.warning(format_warning_message(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}"))
+                    logging.warning(f"[CV_SKLEARN] Could not calculate AUC metrics: {e}")
                     test_metrics['test_roc_auc'] = np.nan
                     test_metrics['test_pr_auc'] = np.nan
             
@@ -6310,10 +3804,10 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
                 if y_test_pred_conf.size == y_outer_test.size:
                     y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
-                cm_components = LSTMClassifier.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
+                cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
                 test_metrics['test_tuned_confusion_matrix_components'] = cm_components
             except Exception as e:
-                logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}"))
+                logging.warning(f"[CV_SKLEARN] Failed to compute confusion matrix components: {e}")
                 test_metrics['test_tuned_confusion_matrix_components'] = None
             
             test_metrics = add_notuning_metrics(test_metrics, 'test')
@@ -6343,9 +3837,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                         if isinstance(meta, dict) and meta.get('status') == 'failed'
                     ]
                     if failed_steps:
-                        logging.warning(format_warning_message(
+                        logging.warning(
                             f"[FEATURE_SELECTOR] Steps failed during final retraining: {', '.join(failed_steps)}"
-                        ))
+                        )
             
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
@@ -6425,7 +3919,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     logging.info(f"[CV_SKLEARN] Saved comprehensive sklearn refit results to: {os.path.basename(json_path)}")
                     
             except Exception as save_error:
-                logging.warning(format_warning_message(f"[CV_SKLEARN] Failed to save sklearn refit results: {save_error}"))
+                logging.warning(f"[CV_SKLEARN] Failed to save sklearn refit results: {save_error}")
             
             # Store results with all test metrics (for backward compatibility)
             result_dict = {
@@ -6468,7 +3962,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         
         except Exception as e:
             if verbose >= 1:
-                logging.error(format_error_message(f"[CV_SKLEARN] Final training/testing failed for fold {outer_fold + 1}: {e}"))
+                logging.error(f"[CV_SKLEARN] Final training/testing failed for fold {outer_fold + 1}: {e}")
             
             # Store failed result
             outer_results.append({
@@ -6500,7 +3994,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
     
     # Summary
     if verbose >= 1:
-        logging.info(f"\n[CV_SKLEARN] {'='*80}")
+        logging.info(f"[CV_SKLEARN] {'='*80}")
         logging.info(f"[CV_SKLEARN] NESTED CROSS-VALIDATION COMPLETED")
         logging.info(f"[CV_SKLEARN] {'='*80}")
         
@@ -6553,12 +4047,13 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         try:
             hparam_logger.create_hyperparameter_summary(hparam_trials)
         except Exception as summary_error:
-            logging.warning(format_warning_message(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}"))
+            logging.warning(f"[HPARAMS] Failed to create hyperparameter summary: {summary_error}")
     
     if processed_outer_folds == 0:
         raise ValueError("No outer folds were processed. Check outer fold/subject filters.")
     
     return outer_results, all_best_params, experiment_dir
+
 def setup_logging(verbose_level=2, log_dir=None):
     """
     Configure logging with different verbosity levels and optional file logging.
@@ -6606,7 +4101,7 @@ def setup_logging(verbose_level=2, log_dir=None):
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        log_file = os.path.join(log_dir, f"lstm_hctsa_training_{timestamp}.log")
+        log_file = os.path.join(log_dir, f"seq_model_training_{timestamp}.log")
         
         file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
         file_handler.setLevel(level)
@@ -6628,7 +4123,6 @@ def setup_logging(verbose_level=2, log_dir=None):
     
     return log_file
 
-
 def parse_outer_subject_selection(selection_str):
     """
     Parse a comma-separated string of outer test subject names.
@@ -6645,7 +4139,6 @@ def parse_outer_subject_selection(selection_str):
     filters = [token.strip() for token in selection_str.split(',') if token.strip()]
     return filters if filters else None
 
-
 def sanitize_path_component(component: Optional[str]) -> Optional[str]:
     """
     Make a string filesystem-friendly. Returns None if nothing valid remains.
@@ -6658,7 +4151,6 @@ def sanitize_path_component(component: Optional[str]) -> Optional[str]:
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
     sanitized = re.sub(r"_{2,}", "_", sanitized).strip("_")
     return sanitized or None
-
 
 def main(argv=None):            
     script_start_time = time.time()
@@ -6686,20 +4178,20 @@ def main(argv=None):
         "--model-type",
         type=str,
         choices=SUPPORTED_MODEL_TYPES,
-        default=None,
+        default='seq2vec_lstm',
         help="Classifier to train (overrides config model_type)."
     )
     args = parser.parse_args(argv)
 
     hyperparams_config_path = Path(args.hyperparams_config).expanduser()
     configure_hyperparameter_settings(str(hyperparams_config_path))
-    selected_model_type = (args.model_type or DEFAULT_MODEL_TYPE or 'lstm').strip().lower()
+    selected_model_type = str(args.model_type or DEFAULT_MODEL_TYPE).strip().lower()
     if selected_model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(f"Unsupported model_type '{selected_model_type}'. Expected one of {SUPPORTED_MODEL_TYPES}.")
     
     verbose = 3
     n_jobs = 1  # Optimal for LSTM with GPU
-    feature_source = (DEFAULT_FEATURE_SOURCE or 'hctsa')
+    feature_source = DEFAULT_FEATURE_SOURCE
     segment_cache_dir = resolve_feature_cache_directory()
     
     outer_subject_selection_str = args.outer_subjects
@@ -6713,7 +4205,7 @@ def main(argv=None):
     channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD or 'beta'
     run_id_raw = args.run_id
     run_id = sanitize_path_component(run_id_raw) if run_id_raw else None
-    experiment_name = EXPERIMENT_NAME or 'nested_cv'
+    experiment_name = EXPERIMENT_NAME
     experiment_name_component = sanitize_path_component(experiment_name) or 'nested_cv'
     experiment_dir_name = experiment_name_component
     if subject_log_component:
@@ -6781,7 +4273,7 @@ def main(argv=None):
     # Filter invalid features (only for HCTSA source)
     if feature_source.lower() == 'hctsa':
         if verbose >= 1:
-            logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING (HCTSA)")
+            logging.info(f"[MAIN] 1.1 FEATURE FILTERING (HCTSA)")
             logging.info("[MAIN] " + "-" * 40)
                 
         TS_DataMat_filtered, valid_features_mask, filter_report = filter_features(
@@ -6811,7 +4303,7 @@ def main(argv=None):
         operations = operations_filtered
     else:
         if verbose >= 1:
-            logging.info(f"\n[MAIN] 1.1 FEATURE FILTERING skipped (source='{feature_source}')")
+            logging.info(f"[MAIN] 1.1 FEATURE FILTERING skipped (source='{feature_source}')")
         valid_features_mask = np.ones(TS_DataMat.shape[1], dtype=bool)
         filter_report = {}
 
@@ -6825,7 +4317,7 @@ def main(argv=None):
     
     # Parse metadata and group by trials
     if verbose >= 1:
-        logging.info("\n[MAIN] 2. SEQUENCE FORMATTING")
+        logging.info(f"[MAIN] 2. SEQUENCE FORMATTING")
         logging.info("[MAIN] " + "-" * 40)
     
     timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
@@ -6889,9 +4381,9 @@ def main(argv=None):
         logging.error(f"Failed to setup hyperparameter experiment: {e}")
         hparam_logger = None
     
-    if selected_model_type == 'lstm':
+    if selected_model_type == 'seq2seq_lstm':
         # Sequence-to-sequence path (padding required)
-        logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding (LSTM)")
+        logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding (seq2seq LSTM)")
         logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
 
         X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
@@ -6912,8 +4404,8 @@ def main(argv=None):
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source
         )
-    elif selected_model_type == 'vanilla_lstm':
-        logging.info(f"[MAIN] Starting vanilla LSTM nested CV on raw segments (no padding)")
+    elif selected_model_type == 'seq2vec_lstm':
+        logging.info(f"[MAIN] Starting seq2vec LSTM nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
         outer_results, all_best_params, experiment_dir = run_nested_cv_classical(
@@ -6956,7 +4448,7 @@ def main(argv=None):
 
     # Step 19: Final Evaluation (logged only; aggregation handled separately)
     if verbose >= 1:
-        logging.info("\n[MAIN] 4. FINAL EVALUATION")
+        logging.info(f"[MAIN] 4. FINAL EVALUATION")
         logging.info("[MAIN] " + "-" * 40)
     
     total_runtime_seconds = time.time() - script_start_time
