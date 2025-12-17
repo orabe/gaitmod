@@ -10,7 +10,7 @@ import matplotlib.patches as mpatches
 import seaborn as sns
 from scipy import stats # Added for Shapiro-Wilk, Levene test, and probplot
 
-class _FeatureSelector:
+class FeatureSelector:
     def __init__(self, feature_names, random_state=42):
         self.feature_names = np.array(feature_names) 
         self.random_state = random_state
