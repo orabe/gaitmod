@@ -3112,7 +3112,7 @@ def run_nested_cv_classical(
     return outer_results, all_best_params, experiment_dir
 
 
-def run_nested_cv_sklearn(X, y, groups, mask_values, 
+def run_loso_cv_lstm(X, y, groups, mask_values, 
                           subject_names=None,
                           model_type='seq2seq_lstm',
                           refit_scoring_metric='f1',
@@ -3181,9 +3181,9 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
         subject_name_filter = name_filter_tmp or None
 
     if model_type != 'seq2seq_lstm':
-        raise ValueError("run_nested_cv_sklearn only supports model_type='seq2seq_lstm'.")
+        raise ValueError("run_loso_cv_lstm only supports model_type='seq2seq_lstm'.")
     if X.ndim != 3:
-        raise ValueError(f"run_nested_cv_sklearn expects a 3D padded input array, got {X.ndim}D.")
+        raise ValueError(f"run_loso_cv_lstm expects a 3D padded input array, got {X.ndim}D.")
 
     result_metadata = {'model_type': model_type, 'data_source': data_source}
 
@@ -3911,7 +3911,7 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
             test_metrics = {}
             refit_learning_rate_history = None
             if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
-                raise ValueError('run_nested_cv_sklearn requires 3D padded inputs for final retraining.')
+                raise ValueError('run_loso_cv_lstm requires 3D padded inputs for final retraining.')
 
             preprocessing_steps = final_pipeline.steps[:-1]
             lstm_classifier = final_pipeline.steps[-1][1]
@@ -4754,7 +4754,7 @@ def main(argv=None):
 
         X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_nested_cv_sklearn(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
             X_padded, y_padded, groups,
             subject_names=subject_names,
             mask_values=mask_values,
