@@ -121,7 +121,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         return model
 
     def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
-        logging.info(f"[FIT] Training Vanilla LSTM: X={X.shape}, y={y.shape}")
+        logging.info(f"[FIT] Training Seq2Vec LSTM: X={X.shape}, y={y.shape}")
         
         X = np.asarray(X, dtype=np.float32)
         if X.ndim != 3:
@@ -241,7 +241,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         if self.model:
             self.model.summary()
         else:
-            logging.info("Vanilla LSTM model not built yet.")
+            logging.info("Seq2Vec LSTM model not built yet.")
 
 class BinaryBalancedAccuracy(Metric):
     """Non-masked balanced accuracy metric for binary classification."""

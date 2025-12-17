@@ -882,6 +882,140 @@ class LearningRateLoggingCallback(Callback):
             return float(K.get_value(lr_tensor))
         except Exception:
             return None
+
+
+class TestEvaluationCSVLogger(Callback):
+    """
+    Callback that evaluates model on test data after each epoch and logs metrics to CSV.
+    
+    IMPORTANT: This callback is for MONITORING ONLY. The model does not use these metrics
+    for training decisions, so there is no data leakage. The test metrics are computed
+    independently after each epoch to track generalization performance during training.
+    
+    Args:
+        X_test: Test features
+        y_test: Test labels  
+        csv_path: Path to CSV file for logging
+        mask_value: Optional mask value for y_test (for sequence models)
+        metrics_to_log: List of metric names to compute and log
+        log_frequency: Log every N epochs (default: 1 = every epoch)
+    """
+    
+    def __init__(self, X_test, y_test, csv_path, mask_value=None, 
+                 metrics_to_log=None, log_frequency=1):
+        super().__init__()
+        self.X_test = X_test
+        self.y_test = y_test
+        self.csv_path = csv_path
+        self.mask_value = mask_value
+        self.log_frequency = log_frequency
+        self.metrics_to_log = metrics_to_log or [
+            'loss', 'accuracy', 'f1_score', 'precision', 'recall', 
+            'balanced_accuracy', 'roc_auc', 'pr_auc'
+        ]
+        self.csv_file = None
+        self.csv_writer = None
+        self.epoch_data = []
+        
+    def on_train_begin(self, logs=None):
+        """Initialize CSV file with headers."""
+        import csv
+        os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
+        self.csv_file = open(self.csv_path, 'w', newline='')
+        
+        # Create headers: epoch + test metrics
+        fieldnames = ['epoch'] + [f'test_{metric}' for metric in self.metrics_to_log]
+        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=fieldnames)
+        self.csv_writer.writeheader()
+        self.csv_file.flush()
+        
+        logging.info(f"[TEST_EVAL_CSV] Initialized test evaluation CSV logger: {self.csv_path}")
+        
+    def on_epoch_end(self, epoch, logs=None):
+        """Evaluate on test set and log metrics."""
+        if epoch % self.log_frequency != 0:
+            return
+            
+        try:
+            # Get predictions
+            y_pred_proba = self.model.predict(self.X_test, verbose=0)
+            
+            # Handle different output shapes
+            if y_pred_proba.ndim > 2:
+                y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+            
+            # Get positive class probabilities
+            if y_pred_proba.shape[1] == 2:
+                y_proba_pos = y_pred_proba[:, 1]
+            else:
+                y_proba_pos = y_pred_proba.ravel()
+            
+            # Get binary predictions (threshold = 0.5)
+            y_pred = (y_proba_pos > 0.5).astype(int)
+            
+            # Flatten test labels
+            y_true = self.y_test.ravel()
+            y_pred_flat = y_pred.ravel()
+            y_proba_flat = y_proba_pos.ravel()
+            
+            # Apply masking if specified
+            if self.mask_value is not None:
+                mask = y_true != self.mask_value
+                y_true = y_true[mask]
+                y_pred_flat = y_pred_flat[mask]
+                y_proba_flat = y_proba_flat[mask]
+            
+            # Compute metrics
+            from sklearn.metrics import (
+                accuracy_score, f1_score, precision_score, recall_score,
+                balanced_accuracy_score, roc_auc_score, average_precision_score,
+                log_loss
+            )
+            
+            row = {'epoch': epoch}
+            
+            for metric_name in self.metrics_to_log:
+                try:
+                    if metric_name == 'loss':
+                        # Compute binary cross-entropy loss
+                        value = log_loss(y_true, y_proba_flat)
+                    elif metric_name == 'accuracy':
+                        value = accuracy_score(y_true, y_pred_flat)
+                    elif metric_name == 'f1_score' or metric_name == 'f1':
+                        value = f1_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'precision':
+                        value = precision_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'recall':
+                        value = recall_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'balanced_accuracy':
+                        value = balanced_accuracy_score(y_true, y_pred_flat)
+                    elif metric_name == 'roc_auc':
+                        value = roc_auc_score(y_true, y_proba_flat)
+                    elif metric_name == 'pr_auc':
+                        value = average_precision_score(y_true, y_proba_flat)
+                    else:
+                        value = np.nan
+                    
+                    row[f'test_{metric_name}'] = float(value)
+                except Exception as e:
+                    logging.warning(f"[TEST_EVAL_CSV] Failed to compute {metric_name}: {e}")
+                    row[f'test_{metric_name}'] = np.nan
+            
+            # Write to CSV
+            self.csv_writer.writerow(row)
+            self.csv_file.flush()
+            
+            # Store for summary
+            self.epoch_data.append(row)
+            
+        except Exception as e:
+            logging.warning(f"[TEST_EVAL_CSV] Failed to evaluate test metrics at epoch {epoch}: {e}")
+    
+    def on_train_end(self, logs=None):
+        """Close CSV file."""
+        if self.csv_file:
+            self.csv_file.close()
+            logging.info(f"[TEST_EVAL_CSV] Test evaluation logging complete. Saved {len(self.epoch_data)} epochs to {self.csv_path}")
         
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
@@ -2588,7 +2722,40 @@ def run_nested_cv_classical(
             'balanced_accuracy': 0.5,
         }
 
+        # For seq2vec_lstm, add test evaluation callback before training
         if model_type == 'seq2vec_lstm':
+            classifier = final_pipeline.steps[-1][1]
+            
+            # Add test evaluation callback for monitoring (not for training decisions)
+            test_eval_csv_path = None
+            existing_callbacks = getattr(classifier, 'callbacks', [])
+            
+            # Try to get callbacks directory from existing callbacks
+            for cb in existing_callbacks:
+                if hasattr(cb, '_nested_cv_paths'):
+                    callbacks_dir = cb._nested_cv_paths.get('callbacks_dir')
+                    if callbacks_dir:
+                        unique_id = cb._nested_cv_paths.get('unique_id', 'refit')
+                        test_eval_csv_path = os.path.join(
+                            callbacks_dir, 
+                            f"test_evaluation_{unique_id}.csv"
+                        )
+                        break
+            
+            if test_eval_csv_path:
+                test_eval_callback = TestEvaluationCSVLogger(
+                    X_test=X_outer_test,
+                    y_test=y_outer_test,
+                    csv_path=test_eval_csv_path,
+                    mask_value=None,  # Classical models don't use masking
+                    log_frequency=1
+                )
+                if not hasattr(classifier, 'callbacks'):
+                    classifier.callbacks = []
+                classifier.callbacks.append(test_eval_callback)
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Added test evaluation callback (monitoring only, no data leakage)")
+            
             _fit_pipeline_with_validation(final_pipeline, X_outer_train, y_outer_train)
         else:
             final_pipeline.fit(X_outer_train, y_outer_train)
@@ -2716,7 +2883,7 @@ def run_nested_cv_classical(
                 },
             }
             comprehensive_refit_results.update(result_metadata)
-            save_evaluation_results(
+            json_path = save_evaluation_results(
                 results_dict=comprehensive_refit_results,
                 result_type='refit',
                 experiment_dir=experiment_dir,
@@ -2725,6 +2892,10 @@ def run_nested_cv_classical(
                 outer_test_subject=test_subject_name,
                 immediate_save=True,
             )
+            
+            if verbose >= 1 and json_path:
+                logging.info(f"[CV_SKLEARN] Saved comprehensive refit results to: {os.path.basename(json_path)}")
+                    
         except Exception as e:
             logging.warning(f"[CV_SKLEARN] Failed to save refit results: {e}")
 
@@ -3643,6 +3814,33 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 X_test_final = transformer.transform(X_test_final)
             test_shape_for_logging = X_test_final.shape
 
+            # Add test evaluation callback for monitoring (not for training decisions)
+            test_eval_csv_path = None
+            if preserved_callbacks:
+                # Get the callbacks directory from any callback with paths
+                for cb in preserved_callbacks:
+                    if hasattr(cb, '_nested_cv_paths'):
+                        callbacks_dir = cb._nested_cv_paths.get('callbacks_dir')
+                        if callbacks_dir:
+                            unique_id = cb._nested_cv_paths.get('unique_id', 'refit')
+                            test_eval_csv_path = os.path.join(
+                                callbacks_dir, 
+                                f"test_evaluation_{unique_id}.csv"
+                            )
+                            break
+            
+            if test_eval_csv_path:
+                test_eval_callback = TestEvaluationCSVLogger(
+                    X_test=X_test_final,
+                    y_test=y_outer_test,
+                    csv_path=test_eval_csv_path,
+                    mask_value=mask_values.get('y_mask', -1),
+                    log_frequency=1
+                )
+                lstm_classifier.callbacks.append(test_eval_callback)
+                if verbose >= 1:
+                    logging.info(f"[CV_SKLEARN] Added test evaluation callback (monitoring only, no data leakage)")
+
             # Fit the LSTM classifier with fixed epoch schedule
             lstm_classifier.fit(X_train_final, y_outer_train)
             lstm_histories = getattr(lstm_classifier, 'history_', [])
@@ -4178,7 +4376,7 @@ def main(argv=None):
         "--model-type",
         type=str,
         choices=SUPPORTED_MODEL_TYPES,
-        default='seq2vec_lstm',
+        default='seq2seq_lstm',
         help="Classifier to train (overrides config model_type)."
     )
     args = parser.parse_args(argv)
