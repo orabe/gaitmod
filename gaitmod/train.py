@@ -614,6 +614,7 @@ class HyperparameterTuningLogger:
 class HyperparameterTensorBoardCallback(TensorBoard):
     """
     Enhanced TensorBoard callback that includes hyperparameter information in logs.
+    Filters out test_* metrics to prevent duplication with TestTensorBoardLogger.
     """
 
     def __init__(self, log_dir, hyperparams=None, **kwargs):
@@ -621,6 +622,17 @@ class HyperparameterTensorBoardCallback(TensorBoard):
         super().__init__(log_dir=log_dir, **kwargs)
         
         self.hyperparams = hyperparams or {}
+        
+    def on_epoch_end(self, epoch, logs=None):
+        """Override to filter out test_* metrics before logging."""
+        if logs is not None:
+            # Create a filtered copy without test_* metrics
+            # This prevents test metrics from being logged to the main TensorBoard run
+            # TestTensorBoardLogger handles test metrics separately
+            filtered_logs = {k: v for k, v in logs.items() if not k.startswith('test_')}
+            super().on_epoch_end(epoch, filtered_logs)
+        else:
+            super().on_epoch_end(epoch, logs)
         
     def on_train_begin(self, logs=None):
         super().on_train_begin(logs)
@@ -1129,11 +1141,14 @@ class TestTensorBoardLogger(Callback):
                     logging.warning(f"[TEST_TENSORBOARD] Failed to compute {metric_name}: {e}")
                     test_metrics[metric_name] = np.nan
             
-            # Write metrics to TensorBoard
+            # Write metrics to TensorBoard with clear naming
+            # Use 'epoch_' prefix to match standard TensorBoard metric format
+            # These are written to test/ subdirectory, so no additional test_ prefix needed
             with self.writer.as_default():
                 for metric_name, value in test_metrics.items():
                     if not np.isnan(value):
-                        tf.summary.scalar(f'test_{metric_name}', value, step=epoch)
+                        # Use 'epoch_' prefix to match TensorBoard convention
+                        tf.summary.scalar(f'epoch_{metric_name}', value, step=epoch)
                 self.writer.flush()
             
             # Store for summary
