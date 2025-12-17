@@ -1006,6 +1006,147 @@ class TestEvaluationCSVLogger(Callback):
         """Log summary."""
         if self.epoch_data:
             logging.info(f"[TEST_EVAL_CSV] Test evaluation complete. Logged {len(self.epoch_data)} epochs")
+
+
+class TestTensorBoardLogger(Callback):
+    """
+    TensorBoard callback that logs test metrics to a separate 'test' directory.
+    
+    IMPORTANT: This callback is for MONITORING ONLY. The model does not use these metrics
+    for training decisions, so there is no data leakage. The test metrics are computed
+    independently after each epoch to track generalization performance during training.
+    
+    This callback creates TensorBoard events in a 'test' subdirectory under the main
+    tensorboard directory, making it easy to visualize test performance alongside 
+    training/validation metrics.
+    
+    Args:
+        X_test: Test features
+        y_test: Test labels
+        tensorboard_dir: Path to main tensorboard directory
+        mask_value: Optional mask value for y_test (for sequence models)
+        metrics_to_log: List of metric names to compute and log
+        log_frequency: Log every N epochs (default: 1 = every epoch)
+    """
+    
+    def __init__(self, X_test, y_test, tensorboard_dir, mask_value=None,
+                 metrics_to_log=None, log_frequency=1):
+        super().__init__()
+        self.X_test = X_test
+        self.y_test = y_test
+        self.mask_value = mask_value
+        self.log_frequency = log_frequency
+        self.metrics_to_log = metrics_to_log or [
+            'loss', 'accuracy', 'f1_score', 'precision', 'recall',
+            'balanced_accuracy', 'roc_auc', 'pr_auc'
+        ]
+        
+        # Create test subdirectory under tensorboard directory
+        self.test_log_dir = os.path.join(tensorboard_dir, 'test')
+        os.makedirs(self.test_log_dir, exist_ok=True)
+        
+        self.writer = None
+        self.epoch_data = []
+        
+    def on_train_begin(self, logs=None):
+        """Initialize TensorBoard writer for test metrics."""
+        try:
+            self.writer = tf.summary.create_file_writer(self.test_log_dir)
+            logging.info(f"[TEST_TENSORBOARD] Initialized test TensorBoard logger: {self.test_log_dir}")
+        except Exception as e:
+            logging.warning(f"[TEST_TENSORBOARD] Failed to create TensorBoard writer: {e}")
+            self.writer = None
+    
+    def on_epoch_end(self, epoch, logs=None):
+        """Evaluate on test set and log metrics to TensorBoard."""
+        if self.writer is None:
+            return
+            
+        if epoch % self.log_frequency != 0:
+            return
+        
+        try:
+            # Get predictions
+            y_pred_proba = self.model.predict(self.X_test, verbose=0)
+            
+            # Handle different output shapes
+            if y_pred_proba.ndim > 2:
+                y_pred_proba = y_pred_proba.reshape(-1, y_pred_proba.shape[-1])
+            
+            # Get positive class probabilities
+            if y_pred_proba.shape[1] == 2:
+                y_proba_pos = y_pred_proba[:, 1]
+            else:
+                y_proba_pos = y_pred_proba.ravel()
+            
+            # Get binary predictions (threshold = 0.5)
+            y_pred = (y_proba_pos > 0.5).astype(int)
+            
+            # Flatten test labels
+            y_true = self.y_test.ravel()
+            y_pred_flat = y_pred.ravel()
+            y_proba_flat = y_proba_pos.ravel()
+            
+            # Apply masking if specified
+            if self.mask_value is not None:
+                mask = y_true != self.mask_value
+                y_true = y_true[mask]
+                y_pred_flat = y_pred_flat[mask]
+                y_proba_flat = y_proba_flat[mask]
+            
+            # Compute metrics
+            from sklearn.metrics import (
+                accuracy_score, f1_score, precision_score, recall_score,
+                balanced_accuracy_score, roc_auc_score, average_precision_score,
+                log_loss
+            )
+            
+            test_metrics = {}
+            
+            for metric_name in self.metrics_to_log:
+                try:
+                    if metric_name == 'loss':
+                        value = log_loss(y_true, y_proba_flat)
+                    elif metric_name == 'accuracy':
+                        value = accuracy_score(y_true, y_pred_flat)
+                    elif metric_name == 'f1_score' or metric_name == 'f1':
+                        value = f1_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'precision':
+                        value = precision_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'recall':
+                        value = recall_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'balanced_accuracy':
+                        value = balanced_accuracy_score(y_true, y_pred_flat)
+                    elif metric_name == 'roc_auc':
+                        value = roc_auc_score(y_true, y_proba_flat)
+                    elif metric_name == 'pr_auc':
+                        value = average_precision_score(y_true, y_proba_flat)
+                    else:
+                        value = np.nan
+                    
+                    test_metrics[metric_name] = float(value)
+                except Exception as e:
+                    logging.warning(f"[TEST_TENSORBOARD] Failed to compute {metric_name}: {e}")
+                    test_metrics[metric_name] = np.nan
+            
+            # Write metrics to TensorBoard
+            with self.writer.as_default():
+                for metric_name, value in test_metrics.items():
+                    if not np.isnan(value):
+                        tf.summary.scalar(f'test_{metric_name}', value, step=epoch)
+                self.writer.flush()
+            
+            # Store for summary
+            self.epoch_data.append(test_metrics)
+            
+        except Exception as e:
+            logging.warning(f"[TEST_TENSORBOARD] Failed to log test metrics at epoch {epoch}: {e}")
+    
+    def on_train_end(self, logs=None):
+        """Close TensorBoard writer."""
+        if self.writer:
+            self.writer.close()
+            logging.info(f"[TEST_TENSORBOARD] Test TensorBoard logging complete. Logged {len(self.epoch_data)} epochs")
         
 # ===================================================================
 # Nested Cross-Validation Directory Structure and Callbacks
@@ -2716,17 +2857,21 @@ def run_nested_cv_classical(
         if model_type == 'seq2vec_lstm':
             classifier = final_pipeline.steps[-1][1]
             
-            # Add test evaluation callback BEFORE CSVLogger so test metrics are added to logs
+            # Add test evaluation callbacks (CSV + TensorBoard) BEFORE CSVLogger
             existing_callbacks = getattr(classifier, 'callbacks', [])
             
-            # Find CSVLogger position
+            # Find CSVLogger and TensorBoard positions
             csv_logger_idx = None
+            tensorboard_dir = None
             for idx, cb in enumerate(existing_callbacks):
                 if isinstance(cb, CSVLogger):
                     csv_logger_idx = idx
-                    break
+                # Get tensorboard directory from HyperparameterTensorBoardCallback
+                if isinstance(cb, HyperparameterTensorBoardCallback):
+                    tensorboard_dir = cb.log_dir
             
             if csv_logger_idx is not None:
+                # Add CSV logger for test metrics
                 test_eval_callback = TestEvaluationCSVLogger(
                     X_test=X_outer_test,
                     y_test=y_outer_test,
@@ -2738,7 +2883,20 @@ def run_nested_cv_classical(
                     classifier.callbacks = []
                 classifier.callbacks.insert(csv_logger_idx, test_eval_callback)
                 if verbose >= 1:
-                    logging.info(f"[CV_SKLEARN] Added test evaluation callback to training CSV (monitoring only, no data leakage)")
+                    logging.info(f"[CV_SKLEARN] Added test evaluation CSV callback (monitoring only, no data leakage)")
+                
+                # Add TensorBoard logger for test metrics
+                if tensorboard_dir:
+                    test_tensorboard_callback = TestTensorBoardLogger(
+                        X_test=X_outer_test,
+                        y_test=y_outer_test,
+                        tensorboard_dir=tensorboard_dir,
+                        mask_value=None,  # Classical models don't use masking
+                        log_frequency=1
+                    )
+                    classifier.callbacks.append(test_tensorboard_callback)
+                    if verbose >= 1:
+                        logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
             
             _fit_pipeline_with_validation(final_pipeline, X_outer_train, y_outer_train)
         else:
@@ -3798,16 +3956,20 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                 X_test_final = transformer.transform(X_test_final)
             test_shape_for_logging = X_test_final.shape
 
-            # Add test evaluation callback BEFORE CSVLogger so test metrics are added to logs
+            # Add test evaluation callbacks (CSV + TensorBoard)
             if preserved_callbacks:
-                # Find CSVLogger position in callbacks list
+                # Find CSVLogger and TensorBoard positions in callbacks list
                 csv_logger_idx = None
+                tensorboard_dir = None
                 for idx, cb in enumerate(preserved_callbacks):
                     if isinstance(cb, CSVLogger):
                         csv_logger_idx = idx
-                        break
+                    # Get tensorboard directory from HyperparameterTensorBoardCallback
+                    if isinstance(cb, HyperparameterTensorBoardCallback):
+                        tensorboard_dir = cb.log_dir
                 
                 if csv_logger_idx is not None:
+                    # Add CSV logger for test metrics
                     test_eval_callback = TestEvaluationCSVLogger(
                         X_test=X_test_final,
                         y_test=y_outer_test,
@@ -3817,7 +3979,20 @@ def run_nested_cv_sklearn(X, y, groups, mask_values,
                     # Insert BEFORE CSVLogger so test metrics are added to logs before CSV write
                     lstm_classifier.callbacks.insert(csv_logger_idx, test_eval_callback)
                     if verbose >= 1:
-                        logging.info(f"[CV_SKLEARN] Added test evaluation callback to training CSV (monitoring only, no data leakage)")
+                        logging.info(f"[CV_SKLEARN] Added test evaluation CSV callback (monitoring only, no data leakage)")
+                    
+                    # Add TensorBoard logger for test metrics
+                    if tensorboard_dir:
+                        test_tensorboard_callback = TestTensorBoardLogger(
+                            X_test=X_test_final,
+                            y_test=y_outer_test,
+                            tensorboard_dir=tensorboard_dir,
+                            mask_value=mask_values.get('y_mask', -1),
+                            log_frequency=1
+                        )
+                        lstm_classifier.callbacks.append(test_tensorboard_callback)
+                        if verbose >= 1:
+                            logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
 
             # Fit the LSTM classifier with fixed epoch schedule
             lstm_classifier.fit(X_train_final, y_outer_train)
