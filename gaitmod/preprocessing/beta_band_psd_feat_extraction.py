@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import welch
 
-from examples.hctsa_segments import HCTSASegmentCache
+from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 
 logger = logging.getLogger(__name__)
 

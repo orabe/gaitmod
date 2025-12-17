@@ -8,7 +8,7 @@ from .models.regression_models import RegressionModels, LinearRegressionModel, R
 from .models.classification_models import ClassificationModels, ClassificationLSTMModel
 from .utils.utils import create_directory, split_data_stratified, load_config, create_lagged_data, generate_continuous_labels
 
-from .models.feature_extraction import FeatureExtractor2
+from .models._feature_extraction import FeatureExtractor2
 from .models.lstm_classification_model import LSTMClassifier, CustomGridSearchCV, CustomTrainingLogger
 
 __all__ = ['MatFileReader', 'DataProcessor', 'FeatureExtractor', 'Visualise', 'BaseModel', 'RegressionModels', 'LinearRegressionModel', 'RegressionLSTMModel', 'ClassificationModels', 'ClassificationLSTMModel', 'FeatureExtractor2', 'LSTMClassifier', 'CustomGridSearchCV', 'CustomTrainingLogger']

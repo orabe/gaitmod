@@ -84,10 +84,10 @@ Feature Extractor 2
    :undoc-members:
    :show-inheritance:
 
-LSTM Classifier
----------------
+Seq2Seq LSTM Classifier
+-----------------------
 
-.. automodule:: gaitmod.LSTMClassifier
+.. automodule:: gaitmod.Seq2SeqLSTM
    :members:
    :undoc-members:
    :show-inheritance:

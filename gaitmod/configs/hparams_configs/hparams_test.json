@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_lstm_raw",
-    "model_type": "lstm",
+    "experiment_name": "hparams_seq2seq_lstm_raw",
+    "model_type": "seq2seq_lstm",
     "feature_data": {
       "source": "raw",
       "segment_cache_dir": "data/raw_segments"
@@ -66,15 +66,15 @@
     ],
     "feature_selector__correlation_threshold": [0.5]
   },
-  "lstm": {
+  "seq2seq_lstm": {
     "feature_params": {
       "scaler__scaler_type": ["standard"]
     },
     "architecture_configs": [
       {
-        "classifier__hidden_dims": [32, 64, 64],
-        "classifier__activations": ["tanh", "tanh", "tanh"],
-        "classifier__recurrent_activations": ["sigmoid", "sigmoid", "sigmoid"]
+        "classifier__hidden_dims": [32],
+        "classifier__activations": ["tanh"],
+        "classifier__recurrent_activations": ["sigmoid"]
       }
     ],
     "other_params": {
@@ -82,29 +82,33 @@
       "classifier__dense_units": [1],
       "classifier__dense_activation": ["sigmoid"],
       "classifier__optimizer": ["adam"],
-      "classifier__lr": [0.001],
+      "classifier__lr": [0.001, 0.0001],
       "classifier__patience": [5],
-      "classifier__epochs": [60],
-      "classifier__batch_size": [64],
+      "classifier__epochs": [5],
+      "classifier__batch_size": [8],
       "classifier__threshold": [0.5]
     }
   },
-  "vanilla_lstm": {
+  "seq2vec_lstm": {
     "feature_params": {
       "scaler__scaler_type": ["standard"]
     },
-    "param_grid": {
-      "classifier__hidden_dims": [[64, 64]],
-      "classifier__activations": [["tanh", "tanh"]],
-      "classifier__recurrent_activations": [["sigmoid", "sigmoid"]],
-      "classifier__dropout": [0.3],
+    "architecture_configs": [
+      {
+        "classifier__hidden_dims": [32],
+        "classifier__activations": ["tanh"],
+        "classifier__recurrent_activations": ["sigmoid"]
+      }
+    ],
+    "other_params": {
+      "classifier__dropout": [0.5],
       "classifier__dense_units": [1],
       "classifier__dense_activation": ["sigmoid"],
       "classifier__optimizer": ["adam"],
-      "classifier__lr": [0.001],
+      "classifier__lr": [0.001, 0.0001],
       "classifier__patience": [5],
-      "classifier__epochs": [60],
-      "classifier__batch_size": [64],
+      "classifier__epochs": [5],
+      "classifier__batch_size": [8],
       "classifier__threshold": [0.5]
     }
   },

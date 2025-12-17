@@ -10,8 +10,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler, Qu
 from pathlib import Path
 from datetime import datetime
 
-from examples.LFP.classification_experiments.train_lstm_hctsa import load_hctsa_data, parse_epoch_metadata, group_epochs_by_trial
-
+from gaitmod.feat_preproc import load_hctsa_data, parse_epoch_metadata, group_epochs_by_trial
 
 class HCTSAFeatureAnalyzer:
     """Analyze HCTSA features to determine optimal scaler."""
