@@ -1292,6 +1292,25 @@ def _resolve_hparam_dirname(outer_fold_dir: str, param_str: str, create_if_missi
     HYPERPARAM_RUN_DIRECTORY_MAP[key] = candidate_name
     return candidate_name
 
+def _compute_hyperparam_suffix(hyperparams: Optional[Dict[str, Any]]) -> str:
+    """
+    Create a short deterministic hash identifying a hyperparameter combination.
+    """
+    if not hyperparams:
+        return ''
+    items = []
+    for k in sorted(hyperparams):
+        value = hyperparams[k]
+        try:
+            serialized = json.dumps(value, sort_keys=True, default=str)
+        except TypeError:
+            serialized = str(value)
+        items.append(f"{k}:{serialized}")
+    digest_input = "|".join(items).encode('utf-8')
+    digest = hashlib.sha1(digest_input).hexdigest()
+    return digest[:8]
+
+
 def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
                             inner_fold=None, outer_test_subject=None, hyperparams=None,
                             inner_validation_subject=None, is_refit=False):
@@ -1335,7 +1354,6 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
             'optimizer',
             'dense_units',
             'dense_activation',
-            'batch_size',
             'enabled',
         }
         
@@ -1393,9 +1411,16 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         # Ensure the path isn't too long (limit to ~100 characters)
         if len(param_str) > 100:
             # Keep only the most important parameters
-            priority_keys = ['fs', 'bs', 'ep', 'lr', 'do', 'hd', 'nf']
+            priority_keys = ['fs', 'bs', 'lr', 'do', 'hd', 'nf']
             priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
             param_str = "_".join(priority_parts[:6])  # Limit to 6 most important params
+        # Append deterministic suffix to keep each hyperparameter combination unique
+        param_suffix = _compute_hyperparam_suffix(hyperparams if isinstance(hyperparams, dict) else None)
+        if param_suffix:
+            if param_str:
+                param_str = f"{param_str}_{param_suffix}"
+            else:
+                param_str = param_suffix
     else:
         # Use "refit" for refit training, "default" for other cases
         param_str = "refit" if is_refit else "default"
