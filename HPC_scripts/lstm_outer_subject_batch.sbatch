@@ -10,8 +10,7 @@
 #SBATCH --partition=gpu-2d
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --ntasks-per-node=1
-#SBATCH --mem=96gb
+#SBATCH --mem=128gb
 #SBATCH --output=logs/slurm/%x_%j.out
 #SBATCH --error=logs/slurm/%x_%j.err
 
@@ -54,7 +53,7 @@ if [[ -z "$RUN_ID" ]]; then
     RUN_ID="$(date +'%Y%m%d_%H%M%S')"
 fi
 
-CMD=(python examples/LFP/classification_experiments/train_lstm_hctsa.py)
+CMD=(python gaitmod/train.py)
 CMD+=(--hyperparams-config "$CONFIG_PATH")
 CMD+=(--run-id "$RUN_ID")
 CMD+=(--outer-subjects "$SUBJECTS")
