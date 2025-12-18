@@ -166,7 +166,7 @@ SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
     'logreg',
     'dummy',
 )
-DEFAULT_MODEL_TYPE = 'seq2seq_lstm'
+DEFAULT_MODEL_TYPE: Optional[str] = None
 
 DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
 DEFAULT_THRESHOLD_STEPS: int = 81
@@ -267,14 +267,15 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
     feature_params_cfg = GLOBAL_HPARAM_CONFIG.get('feature_params')
     DEFAULT_FEATURE_PARAMS = copy.deepcopy(feature_params_cfg) if isinstance(feature_params_cfg, dict) else {}
-    configured_model_type_raw = GLOBAL_SETTINGS.get('model_type', DEFAULT_MODEL_TYPE)
+    configured_model_type_raw = GLOBAL_SETTINGS.get('model_type')
+    if configured_model_type_raw is None:
+        raise ValueError("Hyperparameter config must specify 'global_settings.model_type'.")
     configured_model_type = str(configured_model_type_raw).strip().lower()
     if configured_model_type not in SUPPORTED_MODEL_TYPES:
-        logging.warning(
+        raise ValueError(
             f"Unsupported model_type '{configured_model_type_raw}' in config. "
-            f"Falling back to 'seq2seq_lstm'. Available: {', '.join(SUPPORTED_MODEL_TYPES)}"
+            f"Expected one of {', '.join(SUPPORTED_MODEL_TYPES)}."
         )
-        configured_model_type = 'seq2seq_lstm'
     DEFAULT_MODEL_TYPE = configured_model_type
 
     # Keep the standalone LSTM classifier module synchronized with the config-driven defaults
@@ -2357,11 +2358,6 @@ def get_default_param_grid(model_type, mask_values=None):
         raise RuntimeError("Hyperparameter configuration not loaded. Pass --hyperparams-config when running the script.")
     config = copy.deepcopy(GLOBAL_HPARAM_CONFIG)
     model_config = config.get(model_type)
-    if model_config is None and model_type == 'seq2vec_lstm':
-        # Allow the seq2vec LSTM to reuse the sequence-to-sequence configuration if absent
-        model_config = config.get('seq2seq_lstm')
-        if model_config is not None:
-            logging.info("[PARAM_GRID] No 'seq2vec_lstm' config found; reusing 'seq2seq_lstm' settings.")
     if model_config is None:
         raise ValueError(f"No hyperparameter configuration found for model_type='{model_type}'")
     
@@ -3424,11 +3420,19 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     
                     # Handle model-specific fitting
                     if model_type == 'seq2vec_lstm':
-                        # Seq2Vec: Reshape 2D data to 3D (add timesteps dimension of 1)
+                        # Seq2Vec: Reshape 2D data to 3D where columns become timesteps and features=1
                         if X_train_transformed.ndim == 2:
-                            X_train_transformed = X_train_transformed.reshape(X_train_transformed.shape[0], 1, X_train_transformed.shape[1])
+                            X_train_transformed = X_train_transformed.reshape(
+                                X_train_transformed.shape[0],
+                                X_train_transformed.shape[1],
+                                1
+                            )
                         if X_val_transformed.ndim == 2:
-                            X_val_transformed = X_val_transformed.reshape(X_val_transformed.shape[0], 1, X_val_transformed.shape[1])
+                            X_val_transformed = X_val_transformed.reshape(
+                                X_val_transformed.shape[0],
+                                X_val_transformed.shape[1],
+                                1
+                            )
                         
                         # Ensure y is 2D for Seq2VecLSTM
                         y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
@@ -4082,12 +4086,20 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             if model_type == 'seq2vec_lstm':
                 # Reshape for seq2vec LSTM
                 if X_train_final.ndim == 2:
-                    X_train_final_for_fit = X_train_final.reshape(X_train_final.shape[0], 1, X_train_final.shape[1])
+                    X_train_final_for_fit = X_train_final.reshape(
+                        X_train_final.shape[0],
+                        X_train_final.shape[1],
+                        1
+                    )
                 else:
                     X_train_final_for_fit = X_train_final
                     
                 if X_test_final.ndim == 2:
-                    X_test_final_for_callbacks = X_test_final.reshape(X_test_final.shape[0], 1, X_test_final.shape[1])
+                    X_test_final_for_callbacks = X_test_final.reshape(
+                        X_test_final.shape[0],
+                        X_test_final.shape[1],
+                        1
+                    )
                 else:
                     X_test_final_for_callbacks = X_test_final
                     
@@ -4708,7 +4720,7 @@ def main(argv=None):
         "--model-type",
         type=str,
         choices=SUPPORTED_MODEL_TYPES,
-        default='seq2seq_lstm',
+        default=None,
         help="Classifier to train (overrides config model_type)."
     )
     args = parser.parse_args(argv)
