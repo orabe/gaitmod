@@ -1,7 +1,6 @@
 import argparse
 import copy
 import gc
-import hashlib
 import json
 import logging
 import os
@@ -150,7 +149,6 @@ CHANNEL_SELECTION_METHODS: Dict[str, Any] = {}
 # Track numbered hyperparameter directories per (outer_fold_dir, param_str)
 HYPERPARAM_RUN_DIRECTORY_MAP: Dict[Tuple[str, str], str] = {}
 HYPERPARAM_RUN_COUNTERS: Dict[str, int] = {}
-HYPERPARAM_SIGNATURE_FILENAME = ".hyperparam_signature"
 DEFAULT_CHANNEL_SELECTION_METHOD = 'beta'
 SELECTION_SETTINGS: Dict[str, Any] = {}
 DEFAULT_REFIT_SCORING_METRIC = 'f1'
@@ -1261,22 +1259,19 @@ def _find_existing_param_dir(outer_fold_dir: str, param_str: str) -> Optional[st
 def _resolve_hparam_dirname(
     outer_fold_dir: str,
     param_str: str,
-    signature: str,
     create_if_missing: bool
 ) -> str:
     """
     Retrieve or create the numbered directory name for a hyperparameter combination.
     """
     normalized_dir = os.path.abspath(outer_fold_dir)
-    key = (normalized_dir, signature)
+    key = (normalized_dir, param_str)
 
     if key in HYPERPARAM_RUN_DIRECTORY_MAP:
         return HYPERPARAM_RUN_DIRECTORY_MAP[key]
 
     if not create_if_missing:
-        existing_dir = _find_existing_signature_dir(normalized_dir, signature)
-        if existing_dir is None:
-            existing_dir = _find_existing_param_dir(normalized_dir, param_str)
+        existing_dir = _find_existing_param_dir(normalized_dir, param_str)
         if existing_dir:
             HYPERPARAM_RUN_DIRECTORY_MAP[key] = existing_dir
             split_entry = _split_numbered_dirname(existing_dir)
@@ -1299,77 +1294,6 @@ def _resolve_hparam_dirname(
     HYPERPARAM_RUN_COUNTERS[normalized_dir] = next_index
     HYPERPARAM_RUN_DIRECTORY_MAP[key] = candidate_name
     return candidate_name
-
-def _compute_hyperparam_signature(hyperparams: Optional[Dict[str, Any]]) -> str:
-    """
-    Create a deterministic signature for a hyperparameter combination.
-    """
-    if not hyperparams:
-        return ''
-    items = []
-    for k in sorted(hyperparams):
-        value = hyperparams[k]
-        try:
-            serialized = json.dumps(value, sort_keys=True, default=str)
-        except TypeError:
-            serialized = str(value)
-        items.append(f"{k}:{serialized}")
-    
-    if not items:
-        return ''
-
-    digest_input = "|".join(items).encode('utf-8')
-    digest = hashlib.sha1(digest_input).hexdigest()
-    return digest[:8]
-
-
-def _find_existing_signature_dir(outer_fold_dir: str, signature: str) -> Optional[str]:
-    """
-    Find an existing directory that contains the provided hyperparameter signature.
-    """
-    if not signature:
-        return None
-    normalized_dir = os.path.abspath(outer_fold_dir)
-    if not os.path.isdir(normalized_dir):
-        return None
-
-    for entry in os.listdir(normalized_dir):
-        entry_path = os.path.join(normalized_dir, entry)
-        if not os.path.isdir(entry_path):
-            continue
-        signature_path = os.path.join(entry_path, HYPERPARAM_SIGNATURE_FILENAME)
-        if not os.path.isfile(signature_path):
-            continue
-        try:
-            with open(signature_path, 'r') as f:
-                saved = f.read().strip()
-        except Exception:
-            continue
-        if saved == signature:
-            return entry
-    return None
-
-
-def _persist_hyperparam_signature(hyperparams_dir: str, signature: str) -> None:
-    """
-    Write the hyperparameter signature to disk for future lookups.
-    """
-    if not signature:
-        return
-    os.makedirs(hyperparams_dir, exist_ok=True)
-    signature_path = os.path.join(hyperparams_dir, HYPERPARAM_SIGNATURE_FILENAME)
-    existing = ''
-    if os.path.isfile(signature_path):
-        try:
-            with open(signature_path, 'r') as f:
-                existing = f.read().strip()
-        except Exception:
-            existing = ''
-    if existing == signature:
-        return
-    with open(signature_path, 'w') as f:
-        f.write(signature)
-
 
 def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
                             inner_fold=None, outer_test_subject=None, hyperparams=None,
@@ -1400,17 +1324,14 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 
     if hyperparams and isinstance(hyperparams, dict):
         param_str = _create_hyperparameter_string(hyperparams)
-        signature = _compute_hyperparam_signature(hyperparams)
     else:
         param_str = "refit" if is_refit else "default"
-        signature = ''
 
     base_dir = os.path.join(outer_fold_dir, "refit") if is_refit else outer_fold_dir
     os.makedirs(base_dir, exist_ok=True)
     param_dir_name = _resolve_hparam_dirname(
         base_dir,
         param_str,
-        signature,
         create_if_missing=True
     )
     run_id = f"{unique_id}--{param_dir_name}"
@@ -1430,8 +1351,6 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
     # Create all directories
     for directory in [callbacks_dir, tensorboard_dir, models_dir, history_dir]:
         os.makedirs(directory, exist_ok=True)
-
-    _persist_hyperparam_signature(hyperparams_dir, signature)
 
     # Return all paths
     paths = {
@@ -2098,15 +2017,12 @@ def _construct_inner_fold_directory(experiment_dir, outer_fold, inner_fold,
     
     # Create hyperparameter string for directory structure
     param_str = _create_hyperparameter_string(hyperparams)
-    signature = _compute_hyperparam_signature(hyperparams if isinstance(hyperparams, dict) else None)
     param_dir_name = _resolve_hparam_dirname(
         outer_fold_dir,
         param_str,
-        signature,
         create_if_missing=True
     )
     hyperparams_dir = os.path.join(outer_fold_dir, param_dir_name)
-    _persist_hyperparam_signature(hyperparams_dir, signature)
     inner_fold_dir = os.path.join(
         hyperparams_dir, 
         f"inner_fold_{inner_fold + 1:02d}_val_{inner_validation_subject}" if inner_validation_subject 
@@ -2130,15 +2046,12 @@ def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject, h
     base_dir = os.path.join(outer_fold_dir, "refit")
     os.makedirs(base_dir, exist_ok=True)
     param_str = _create_hyperparameter_string(hyperparams)
-    signature = _compute_hyperparam_signature(hyperparams if isinstance(hyperparams, dict) else None)
     param_dir_name = _resolve_hparam_dirname(
         base_dir,
         param_str,
-        signature,
         create_if_missing=True
     )
     hyperparams_dir = os.path.join(base_dir, param_dir_name)
-    _persist_hyperparam_signature(hyperparams_dir, signature)
     return hyperparams_dir
 
 def _create_hyperparameter_string(hyperparams):
