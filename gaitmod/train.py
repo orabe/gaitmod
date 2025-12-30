@@ -1402,22 +1402,17 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
         param_str = _create_hyperparameter_string(hyperparams)
         signature = _compute_hyperparam_signature(hyperparams)
     else:
-        # Use "refit" for refit training, "default" for other cases
         param_str = "refit" if is_refit else "default"
         signature = ''
 
-    if is_refit:
-        base_dir = os.path.join(outer_fold_dir, "refit")
-        os.makedirs(base_dir, exist_ok=True)
-        param_dir_name = param_str
-    else:
-        base_dir = outer_fold_dir
-        param_dir_name = _resolve_hparam_dirname(
-            outer_fold_dir,
-            param_str,
-            signature,
-            create_if_missing=True
-        )
+    base_dir = os.path.join(outer_fold_dir, "refit") if is_refit else outer_fold_dir
+    os.makedirs(base_dir, exist_ok=True)
+    param_dir_name = _resolve_hparam_dirname(
+        base_dir,
+        param_str,
+        signature,
+        create_if_missing=True
+    )
     run_id = f"{unique_id}--{param_dir_name}"
     hyperparams_dir = os.path.join(base_dir, param_dir_name)
 
@@ -2059,7 +2054,7 @@ def save_evaluation_results(results_dict, result_type, output_dir=None, experime
                 )
             elif result_type == 'refit':
                 output_dir = _construct_refit_directory(
-                    experiment_dir, outer_fold, outer_test_subject
+                    experiment_dir, outer_fold, outer_test_subject, hyperparams
                 )
             else:
                 raise ValueError(f"Invalid result_type: {result_type}. Must be 'inner_fold' or 'refit'")
@@ -2120,7 +2115,7 @@ def _construct_inner_fold_directory(experiment_dir, outer_fold, inner_fold,
     
     return inner_fold_dir
 
-def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject):
+def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject, hyperparams=None):
     """
     Private function to construct directory structure for refit results.
     
@@ -2132,9 +2127,19 @@ def _construct_refit_directory(experiment_dir, outer_fold, outer_test_subject):
         experiment_dir, 
         f"outer_fold_{outer_fold + 1:02d}_test_{outer_test_subject}" if outer_test_subject else f"outer_fold_{outer_fold + 1:02d}"
     )
-    refit_results_dir = os.path.join(outer_fold_dir, "refit")
-    
-    return refit_results_dir
+    base_dir = os.path.join(outer_fold_dir, "refit")
+    os.makedirs(base_dir, exist_ok=True)
+    param_str = _create_hyperparameter_string(hyperparams)
+    signature = _compute_hyperparam_signature(hyperparams if isinstance(hyperparams, dict) else None)
+    param_dir_name = _resolve_hparam_dirname(
+        base_dir,
+        param_str,
+        signature,
+        create_if_missing=True
+    )
+    hyperparams_dir = os.path.join(base_dir, param_dir_name)
+    _persist_hyperparam_signature(hyperparams_dir, signature)
+    return hyperparams_dir
 
 def _create_hyperparameter_string(hyperparams):
     """
