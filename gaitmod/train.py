@@ -1767,7 +1767,8 @@ def add_notuning_metrics(metrics_dict, stage):
 
 
 def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
-                         outer_test_subject, inner_validation_subject, hyperparams):
+                         outer_test_subject, inner_validation_subject, hyperparams,
+                         per_sample_scores=None):
     """
     Private function to handle inner fold specific data processing and saving.
     
@@ -1812,9 +1813,10 @@ def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold,
     # Save with inner fold specific filenames
     json_filename = "evaluation_results.json"
     
-    return _write_result_files(result, output_dir, json_filename)
+    return _write_result_files(result, output_dir, json_filename, per_sample_scores=per_sample_scores)
 
-def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, hyperparams):
+def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, hyperparams,
+                     per_sample_scores=None):
     """
     Private function to handle refit specific data processing and saving.
     
@@ -1874,7 +1876,7 @@ def _save_refit_data(results_dict, output_dir, outer_fold, outer_test_subject, h
     # Save with refit specific filenames
     json_filename = "refit_results.json"
     
-    return _write_result_files(result, output_dir, json_filename)
+    return _write_result_files(result, output_dir, json_filename, per_sample_scores=per_sample_scores)
 
 def _create_result_structure(results_dict, metadata, metric_scores, data_info):
     """
@@ -1917,7 +1919,7 @@ def _create_result_structure(results_dict, metadata, metric_scores, data_info):
         'evaluation_results': evaluation_results
     }
 
-def _write_result_files(result, output_dir, json_filename):
+def _write_result_files(result, output_dir, json_filename, per_sample_scores=None):
     """
     Private function to write result files to disk.
     
@@ -1934,12 +1936,34 @@ def _write_result_files(result, output_dir, json_filename):
     json_safe_result = convert_numpy_types(result)
     with open(json_path, 'w') as f:
         json.dump(json_safe_result, f, indent=2, cls=NumpyEncoder)
+    _write_per_sample_scores(output_dir, json_filename, per_sample_scores)
     
     return json_path
 
+def _write_per_sample_scores(output_dir, json_filename, per_sample_scores=None):
+    """
+    Save per-sample true labels and scores next to the JSON results file.
+    """
+    if not per_sample_scores:
+        return None
+    y_true = per_sample_scores.get('y_true')
+    y_score = per_sample_scores.get('y_score')
+    if y_true is None or y_score is None:
+        return None
+    y_true_arr = np.asarray(y_true).ravel()
+    y_score_arr = np.asarray(y_score).ravel()
+    if y_true_arr.size == 0 or y_score_arr.size == 0 or y_true_arr.size != y_score_arr.size:
+        logging.warning("[RESULTS] Skipping per-sample scores save (empty or size mismatch).")
+        return None
+    base_name = os.path.splitext(json_filename)[0]
+    scores_path = os.path.join(output_dir, f"{base_name}_scores.npz")
+    np.savez_compressed(scores_path, y_true=y_true_arr, y_score=y_score_arr)
+    return scores_path
+
 def save_evaluation_results(results_dict, result_type, output_dir=None, experiment_dir=None, 
                            outer_fold=None, inner_fold=None, outer_test_subject=None, 
-                           inner_validation_subject=None, hyperparams=None, immediate_save=True):
+                           inner_validation_subject=None, hyperparams=None, immediate_save=True,
+                           per_sample_scores=None):
     """
     Main function to save evaluation results with consistent structure and JSON cleanup.
     This is the primary interface for saving both inner fold and refit results.
@@ -1955,6 +1979,7 @@ def save_evaluation_results(results_dict, result_type, output_dir=None, experime
         inner_validation_subject: Validation subject name (only for inner_fold type)
         hyperparams: Hyperparameters used
         immediate_save: Whether to save immediately (default: True)
+        per_sample_scores: Optional dict with y_true and y_score arrays to save alongside JSON
     
     Returns:
         str: Path to saved JSON file
@@ -1985,11 +2010,13 @@ def save_evaluation_results(results_dict, result_type, output_dir=None, experime
         if result_type == 'inner_fold':
             return _save_inner_fold_data(
                 results_dict, output_dir, outer_fold, inner_fold,
-                outer_test_subject, inner_validation_subject, hyperparams
+                outer_test_subject, inner_validation_subject, hyperparams,
+                per_sample_scores=per_sample_scores
             )
         elif result_type == 'refit':
             return _save_refit_data(
-                results_dict, output_dir, outer_fold, outer_test_subject, hyperparams
+                results_dict, output_dir, outer_fold, outer_test_subject, hyperparams,
+                per_sample_scores=per_sample_scores
             )
         else:
             raise ValueError(f"Invalid result_type: {result_type}. Must be 'inner_fold' or 'refit'")
@@ -3544,6 +3571,23 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         'configured_epochs': configured_epochs,
                         'restored_epoch': restored_epoch
                     })
+                    per_sample_scores = None
+                    try:
+                        if model_type == 'seq2seq_lstm':
+                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
+                        else:
+                            y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
+                        y_true_flat = y_inner_val.ravel()
+                        y_score_flat = y_val_proba_pos.ravel()
+                        if model_type == 'seq2seq_lstm':
+                            mask = y_true_flat != y_mask_val
+                            y_true_flat = y_true_flat[mask]
+                            y_score_flat = y_score_flat[mask]
+                        if y_true_flat.size and y_true_flat.size == y_score_flat.size:
+                            per_sample_scores = {'y_true': y_true_flat, 'y_score': y_score_flat}
+                    except Exception as score_error:
+                        logging.debug(f"[CV_SKLEARN]     Failed to collect per-sample scores: {score_error}")
                     
                     # Store selected features and capture step status for this inner fold
                     feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
@@ -3610,7 +3654,8 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                             hyperparams=params,
                             outer_test_subject=test_subject_name,
                             inner_validation_subject=val_subject_name,
-                            immediate_save=True
+                            immediate_save=True,
+                            per_sample_scores=per_sample_scores
                         )
                         
                         if verbose >= 2 and json_path:
@@ -4177,9 +4222,15 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 y_test_proba_flat = y_test_proba_pos.ravel()
                 mask = np.ones(len(y_test_flat), dtype=bool)
             
+            per_sample_scores_refit = None
             if np.sum(mask) > 0:
                 y_test_valid = y_test_flat[mask]
                 y_test_proba_valid = y_test_proba_flat[mask]
+                if y_test_valid.size and y_test_valid.size == y_test_proba_valid.size:
+                    per_sample_scores_refit = {
+                        'y_true': y_test_valid,
+                        'y_score': y_test_proba_valid
+                    }
                 
                 # Base metrics using default threshold
                 try:
@@ -4391,7 +4442,8 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     outer_fold=outer_fold,
                     hyperparams=best_params,
                     outer_test_subject=test_subject_name,
-                    immediate_save=True
+                    immediate_save=True,
+                    per_sample_scores=per_sample_scores_refit
                 )
                 
                 if verbose >= 1 and json_path:
