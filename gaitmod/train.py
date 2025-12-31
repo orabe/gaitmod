@@ -4367,7 +4367,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 # Data information
                     'n_train_samples': train_info['n_samples'],
                     'n_test_samples': test_info['n_samples'],
-                    'max_sequence_length': mask_values.get('max_length', None),
+                    'max_sequence_length': mask_values.get('max_length', None) if isinstance(mask_values, dict) else None,
                     'train_class_distribution': train_info['class_dist'],
                     'test_class_distribution': test_info['class_dist'],
                     
