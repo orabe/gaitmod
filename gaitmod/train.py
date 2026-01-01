@@ -2140,7 +2140,7 @@ def _create_hyperparameter_string(hyperparams):
             if v == int(v):
                 v_str = str(int(v))
             else:
-                v_str = f"{v:.4f}".rstrip('0').rstrip('.')
+                v_str = f"{v:.0e}".replace("e-0", "e-").replace("e+0", "e+")
         else:
             v_str = str(v)
         
