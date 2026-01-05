@@ -2961,6 +2961,14 @@ def run_nested_cv_classical(
                 'shape': X_outer_test.shape,
                 'class_dist': dict(zip(*np.unique(y_outer_test, return_counts=True))),
             }
+            per_sample_scores_refit = None
+            try:
+                y_test_flat = y_outer_test.ravel()
+                y_score_flat = y_test_proba_pos.ravel()
+                if y_test_flat.size and y_test_flat.size == y_score_flat.size:
+                    per_sample_scores_refit = {'y_true': y_test_flat, 'y_score': y_score_flat}
+            except Exception as score_error:
+                logging.warning(f"[CV_SKLEARN] Failed to collect refit per-sample scores: {score_error}")
             comprehensive_refit_results = {
                 'train_scores': train_metrics.copy(),
                 'test_scores': test_metrics.copy(),
@@ -3008,6 +3016,7 @@ def run_nested_cv_classical(
                 hyperparams=best_params,
                 outer_test_subject=test_subject_name,
                 immediate_save=True,
+                per_sample_scores=per_sample_scores_refit,
             )
             
             if verbose >= 1 and json_path:

@@ -9,8 +9,8 @@ Examples:
 
     # Directly from refit JSON files
     python scripts/visualize_nested_cv_results.py \
-        --refit-file logs/PW_SN61/.../refit_results.json \
-        --refit-file logs/PW_EM59/.../refit_results.json
+        --refit-file "logs/PW_SN61/.../refit/*/refit_results.json" \
+        --refit-file "logs/PW_EM59/.../refit/*/refit_results.json"
 """
 
 import argparse
@@ -289,7 +289,7 @@ def main(args=None):
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/results/hparams_test_lstm_hctsa"
+    base_path = "logs/results/hparams_seq2vec_LSTM_hctsa_24configs_corrScr"
     args = Namespace(
         csv=f"{base_path}/summary/nested_cv_results.csv",
         output_dir=f"{base_path}/figures",

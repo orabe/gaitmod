@@ -11,8 +11,8 @@ Examples:
 
     # Compare two runs directly from refit JSON files
     python scripts/compare_nested_cv_results.py \
-        --refit-run Run1 logs/PW_SN61/.../refit_results.json logs/PW_EM59/.../refit_results.json \
-        --refit-run Run2 logs/PW_SN61/.../refit_results.json logs/PW_EM59/.../refit_results.json
+        --refit-run Run1 "logs/PW_SN61/.../refit/*/refit_results.json" "logs/PW_EM59/.../refit/*/refit_results.json" \
+        --refit-run Run2 "logs/PW_SN61/.../refit/*/refit_results.json" "logs/PW_EM59/.../refit/*/refit_results.json"
 """
 
 import argparse
@@ -502,59 +502,67 @@ if __name__ == "__main__":
     # label11 = "xgb_beta"
     # label12 = "xgb_hctsa"
     
-    label0 = "rf_beta" # 1 hparams combinations
-    # label1 = "test_lstm_raw" # 1 hparams combinations
-    # label2 = "test_lstm_beta" # 1 hparams combinations
-    # label3 = "test_lstm_hctsa" # 41 hparams combinations
-    label4 = "lstm_roc_auc_refit" # 4 hparams combinations
-    # label5 = "lstm_baseline" # 48 hparams combinations
+    label0 = "dummy"
     
+    label1 = "seq2vec_LSTM_raw_24configs"
+    label2 = "seq2vec_LSTM_hctsa_24configs"
+    
+    label3 = "seq2seq_LSTM_raw_24configs"
+    label4 = "seq2seq_LSTM_hctsa_24configs"
+    label5 = "seq2seq_LSTM_hctsa_24configs_corrScr"
     
     args = Namespace(
         csv=[
             f"{base_path}/hparams_{label0}/summary/nested_cv_results.csv",
-            # f"{base_path}/hparams_{label1}/summary/nested_cv_results.csv",
-            # f"{base_path}/hparams_{label2}/summary/nested_cv_results.csv",
-            # f"{base_path}/hparams_{label3}/summary/nested_cv_results.csv",
+            f"{base_path}/hparams_{label1}/summary/nested_cv_results.csv",
+            f"{base_path}/hparams_{label2}/summary/nested_cv_results.csv",
+            f"{base_path}/hparams_{label3}/summary/nested_cv_results.csv",
             f"{base_path}/hparams_{label4}/summary/nested_cv_results.csv",
-            # f"{base_path}/hparams_{label5}/summary/nested_cv_results.csv",
+            f"{base_path}/hparams_{label5}/summary/nested_cv_results.csv",
         ],
         labels=[
-            "RF",
-            # "lstm_raw_1config",
+            "dummy",
+            
+            "seq2vec_LSTM_raw_24configs",
+            "seq2vec_LSTM_hctsa_24configs",
+            
+            "seq2seq_LSTM_raw_24configs",
+            "seq2seq_LSTM_hctsa_24configs",
+            "seq2seq_LSTM_hctsa_24configs_corrScr",
+            
             # "lstm_beta_1config",
             # "lstm_hctsa_1config",
-            "LSTM",
+            # "LSTM",
             # "lstm_hctsa_48configs_TunedF1Agg",
         ],
-        output_dir="logs/results/comparison_figures/train",
+        output_dir="logs/results/comparison_figures/test",
         metrics=[
-            # "test_f1",
-            # "test_tuned_f1",
-            # "test_accuracy",
-            # "test_tuned_accuracy",
-            # "test_balanced_accuracy",
-            # "test_tuned_balanced_accuracy",
-            # "test_precision",
-            # "test_tuned_precision",
-            # "test_recall",
-            # "test_tuned_recall",
-            # "test_roc_auc",
-            # "test_pr_auc",
+            "test_f1",
+            "test_tuned_f1",
+            "test_accuracy",
+            "test_tuned_accuracy",
+            "test_balanced_accuracy",
+            "test_tuned_balanced_accuracy",
+            "test_precision",
+            "test_tuned_precision",
+            "test_recall",
+            "test_tuned_recall",
+            "test_roc_auc",
+            "test_pr_auc",
             
             #  include train metrics
-            "train_f1",
+            # "train_f1",
             # "train_tuned_f1",
-            "train_accuracy",
+            # "train_accuracy",
             # "train_tuned_accuracy",
             # "train_balanced_accuracy",
             # "train_tuned_balanced_accuracy",
-            "train_precision",
+            # "train_precision",
             # "train_tuned_precision",
-            "train_recall",
+            # "train_recall",
             # "train_tuned_recall",
-            "train_roc_auc",
-            "train_pr_auc",
+            # "train_roc_auc",
+            # "train_pr_auc",
         ],
         refit_run=[],
     )

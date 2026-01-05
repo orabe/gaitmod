@@ -4,6 +4,8 @@
 
 set -euo pipefail
 CONFIG_NAME="hparams_lstm_only.json"
+# CONFIG_NAME="hparams_dummy.json"
+
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BATCH_SCRIPT="HPC_scripts/lstm_outer_subject_batch.sbatch"

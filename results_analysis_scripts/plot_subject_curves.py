@@ -145,7 +145,7 @@ def main() -> None:
     #     "PW_US66": [Path(pattern + "inner_fold_06_val_PW_SN66" + "/evaluation_results_scores.npz")],        
     # }
     
-    model_type = "hparams_seq2seq_LSTM_raw"
+    model_type = "hparams_seq2seq_LSTM_hctsa_24configs_corrScr"
     pattern = (
         f"logs/*/{model_type}/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
     )

@@ -4,8 +4,8 @@ Aggregate nested CV refit JSON files (one per outer fold).
 
 Example:
     python scripts/aggregate_nested_cv_results.py \
-        logs/PW_SN61/beta_fast_test_20251202_231856/outer_fold_05_test_PW_SN61/refit/refit_results.json \
-        logs/PW_EM59/beta_fast_test_20251202_231900/outer_fold_03_test_PW_EM59/refit/refit_results.json
+        "logs/PW_SN61/beta_fast_test_20251202_231856/outer_fold_05_test_PW_SN61/refit/*/refit_results.json" \
+        "logs/PW_EM59/beta_fast_test_20251202_231900/outer_fold_03_test_PW_EM59/refit/*/refit_results.json"
 """
 
 import argparse
@@ -205,7 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "refit_files",
         nargs="+",
-        help="Paths to refit_results.json files (one per outer fold).",
+        help="Paths or glob patterns for refit_results.json files (one per outer fold).",
     )
     parser.add_argument(
         "--output-dir",
@@ -279,31 +279,12 @@ def main(args: Optional[argparse.Namespace] = None):
 if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
-
-    experiment_name = "hparams_rf_raw"
-    experiment_name = "hparams_rf_beta"
-    experiment_name = "hparams_rf_hctsa"
     
-    experiment_name = "hparams_logreg_raw"
-    experiment_name = "hparams_logreg_beta"
-    experiment_name = "hparams_logreg_hctsa"
+    experiment_name = "hparams_dummy"
+    experiment_name = "hparams_seq2seq_LSTM_raw_24configs"
+    experiment_name = "hparams_seq2seq_LSTM_hctsa_24configs_corrScr"
     
-    experiment_name = "hparams_svm_raw"
-    experiment_name = "hparams_svm_beta"
-    experiment_name = "hparams_svm_hctsa"
-    
-    experiment_name = "hparams_xgb_raw"
-    experiment_name = "hparams_xgb_beta"
-    experiment_name = "hparams_xgb_hctsa"
-    
-    experiment_name = "hparams_test_lstm_hctsa"
-    experiment_name = "hparams_test_lstm_raw"
-    experiment_name = "hparams_test_lstm_beta"
-    
-    experiment_name = "hparams_lstm_roc_auc_refit"
-    experiment_name = "hparams_lstm_baseline"
-    
-    
+    experiment_name = "hparams_seq2seq_LSTM_hctsa_24configs"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
@@ -315,11 +296,15 @@ if __name__ == "__main__":
         "PW_US68": "outer_fold_07_test_PW_US68",
     }
 
-    refit_suffix = Path("refit") / "refit_results.json"
+    refit_suffix = Path("refit") / "*" / "refit_results.json"
     refit_files = []
     for subject, fold_dir in subject_fold_map.items():
-        refit_path = Path("logs") / subject / experiment_name / fold_dir / refit_suffix
-        refit_files.append(str(refit_path))
+        refit_glob = Path("logs") / subject / experiment_name / fold_dir / refit_suffix
+        matches = sorted(Path().glob(str(refit_glob)))
+        if not matches:
+            print(f"[WARN] No refit_results.json found for {subject} ({refit_glob})")
+            continue
+        refit_files.extend(str(match) for match in matches)
 
     output_dir = Path("logs") / "results" / experiment_name / "summary"
 
