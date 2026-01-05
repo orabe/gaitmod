@@ -148,7 +148,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     
     # Scoring functions - use masked versions for LSTM, standard for others
     logging.info(f"[BUILD_PIPELINE] Setting up scoring functions for {model_type}")
-    if model_type == 'lstm':
+    if model_type == 'seq2seq_lstm':
         # Use masked scoring functions that match the training metrics
         logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
         scoring_functions = {
