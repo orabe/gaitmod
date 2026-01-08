@@ -179,7 +179,7 @@ def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_tr
 # ---------------------------------------------------
 
 def main():
-    patient_epochs_path = os.path.join("results", "pickles", "filtered_patients_epochs.pickle")
+    patient_epochs_path = os.path.join("results", "pickles", "4646epochs_patients_epochs.pickle")
     subjects_event_idx_dict_path = os.path.join("results", "pickles", "subjects_event_idx_dict.pickle")
 
     patient_epochs, subjects_event_idx_dict, patient_names = load_data(patient_epochs_path, subjects_event_idx_dict_path)

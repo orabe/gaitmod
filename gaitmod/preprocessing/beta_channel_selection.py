@@ -160,7 +160,7 @@ def save_results(results: Dict[str, Dict[str, Dict[str, float]]], output_dir: Pa
 
 def main():
     logging.basicConfig(level=logging.INFO)
-    pickle_path = os.path.join("results", "pickles", "filtered_patients_epochs.pickle")
+    pickle_path = os.path.join("results", "pickles", "4646epochs_patients_epochs.pickle")
     output_dir = Path("results/beta_channel_selection")
     combined_json = Path("results/channel_selection_summary.json")
 

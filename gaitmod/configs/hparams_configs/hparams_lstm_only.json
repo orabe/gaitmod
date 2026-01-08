@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_seq2seq_LSTM_hctsa_24configs_corrScr",
+    "experiment_name": "hparams_seq2seq_LSTM_hctsa_24configs_logRegF1Chs",
     "model_type": "seq2seq_lstm",
     "feature_data": {
       "source": "hctsa",

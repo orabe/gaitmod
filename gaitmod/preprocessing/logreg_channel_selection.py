@@ -102,7 +102,7 @@ def parse_args(argv: Optional[Tuple[str, ...]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--filtered-epochs",
         type=Path,
-        default=Path("results/pickles/filtered_patients_epochs.pickle"),
+        default=Path("results/pickles/4646epochs_patients_epochs.pickle"),
         help="Pickle produced by process_lfp_data.ipynb containing the Epochs mapping.",
     )
     parser.add_argument(
