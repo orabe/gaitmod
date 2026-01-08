@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Dict, Any, Tuple, List, Optional, Union
+from bisect import bisect_left
 import mne
 import pandas as pd
 from scipy import signal as sp_signal
@@ -590,7 +591,7 @@ class DataProcessor:
         window_size: float = 0.5,
         overlap: float = 0.5, 
         expand_transition: float = 0.0, 
-        discard_ambiguous: bool = False,
+        mixed_window_policy: str = "keep_all",
         mod_start_idx: int = 2,
         mod_end_idx: int = 6,
         event_dict: dict[str, int] = None) -> mne.epochs.EpochsArray:
@@ -606,7 +607,10 @@ class DataProcessor:
             window_size (float): Size of each segment in seconds.
             overlap (float): Overlap fraction between consecutive windows.
             expand_transition (float): Amount of time (seconds) to expand mod_start/mod_end.
-            discard_ambiguous (bool): Whether to remove windows that overlap both states.
+            mixed_window_policy (str): How to handle windows that contain both states (normal + modulation):
+                - 'keep_all': keep all windows (including mixed-state windows)
+                - 'drop_partial': drop mixed windows where modulation overlap is < 50% of the window (0 < mod_ratio < 0.5)
+                - 'drop_all_mixed': drop any mixed-state window (0 < mod_ratio < 1.0), regardless of overlap ratio
             mod_start_idx (int): Index for modulation start event.
             mod_end_idx (int): Index for modulation end event.
             event_dict (dict[str, int]): Dictionary mapping class names to labels. 
@@ -638,6 +642,13 @@ class DataProcessor:
         normal_label = sorted_items[0][1]
         modulation_label = sorted_items[1][1]
 
+        policy = (mixed_window_policy or "").strip().lower()
+        valid_policies = {"keep_all", "drop_partial", "drop_all_mixed"}
+        if policy not in valid_policies:
+            raise ValueError(
+                f"Invalid mixed_window_policy='{mixed_window_policy}'. Use one of {sorted(valid_policies)}."
+            )
+
         for trial_idx, trial_data in enumerate(trials):
             n_channels, n_samples = trial_data.shape
 
@@ -665,7 +676,15 @@ class DataProcessor:
                 else:
                     label = normal_label  # Normal walking
 
-                if discard_ambiguous and 0 < mod_ratio < 0.5:
+                # Mixed-state windows overlap both normal and modulation within the same segment.
+                # Mixed condition: modulation overlap is non-zero but does not cover the full window.
+                is_mixed_state_window = 0 < mod_ratio < 1.0
+
+                if policy == "drop_all_mixed" and is_mixed_state_window:
+                    window_start += step_size
+                    continue
+
+                if policy == "drop_partial" and 0 < mod_ratio < 0.5:
                     window_start += step_size
                     continue  # Skip this window
 
@@ -861,6 +880,205 @@ class DataProcessor:
         return converted_labels
 
     @staticmethod
+    def drop_trials(
+        trials_to_drop: Dict[str, List[int]],
+        subjects_lfp_data_dict: Dict[str, List[np.ndarray]],
+        subjects_event_idx_dict: Optional[Dict[str, np.ndarray]] = None,
+        subjects_session_trial_mapping: Optional[Dict[str, Dict[str, List[int]]]] = None,
+        verbose: bool = True,
+    ) -> Tuple[
+        Dict[str, List[np.ndarray]],
+        Optional[Dict[str, np.ndarray]],
+        Optional[Dict[str, Dict[str, List[int]]]],
+    ]:
+        """
+        Drop specific trial indices (across concatenated sessions) for specific subjects, and keep all
+        trial-indexed data structures synchronized.
+
+        Intended to be used in `process_lfp_data.ipynb` after `process_trials_and_events(...)` and
+        before `segment_and_label_trials(...)`.
+
+        This function does NOT modify the input objects in-place.
+
+        Parameters
+        ----------
+        trials_to_drop:
+            Dict mapping subject_id -> list of global trial indices to remove (0-based, across concatenated sessions).
+        subjects_lfp_data_dict:
+            Dict mapping subject_id -> list of trial arrays (n_channels, n_samples).
+        subjects_event_idx_dict:
+            Optional dict mapping subject_id -> array shaped (n_trials, n_events) aligned with `subjects_lfp_data_dict`.
+        subjects_session_trial_mapping:
+            Optional dict mapping subject_id -> {session_name: [trial_indices]}.
+            Will be updated by removing dropped trials and reindexing all remaining trial indices.
+        verbose:
+            Print per-subject summary.
+
+        Returns
+        -------
+        (subjects_lfp_data_dict, subjects_event_idx_dict, subjects_session_trial_mapping)
+            Updated structures with trials removed and indices re-mapped.
+        """
+        # Create copies so we do not mutate caller-owned objects.
+        new_subjects_lfp_data_dict: Dict[str, List[np.ndarray]] = {
+            subject: list(trials) for subject, trials in subjects_lfp_data_dict.items()
+        }
+        new_subjects_event_idx_dict: Optional[Dict[str, np.ndarray]] = None
+        if subjects_event_idx_dict is not None:
+            new_subjects_event_idx_dict = {k: np.asarray(v) for k, v in subjects_event_idx_dict.items()}
+
+        new_subjects_session_trial_mapping: Optional[Dict[str, Dict[str, List[int]]]] = None
+        if subjects_session_trial_mapping is not None:
+            new_subjects_session_trial_mapping = {
+                subject: {sess: list(indices) for sess, indices in sessions.items()}
+                for subject, sessions in subjects_session_trial_mapping.items()
+            }
+
+        if not trials_to_drop:
+            return new_subjects_lfp_data_dict, new_subjects_event_idx_dict, new_subjects_session_trial_mapping
+
+        for subject, indices in trials_to_drop.items():
+            if subject not in new_subjects_lfp_data_dict:
+                if verbose:
+                    print(f"[drop_trials] Subject '{subject}' not found; skipping.")
+                continue
+
+            if indices is None:
+                continue
+
+            unique_sorted = sorted({int(i) for i in indices})
+            if not unique_sorted:
+                continue
+
+            n_trials_before = len(new_subjects_lfp_data_dict[subject])
+
+            if any(i < 0 or i >= n_trials_before for i in unique_sorted):
+                raise IndexError(
+                    f"Subject '{subject}': trial indices out of range {unique_sorted} for n_trials={n_trials_before}"
+                )
+
+            keep_indices = [i for i in range(n_trials_before) if i not in set(unique_sorted)]
+            if not keep_indices:
+                raise ValueError(f"Subject '{subject}': dropping {unique_sorted} would remove all trials.")
+
+            # Update raw trials
+            old_trials = new_subjects_lfp_data_dict[subject]
+            new_subjects_lfp_data_dict[subject] = [old_trials[i] for i in keep_indices]
+            n_trials_after = len(new_subjects_lfp_data_dict[subject])
+
+            # Update event indices (aligned 1:1 with trials)
+            if new_subjects_event_idx_dict is not None:
+                if subject not in new_subjects_event_idx_dict:
+                    raise KeyError(f"subjects_event_idx_dict missing subject '{subject}'")
+                old_events = np.asarray(new_subjects_event_idx_dict[subject])
+                if old_events.shape[0] != n_trials_before:
+                    raise ValueError(
+                        f"Subject '{subject}': subjects_event_idx_dict has {old_events.shape[0]} trials, "
+                        f"but subjects_lfp_data_dict has {n_trials_before} trials."
+                    )
+                new_subjects_event_idx_dict[subject] = old_events[keep_indices]
+
+            # Update session->trial mapping (remove + reindex)
+            if new_subjects_session_trial_mapping is not None and subject in new_subjects_session_trial_mapping:
+                remove_set = set(unique_sorted)
+                new_mapping: Dict[str, List[int]] = {}
+
+                for session_name, trial_indices in new_subjects_session_trial_mapping[subject].items():
+                    updated_indices: List[int] = []
+                    for old_idx in trial_indices:
+                        old_idx = int(old_idx)
+                        if old_idx in remove_set:
+                            continue
+                        # number of removed indices strictly less than this index
+                        shift = bisect_left(unique_sorted, old_idx)
+                        updated_indices.append(old_idx - shift)
+
+                    if updated_indices:
+                        new_mapping[session_name] = updated_indices
+
+                new_subjects_session_trial_mapping[subject] = new_mapping
+
+            if verbose:
+                print(
+                    f"[drop_trials] Subject '{subject}': "
+                    f"dropped {unique_sorted} ({n_trials_before} -> {n_trials_after} trials)."
+                )
+
+        return new_subjects_lfp_data_dict, new_subjects_event_idx_dict, new_subjects_session_trial_mapping
+
+    @staticmethod
+    def get_trials_with_short_events(
+        subjects_lfp_data_dict: Dict[str, List[np.ndarray]],
+        subjects_event_idx_dict: Dict[str, np.ndarray],
+        sfreq: float,
+        min_duration_s: float,
+        mod_start_idx: int = 2,
+        mod_end_idx: int = 6,
+        verbose: bool = True,
+    ) -> Dict[str, List[int]]:
+        """
+        Return trial indices per subject where either class duration is shorter than `min_duration_s`.
+
+        Duration definitions (in samples):
+          - modulation: mod_end - mod_start
+          - normal walking: mod_start + (trial_end - mod_end)
+
+        Uses `subjects_event_idx_dict` which stores event indices relative to each trial start.
+        """
+        if min_duration_s < 0:
+            raise ValueError(f"min_duration_s must be >= 0, got {min_duration_s}")
+        if sfreq <= 0:
+            raise ValueError(f"sfreq must be > 0, got {sfreq}")
+
+        trials_matching: Dict[str, List[int]] = {}
+
+        for subject, trials in subjects_lfp_data_dict.items():
+            if subject not in subjects_event_idx_dict:
+                raise KeyError(f"subjects_event_idx_dict missing subject '{subject}'")
+
+            event_mat = np.asarray(subjects_event_idx_dict[subject])
+            if event_mat.shape[0] != len(trials):
+                raise ValueError(
+                    f"Subject '{subject}': subjects_event_idx_dict has {event_mat.shape[0]} trials, "
+                    f"but subjects_lfp_data_dict has {len(trials)} trials."
+                )
+
+            matching_indices: List[int] = []
+            for trial_idx, trial in enumerate(trials):
+                n_samples = int(trial.shape[1])
+                events = np.asarray(event_mat[trial_idx]).astype(int)
+
+                if mod_start_idx >= len(events) or mod_end_idx >= len(events):
+                    raise IndexError(
+                        f"Subject '{subject}': trial {trial_idx} has {len(events)} events, "
+                        f"cannot access mod_start_idx={mod_start_idx} and mod_end_idx={mod_end_idx}."
+                    )
+
+                mod_start = int(events[mod_start_idx])
+                mod_end = int(events[mod_end_idx])
+
+                mod_start = max(0, min(mod_start, n_samples))
+                mod_end = max(0, min(mod_end, n_samples))
+                if mod_end < mod_start:
+                    mod_start, mod_end = mod_end, mod_start
+
+                modulation_duration_s = (mod_end - mod_start) / sfreq
+                normal_duration_s = (mod_start + (n_samples - mod_end)) / sfreq
+
+                if modulation_duration_s < min_duration_s or normal_duration_s < min_duration_s:
+                    matching_indices.append(trial_idx)
+
+            if matching_indices:
+                trials_matching[subject] = matching_indices
+                if verbose:
+                    print(
+                        f"Subject '{subject}': "
+                        f"{len(matching_indices)}/{len(trials)} trials below {min_duration_s}s."
+                    )
+
+        return trials_matching
+
+    @staticmethod
     def remove_trials_with_short_labels(
         patients_epochs: Dict[str, mne.EpochsArray],
         subjects_lfp_data_dict: Dict[str, List[np.ndarray]] = None,
@@ -894,7 +1112,7 @@ class DataProcessor:
             - Dict[str, List[np.ndarray]]: Filtered subjects_lfp_data_dict (or original if None provided)
             - Dict[str, List[np.ndarray]]: Filtered subjects_event_idx_dict (or original if None provided)
         """
-        filtered_patients_epochs = {}
+        filtered_patients_epochs: Dict[str, mne.EpochsArray] = {}
         filtered_subjects_lfp_data_dict = subjects_lfp_data_dict.copy() if subjects_lfp_data_dict else None
         filtered_subjects_event_idx_dict = subjects_event_idx_dict.copy() if subjects_event_idx_dict else None
         
@@ -1024,6 +1242,162 @@ class DataProcessor:
                 print(f"\033[93mData structures have been synchronized - epochs, raw trials, and event indices are consistent\033[0m")
         
         return filtered_patients_epochs, filtered_subjects_lfp_data_dict, filtered_subjects_event_idx_dict
+
+    @staticmethod
+    def get_trials_with_insufficient_event_epochs(
+        patients_epochs: Dict[str, mne.EpochsArray],
+        min_epochs: int | Dict[Union[int, str], int],
+        verbose: bool = True,
+    ) -> Dict[str, List[int]]:
+        """
+        Return trial indices (per patient) that do not meet a required number of epochs per event/class.
+
+        Uses `epochs.events` rows: `[onset, trial_id, class_label]`.
+        For each trial, counts epochs per `class_label` and marks trials that fail the requirement.
+        """
+        trials_to_drop: Dict[str, List[int]] = {}
+
+        for patient_name, epochs in patients_epochs.items():
+            events = epochs.events
+            trial_ids = np.unique(events[:, 1]).astype(int)
+
+            # Build required counts per label id
+            if isinstance(min_epochs, int):
+                required_by_label = {int(v): int(min_epochs) for v in epochs.event_id.values()}
+            else:
+                required_by_label: Dict[int, int] = {}
+                for key, value in min_epochs.items():
+                    if isinstance(key, str):
+                        if key not in epochs.event_id:
+                            raise KeyError(f"Patient {patient_name}: event name '{key}' not found in epochs.event_id")
+                        label_id = int(epochs.event_id[key])
+                    else:
+                        label_id = int(key)
+                    required_by_label[label_id] = int(value)
+
+            patient_drop: List[int] = []
+            for trial_id in trial_ids:
+                trial_events = events[events[:, 1] == trial_id]
+                labels, counts = np.unique(trial_events[:, 2].astype(int), return_counts=True)
+                counts_by_label = {int(l): int(c) for l, c in zip(labels, counts)}
+
+                ok = True
+                for label_id, required_count in required_by_label.items():
+                    got = counts_by_label.get(int(label_id), 0)
+                    if got < required_count:
+                        ok = False
+                        break
+
+                if not ok:
+                    patient_drop.append(int(trial_id))
+
+            if patient_drop:
+                trials_to_drop[patient_name] = sorted(patient_drop)
+
+            if verbose:
+                print(
+                    f"[get_trials_with_insufficient_event_epochs] {patient_name}: "
+                    f"{len(patient_drop)}/{len(trial_ids)} trials fail criteria."
+                )
+
+        return trials_to_drop
+
+    @staticmethod
+    def drop_trials_from_epochs(
+        patients_epochs: Dict[str, mne.EpochsArray],
+        trials_to_drop: Dict[str, List[int]],
+        subjects_lfp_data_dict: Optional[Dict[str, List[np.ndarray]]] = None,
+        subjects_event_idx_dict: Optional[Dict[str, np.ndarray]] = None,
+        subjects_session_trial_mapping: Optional[Dict[str, Dict[str, List[int]]]] = None,
+        verbose: bool = True,
+    ) -> Tuple[
+        Dict[str, mne.EpochsArray],
+        Optional[Dict[str, List[np.ndarray]]],
+        Optional[Dict[str, np.ndarray]],
+        Optional[Dict[str, Dict[str, List[int]]]],
+    ]:
+        """
+        Drop trials (per patient) from `patients_epochs` and synchronize optional trial-indexed structures.
+
+        Returns new objects (does not modify inputs in-place). Trial IDs in the returned epochs are
+        re-mapped to be sequential starting from 0 per patient.
+        """
+        filtered_patients_epochs: Dict[str, mne.EpochsArray] = {}
+        filtered_subjects_lfp_data_dict = subjects_lfp_data_dict.copy() if subjects_lfp_data_dict else None
+        filtered_subjects_event_idx_dict = subjects_event_idx_dict.copy() if subjects_event_idx_dict else None
+        filtered_subjects_session_trial_mapping = (
+            {k: {sess: list(idxs) for sess, idxs in v.items()} for k, v in subjects_session_trial_mapping.items()}
+            if subjects_session_trial_mapping
+            else None
+        )
+
+        for patient_name, epochs in patients_epochs.items():
+            drop_list = sorted(set(int(i) for i in trials_to_drop.get(patient_name, [])))
+            events = epochs.events.copy()
+            trial_ids = np.unique(events[:, 1]).astype(int)
+
+            keep_trials = [int(t) for t in trial_ids if int(t) not in set(drop_list)]
+            if len(keep_trials) == 0:
+                raise ValueError(f"Patient {patient_name}: dropping {drop_list} would remove all trials.")
+
+            keep_mask = np.isin(events[:, 1], keep_trials)
+            filtered_data = epochs.get_data()[keep_mask]
+            filtered_events = events[keep_mask]
+
+            unique_kept_trials = np.unique(filtered_events[:, 1]).astype(int)
+            trial_id_remap = {old_id: new_id for new_id, old_id in enumerate(unique_kept_trials)}
+            filtered_events[:, 1] = np.array([trial_id_remap[int(t)] for t in filtered_events[:, 1]], dtype=int)
+
+            filtered_epochs = mne.EpochsArray(
+                filtered_data,
+                epochs.info.copy(),
+                events=filtered_events,
+                event_id=epochs.event_id.copy(),
+                verbose=False,
+            )
+            if hasattr(epochs, "metadata") and epochs.metadata is not None:
+                filtered_epochs.metadata = epochs.metadata.iloc[keep_mask].reset_index(drop=True)
+
+            filtered_patients_epochs[patient_name] = filtered_epochs
+
+            kept_trial_indices = sorted(keep_trials)
+
+            if filtered_subjects_lfp_data_dict is not None and patient_name in filtered_subjects_lfp_data_dict:
+                original_trials = filtered_subjects_lfp_data_dict[patient_name]
+                filtered_subjects_lfp_data_dict[patient_name] = [
+                    original_trials[i] for i in kept_trial_indices if i < len(original_trials)
+                ]
+
+            if filtered_subjects_event_idx_dict is not None and patient_name in filtered_subjects_event_idx_dict:
+                original_events = np.asarray(filtered_subjects_event_idx_dict[patient_name])
+                filtered_subjects_event_idx_dict[patient_name] = original_events[kept_trial_indices]
+
+            if (
+                filtered_subjects_session_trial_mapping is not None
+                and patient_name in filtered_subjects_session_trial_mapping
+            ):
+                mapping = filtered_subjects_session_trial_mapping[patient_name]
+                keep_set = set(kept_trial_indices)
+                old_to_new = {old: new for new, old in enumerate(kept_trial_indices)}
+                new_mapping: Dict[str, List[int]] = {}
+                for sess_name, idxs in mapping.items():
+                    kept = [old_to_new[int(i)] for i in idxs if int(i) in keep_set]
+                    if kept:
+                        new_mapping[sess_name] = kept
+                filtered_subjects_session_trial_mapping[patient_name] = new_mapping
+
+            if verbose:
+                print(
+                    f"[drop_trials_from_epochs] {patient_name}: kept {len(keep_trials)}/{len(trial_ids)} trials "
+                    f"(dropped {len(drop_list)})."
+                )
+
+        return (
+            filtered_patients_epochs,
+            filtered_subjects_lfp_data_dict,
+            filtered_subjects_event_idx_dict,
+            filtered_subjects_session_trial_mapping,
+        )
     
     
     # Vectorized version of create_events_array
@@ -1461,9 +1835,9 @@ class DataProcessor:
             
             reasoning = f"""
     PARAMETER SELECTION REASONING:
-    - Epoch duration ({epoch_duration:.2f}s) → filter_order={filter_order}
-    - Frequency resolution ({freq_resolution:.2f} Hz) → notch_width={notch_width} Hz
-    - Stability considerations → highpass_freq={highpass_freq} Hz
+    - Epoch duration ({epoch_duration:.2f}s) -> filter_order={filter_order}
+    - Frequency resolution ({freq_resolution:.2f} Hz) -> notch_width={notch_width} Hz
+    - Stability considerations -> highpass_freq={highpass_freq} Hz
     """
             print(reasoning)
         

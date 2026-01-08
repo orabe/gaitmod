@@ -6,6 +6,7 @@ import mne
 import os
 from typing import Dict, List, Optional
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter
 from mne.time_frequency import psd_array_multitaper
 
 class Visualise:
@@ -851,8 +852,13 @@ class Visualise:
                                 else:
                                     # Plot previous segment if exists
                                     if segment_indices:
-                                        ax.plot(segment_indices, channel_signal[segment_indices], 
-                                                color=class_colors[current_label], alpha=0.7, linewidth=0.5)
+                                        ax.plot(
+                                            segment_indices,
+                                            channel_signal[segment_indices],
+                                            color=class_colors[current_label],
+                                            alpha=0.7,
+                                            linewidth=0.25,
+                                        )
                                     
                                     # Start new segment
                                     current_label = epoch_label
@@ -860,11 +866,16 @@ class Visualise:
                         
                         # Plot final segment
                         if segment_indices:
-                            ax.plot(segment_indices, channel_signal[segment_indices], 
-                                    color=class_colors[current_label], alpha=0.7, linewidth=0.5)
+                            ax.plot(
+                                segment_indices,
+                                channel_signal[segment_indices],
+                                color=class_colors[current_label],
+                                alpha=0.7,
+                                linewidth=0.25,
+                            )
                     else:
                         # Fallback: plot entire signal in default color if no epoch info
-                        ax.plot(channel_signal, color='gray', alpha=0.7, linewidth=0.5)
+                        ax.plot(channel_signal, color='gray', alpha=0.7, linewidth=0.25)
                 
                 # Add session grouping box around the subplot
                 if row_idx in trial_to_session:
@@ -881,7 +892,8 @@ class Visualise:
                 if row_idx == 0:
                     ax.set_title(f"Patient {patient_name}", fontsize=10, pad=8)
 
-                ax.set_xlabel('Samples', fontsize=7)
+                ax.set_xlabel('Time (s)', fontsize=7)
+                ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / sfreq:.0f}"))
                 ax.tick_params(axis='x', labelbottom=True, labelsize=7)
                 
                 # Set channel names on y-axis (using pre-calculated values)
@@ -917,8 +929,9 @@ class Visualise:
 
         # Add secondary x-axis for time
         for ax in axes.flat:
-            secax = ax.secondary_xaxis('top', functions=(lambda x: x /sfreq, lambda x: x * sfreq))
-            secax.set_xlabel('Time (s)', fontsize=7)
+            secax = ax.secondary_xaxis('top', functions=(lambda x: x, lambda x: x))
+            secax.set_xlabel('Samples', fontsize=7)
+            secax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(round(x))}"))
             secax.tick_params(labelsize=6)
 
         # Add session legend if session mapping is provided
@@ -956,6 +969,275 @@ class Visualise:
         plt.show()
 
         # Clear the current figure
+        plt.clf()
+
+    @staticmethod
+    def plot_all_patients_trials_continuous(
+        subjects_lfp_data_dict: Dict[str, List[np.ndarray]],
+        subjects_event_idx_dict: Dict[str, np.ndarray],
+        sfreq: float,
+        save_path: str,
+        fig_name: str,
+        subjects_session_trial_mapping: Dict[str, Dict[str, List[int]]] | None = None,
+        max_display_trials: int | None = None,
+        channel_names: List[str] | None = None,
+        mod_start_idx: int = 2,
+        mod_end_idx: int = 6,
+        sharex: bool = True,
+        sharey: bool = True,
+    ) -> None:
+        """
+        Plots continuous LFP trials for all patients (before epoching) with modulation period coloring.
+
+        Layout and styling mirrors `plot_all_patients_trials`, but the temporal coloring is derived from
+        per-trial event indices (e.g., mod_start/mod_end) instead of epoch labels.
+
+        Parameters
+        ----------
+        subjects_lfp_data_dict:
+            Dict mapping patient -> list of trials; each trial is (n_channels, n_samples).
+        subjects_event_idx_dict:
+            Dict mapping patient -> array shaped (n_trials, n_events) with event indices in samples
+            relative to trial start (as produced by `DataProcessor.process_trials_and_events`).
+        sfreq:
+            Sampling frequency in Hz.
+        save_path:
+            Directory to save the figure (if non-empty).
+        fig_name:
+            Output filename (without extension).
+        subjects_session_trial_mapping:
+            Optional mapping {patient_id: {session_name: [trial_indices]}} for session grouping overlays.
+        max_display_trials:
+            If set, only the first N trials per patient are plotted.
+        channel_names:
+            Optional list of channel names to show on the y-axis. If not provided, defaults to Ch1..ChN.
+        mod_start_idx / mod_end_idx:
+            Column indices into the per-trial event array defining the modulation window.
+        """
+        num_patients = len(subjects_lfp_data_dict)
+        if num_patients == 0:
+            raise ValueError("subjects_lfp_data_dict is empty")
+
+        max_trials = max(len(trials) for trials in subjects_lfp_data_dict.values())
+
+        if max_display_trials is None:
+            actual_display_trials = max_trials
+            print(f"Displaying all {max_trials} trials per patient")
+        else:
+            actual_display_trials = min(max_trials, max_display_trials)
+            print(f"Displaying first {actual_display_trials} trials per patient (out of {max_trials} total)")
+
+        # Define colors for each class (match `plot_all_patients_trials`)
+        class_colors = {0: "blue", 1: "red"}
+        class_names = {0: "Normal Walking", 1: "Gait Modulation"}
+
+        # Infer channel count from first available trial
+        first_patient_name = next(iter(subjects_lfp_data_dict))
+        if len(subjects_lfp_data_dict[first_patient_name]) == 0:
+            raise ValueError(f"No trials found for patient {first_patient_name}")
+        num_channels = int(subjects_lfp_data_dict[first_patient_name][0].shape[0])
+
+        if channel_names is None:
+            channel_names = [f"Ch{i+1}" for i in range(num_channels)]
+        if len(channel_names) != num_channels:
+            raise ValueError(
+                f"channel_names has length {len(channel_names)} but trials have {num_channels} channels"
+            )
+
+        y_positions = [ch_idx * 40 for ch_idx in range(num_channels)]
+
+        # Adaptive sizing (match `plot_all_patients_trials`)
+        if max_display_trials is None:
+            fig_width = min(num_patients * 3, 20)
+            fig_height = min(actual_display_trials * 2, 100)
+        else:
+            fig_width = min(num_patients * 4, 16)
+            fig_height = min(actual_display_trials * 3, 15)
+
+        fig, axes = plt.subplots(
+            actual_display_trials,
+            num_patients,
+            figsize=(fig_width, fig_height),
+            sharex=sharex,
+            sharey=sharey,
+        )
+
+        if actual_display_trials == 1:
+            axes = np.expand_dims(axes, axis=0)
+        if num_patients == 1:
+            axes = np.expand_dims(axes, axis=1)
+
+        # Define colors for session grouping (match `plot_all_patients_trials`)
+        session_colors = [
+            "steelblue",
+            "forestgreen",
+            "crimson",
+            "goldenrod",
+            "mediumvioletred",
+            "darkslategray",
+            "darkorange",
+            "darkseagreen",
+            "midnightblue",
+            "darkviolet",
+        ]
+
+        for col_idx, (patient_name, trials) in enumerate(subjects_lfp_data_dict.items()):
+            patient_events = subjects_event_idx_dict.get(patient_name)
+            if patient_events is None:
+                raise KeyError(f"subjects_event_idx_dict is missing patient {patient_name}")
+
+            patient_session_mapping = (
+                subjects_session_trial_mapping.get(patient_name, {})
+                if subjects_session_trial_mapping
+                else {}
+            )
+
+            trial_to_session: dict[int, tuple[str, str]] = {}
+            for session_idx, (session_name, trial_indices) in enumerate(patient_session_mapping.items()):
+                color = session_colors[session_idx % len(session_colors)]
+                for trial_idx in trial_indices:
+                    trial_to_session[int(trial_idx)] = (session_name, color)
+
+            for row_idx in range(min(len(trials), actual_display_trials)):
+                trial_data = trials[row_idx]
+                ax = axes[row_idx, col_idx]
+                num_samples = int(trial_data.shape[1])
+
+                if row_idx >= len(patient_events):
+                    raise IndexError(
+                        f"Patient {patient_name}: trial index {row_idx} out of range for subjects_event_idx_dict"
+                    )
+
+                event_indices = np.asarray(patient_events[row_idx]).astype(int)
+                if mod_start_idx >= len(event_indices) or mod_end_idx >= len(event_indices):
+                    raise IndexError(
+                        f"Patient {patient_name}: trial {row_idx} event vector length {len(event_indices)} "
+                        f"does not contain mod_start_idx={mod_start_idx} and mod_end_idx={mod_end_idx}"
+                    )
+
+                mod_start = int(event_indices[mod_start_idx])
+                mod_end = int(event_indices[mod_end_idx])
+                mod_start = max(0, min(mod_start, num_samples))
+                mod_end = max(0, min(mod_end, num_samples))
+                if mod_end < mod_start:
+                    mod_start, mod_end = mod_end, mod_start
+
+                # Duration summary for legend
+                modulation_samples = max(0, mod_end - mod_start)
+                normal_samples = num_samples - modulation_samples
+
+                for channel_idx in range(num_channels):
+                    channel_signal = trial_data[channel_idx, :] + channel_idx * 40
+
+                    # Normal (pre)
+                    if mod_start > 0:
+                        x = np.arange(0, mod_start)
+                        ax.plot(x, channel_signal[x], color=class_colors[0], alpha=0.7, linewidth=0.25)
+                    # Modulation
+                    if mod_end > mod_start:
+                        x = np.arange(mod_start, mod_end)
+                        ax.plot(x, channel_signal[x], color=class_colors[1], alpha=0.7, linewidth=0.25)
+                    # Normal (post)
+                    if mod_end < num_samples:
+                        x = np.arange(mod_end, num_samples)
+                        ax.plot(x, channel_signal[x], color=class_colors[0], alpha=0.7, linewidth=0.25)
+
+                # Session grouping box (match `plot_all_patients_trials`)
+                if row_idx in trial_to_session:
+                    _, session_color = trial_to_session[row_idx]
+                    ax.patch.set_facecolor(session_color)
+                    ax.patch.set_alpha(0.1)
+                    for spine in ax.spines.values():
+                        spine.set_edgecolor(session_color)
+                        spine.set_linewidth(2)
+
+                if row_idx == 0:
+                    ax.set_title(f"Patient {patient_name}", fontsize=10, pad=8)
+
+                ax.set_xlabel("Time (s)", fontsize=7)
+                ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / sfreq:.0f}"))
+                ax.tick_params(axis="x", labelbottom=True, labelsize=7)
+
+                ax.set_yticks(y_positions)
+                ax.set_yticklabels(channel_names, fontsize=7)
+                ax.tick_params(axis="y", labelsize=7)
+
+                legend_handles = [
+                    plt.Line2D([0], [0], color=class_colors[0], alpha=0.7),
+                    plt.Line2D([0], [0], color=class_colors[1], alpha=0.7),
+                ]
+                legend_labels = [
+                    f"{class_names[0]} ({normal_samples/sfreq:.1f}s)",
+                    f"{class_names[1]} ({modulation_samples/sfreq:.1f}s)",
+                ]
+                ax.legend(
+                    legend_handles,
+                    legend_labels,
+                    loc="upper right",
+                    fontsize=6,
+                    framealpha=0.8,
+                    borderpad=0.2,
+                    columnspacing=0.3,
+                )
+
+        for i in range(actual_display_trials):
+            axes[i, 0].set_ylabel(f"Trial {i + 1}", fontsize=7)
+
+        for ax in axes.flat:
+            secax = ax.secondary_xaxis("top", functions=(lambda x: x, lambda x: x))
+            secax.set_xlabel("Samples", fontsize=7)
+            secax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{int(round(x))}"))
+            secax.tick_params(labelsize=6)
+
+        if subjects_session_trial_mapping:
+            legend_elements = []
+            all_sessions = set()
+            for patient_sessions in subjects_session_trial_mapping.values():
+                all_sessions.update(patient_sessions.keys())
+
+            for session_idx, session_name in enumerate(sorted(all_sessions)):
+                color = session_colors[session_idx % len(session_colors)]
+                legend_elements.append(
+                    plt.Rectangle(
+                        (0, 0),
+                        1,
+                        1,
+                        facecolor=color,
+                        alpha=0.3,
+                        edgecolor=color,
+                        linewidth=2,
+                        label=session_name,
+                    )
+                )
+
+            fig.legend(
+                handles=legend_elements,
+                loc="upper right",
+                bbox_to_anchor=(0.99, 0.92),
+                fontsize=8,
+                title="Sessions",
+                title_fontsize=9,
+            )
+
+        fig.suptitle(
+            "LFP Continuous Trial Data for All Patients and Trials (pre-epoching)",
+            fontsize=12,
+            y=0.93,
+        )
+
+        plt.subplots_adjust(
+            left=0.08,
+            right=0.90,
+            bottom=0.08,
+            top=0.92,
+            hspace=0.9,
+            wspace=0.2,
+        )
+
+        if save_path:
+            os.makedirs(save_path, exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + ".pdf"), dpi=300, bbox_inches="tight")
+        plt.show()
         plt.clf()
 
     @staticmethod
@@ -1090,8 +1372,12 @@ class Visualise:
         # Get unique trial IDs for the subject
         unique_trial_ids = np.unique(patients_epochs[subject_id].events[:, 1])
         
-        # Find the maximum end time across all trials
-        max_end_time = max(event[0] + window_size_time for event in patients_epochs[subject_id].events)
+        # Find the maximum end time across all trials (relative to each trial start)
+        # NOTE: `segment_and_label_trials` shifts epoch onsets by adding `trial_id` to `window_start`,
+        # so we undo that here by subtracting `trial_id`.
+        max_end_time = max(
+            (event[0] - event[1]) + window_size_time for event in patients_epochs[subject_id].events
+        )
     
         # Find the maximum number of epochs across all trials
         max_num_epochs = max(len(patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]) for trial_id in unique_trial_ids)
@@ -1124,6 +1410,7 @@ class Visualise:
             
             # Get events for the current trial
             event_subset = patients_epochs[subject_id].events[patients_epochs[subject_id].events[:, 1] == trial_id]
+            event_subset = event_subset[np.argsort(event_subset[:, 0])]
             num_epochs = len(event_subset)  # Total number of epochs in this trial
     
             # Count normal walking and modulation epochs for this trial
@@ -1135,9 +1422,10 @@ class Visualise:
                 onset = event[0]
                 label = event[2]
                 
-                # Adjust the start time based on the trial index
-                start = onset - idx 
-                end = onset + window_size_time - idx
+                # Convert onset back to trial-relative samples
+                onset_rel = onset - trial_id
+                start = onset_rel
+                end = onset_rel + window_size_time
     
                 # Draw vertical lines for mod_start and mod_end
                 mod_start = subjects_event_idx_dict[subject_id][trial_id][mod_start_index]
@@ -1178,9 +1466,10 @@ class Visualise:
     
             # Set title and labels for the subplot
             ax.set_title(f'Trial {trial_id} ({num_epochs} epochs)')
-            ax.set_xlim(0, max_num_epochs)
-            ax.set_xticks(np.arange(0, max_end_time, step=sfreq))
-            ax.set_xticklabels(np.arange(0, max_end_time / sfreq, step=1))
+            ax.set_xlim(0, max_end_time)
+            ticks = np.arange(0, max_end_time + 1, step=sfreq)
+            ax.set_xticks(ticks)
+            ax.set_xticklabels((ticks / sfreq).astype(int))
             ax.set_yticks(np.linspace(0.5 / max_num_epochs, 1 - 0.5 / max_num_epochs, max_num_epochs))
             ax.set_yticklabels([f'{idx}' for idx in range(max_num_epochs)])
             ax.set_xlabel('Time (s)')
