@@ -1,7 +1,7 @@
 {
   "global_settings": {
     "experiment_name": "hparams_seq2seq_LSTM_hctsa_24configs_logRegF1Chs",
-    "model_type": "seq2seq_lstm",
+    "model_type": "seq2vec_mlp",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -69,82 +69,6 @@
     "feature_selector__n_features": [400],
     "feature_selector__variance_threshold": [0.01],
     "feature_selector__correlation_threshold": [0.7]
-  },
-
-
-
-  "seq2seq_lstm": {
-    "feature_params": {
-      "scaler__scaler_type": ["standard"]
-    },
-    "architecture_configs": [
-      {
-        "classifier__hidden_dims": [64, 96, 64],
-        "classifier__activations": ["tanh", "tanh", "tanh"],
-        "classifier__recurrent_activations": ["sigmoid", "sigmoid", "sigmoid"]
-      }
-    ],
-    "other_params": {
-      "classifier__dropout": [
-        0.2,
-        0.5,
-        0.8
-      ],
-      "classifier__dense_units": [1],
-      "classifier__dense_activation": ["sigmoid"],
-      "classifier__optimizer": ["adam"],
-      "classifier__lr": [
-        0.001,
-        0.0001,
-        0.00001,
-        0.000001
-      ],
-      "classifier__patience": [10],
-      "classifier__epochs": [100],
-      "classifier__batch_size": [
-        8,
-        16
-      ],
-      "classifier__threshold": [0.5]
-    }
-  },
-
-
-
-  "seq2vec_lstm": {
-    "feature_params": {
-      "scaler__scaler_type": ["standard"]
-    },
-    "architecture_configs": [
-      {
-        "classifier__hidden_dims": [64, 96, 64],
-        "classifier__activations": ["tanh", "tanh", "tanh"],
-        "classifier__recurrent_activations": ["sigmoid", "sigmoid", "sigmoid"]
-      }
-    ],
-    "other_params": {
-      "classifier__dropout": [
-        0.2,
-        0.5,
-        0.8
-      ],
-      "classifier__dense_units": [1],
-      "classifier__dense_activation": ["sigmoid"],
-      "classifier__optimizer": ["adam"],
-      "classifier__lr": [
-        0.001,
-        0.0001,
-        0.00001,
-        0.000001
-      ],
-      "classifier__patience": [10],
-      "classifier__epochs": [100],
-      "classifier__batch_size": [
-        8,
-        16
-      ],
-      "classifier__threshold": [0.5]
-    }
   },
   "seq2vec_mlp": {
     "feature_params": {
