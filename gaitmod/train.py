@@ -33,6 +33,7 @@ os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 from gaitmod.models import seq2seq_lstm as lstm_classifier_module
 from gaitmod.models.seq2seq_lstm import Seq2SeqLSTM
 from gaitmod.models.seq2vec_lstm import Seq2VecLSTM
+from gaitmod.models.seq2vec_mlp import Seq2VecMLP
 from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 from gaitmod.feat_preproc import filter_features, parse_epoch_metadata, pad_trials, group_epochs_by_trial
 
@@ -159,6 +160,7 @@ DEFAULT_FEATURE_PARAMS: Dict[str, Any] = {}
 SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
     'seq2seq_lstm',
     'seq2vec_lstm',
+    'seq2vec_mlp',
     'rf',
     'svm',
     'xgb',
@@ -1499,7 +1501,7 @@ def _prepare_sequence_model_callbacks(
     """
     Helper to create callbacks only for sequence models that require them.
     """
-    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm'):
+    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
         return None, None
 
     patience_value = 10
@@ -2327,7 +2329,7 @@ def get_default_param_grid(model_type, mask_values=None):
     
     param_grid: Any = {}
     
-    if model_type in ('seq2seq_lstm', 'seq2vec_lstm'):
+    if model_type in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
         logging.info(f"[PARAM_GRID] Creating sequence-model parameter grid from config")
         feature_params = _merge_feature_params(model_config.get('feature_params'))
         architecture_configs = model_config.get('architecture_configs', [])
@@ -2828,8 +2830,8 @@ def run_nested_cv_classical(
             'balanced_accuracy': 0.5,
         }
 
-        # For seq2vec_lstm, add test evaluation callback before training
-        if model_type == 'seq2vec_lstm':
+        # For seq2vec models, add test evaluation callback before training
+        if model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
             classifier = final_pipeline.steps[-1][1]
             
             # Add test evaluation callbacks (CSV + TensorBoard) BEFORE CSVLogger
@@ -3095,14 +3097,14 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                           outer_test_subjects=None,
                           data_source=None):
     """
-    Nested cross-validation for LSTM models (seq2seq and seq2vec).
+    Nested cross-validation for sequence-aware models (seq2seq LSTM, seq2vec LSTM, seq2vec MLP).
     
     For seq2seq_lstm:
         - Expects pre-padded 3D input (n_trials, max_seq_len, n_features)
         - Uses mask_values for padding
         - Operates on trial-level sequences
     
-    For seq2vec_lstm:
+    For seq2vec_lstm / seq2vec_mlp:
         - Expects 2D input (n_samples, n_features) at epoch level
         - No padding required
         - Operates on individual epochs
@@ -3115,7 +3117,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
         groups: Array indicating which subject each sample belongs to
         mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length) - required for seq2seq_lstm
         subject_names: List of subject names
-        model_type: Type of model ('seq2seq_lstm' or 'seq2vec_lstm')
+        model_type: Type of model ('seq2seq_lstm', 'seq2vec_lstm', or 'seq2vec_mlp')
         refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
@@ -3155,8 +3157,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
-    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm'):
-        raise ValueError(f"run_loso_cv_lstm only supports model_type='seq2seq_lstm' or 'seq2vec_lstm', got '{model_type}'.")
+    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
+        raise ValueError(
+            "run_loso_cv_lstm only supports model_type='seq2seq_lstm', 'seq2vec_lstm', or 'seq2vec_mlp', "
+            f"got '{model_type}'."
+        )
     
     # Validate input dimensions based on model type
     if model_type == 'seq2seq_lstm':
@@ -3164,9 +3169,9 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             raise ValueError(f"seq2seq_lstm expects a 3D padded input array, got {X.ndim}D.")
         if mask_values is None:
             raise ValueError("seq2seq_lstm requires mask_values parameter.")
-    elif model_type == 'seq2vec_lstm':
+    elif model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
         if X.ndim != 2:
-            raise ValueError(f"seq2vec_lstm expects a 2D input array, got {X.ndim}D.")
+            raise ValueError(f"{model_type} expects a 2D input array, got {X.ndim}D.")
 
     result_metadata = {'model_type': model_type, 'data_source': data_source}
 
@@ -3393,7 +3398,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     
                     # Handle model-specific fitting
                     if model_type == 'seq2vec_lstm':
-                        # Seq2Vec: Reshape 2D data to 3D where columns become timesteps and features=1
+                        # Seq2Vec LSTM: reshape 2D data to 3D where columns become timesteps and features=1
                         if X_train_transformed.ndim == 2:
                             X_train_transformed = X_train_transformed.reshape(
                                 X_train_transformed.shape[0],
@@ -3406,14 +3411,23 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                                 X_val_transformed.shape[1],
                                 1
                             )
-                        
+
                         # Ensure y is 2D for Seq2VecLSTM
                         y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
                         y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
-                        
+
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
                         if verbose >= 2:
                             logging.info(f"[CV_SKLEARN]       Training Seq2Vec LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                        lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
+                    elif model_type == 'seq2vec_mlp':
+                        # Seq2Vec MLP: keep 2D data and ensure y is 2D
+                        y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
+                        y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
+
+                        lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
+                        if verbose >= 2:
+                            logging.info(f"[CV_SKLEARN]       Training Seq2Vec MLP: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
                         lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
                     else:
                         # Seq2Seq: Set validation data and fit
@@ -4011,9 +4025,9 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             if model_type == 'seq2seq_lstm':
                 if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
                     raise ValueError('run_loso_cv_lstm with seq2seq_lstm requires 3D padded inputs for final retraining.')
-            elif model_type == 'seq2vec_lstm':
+            elif model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
                 if X_outer_train.ndim != 2 or X_outer_test.ndim != 2:
-                    raise ValueError('run_loso_cv_lstm with seq2vec_lstm requires 2D inputs for final retraining.')
+                    raise ValueError(f"run_loso_cv_lstm with {model_type} requires 2D inputs for final retraining.")
 
             preprocessing_steps = final_pipeline.steps[:-1]
             lstm_classifier = final_pipeline.steps[-1][1]
@@ -4073,7 +4087,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 X_test_final = transformer.transform(X_test_final)
             test_shape_for_logging = X_test_final.shape
 
-            # Prepare reshaped data for seq2vec_lstm BEFORE adding callbacks
+            # Prepare reshaped data for seq2vec models BEFORE adding callbacks
             if model_type == 'seq2vec_lstm':
                 # Reshape for seq2vec LSTM
                 if X_train_final.ndim == 2:
@@ -4094,6 +4108,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 else:
                     X_test_final_for_callbacks = X_test_final
                     
+                y_outer_train_for_fit = y_outer_train.reshape(-1, 1) if y_outer_train.ndim == 1 else y_outer_train
+                y_outer_test_for_callbacks = y_outer_test.reshape(-1, 1) if y_outer_test.ndim == 1 else y_outer_test
+            elif model_type == 'seq2vec_mlp':
+                X_train_final_for_fit = X_train_final
+                X_test_final_for_callbacks = X_test_final
                 y_outer_train_for_fit = y_outer_train.reshape(-1, 1) if y_outer_train.ndim == 1 else y_outer_train
                 y_outer_test_for_callbacks = y_outer_test.reshape(-1, 1) if y_outer_test.ndim == 1 else y_outer_test
             else:
@@ -4946,6 +4965,28 @@ def main(argv=None):
         )
     elif selected_model_type == 'seq2vec_lstm':
         logging.info(f"[MAIN] Starting seq2vec LSTM nested CV on raw segments (no padding)")
+        epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+            TS_DataMat,
+            labels,
+            epoch_groups,
+            mask_values=None,
+            subject_names=subject_names,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters,
+            data_source=feature_source,
+        )
+    elif selected_model_type == 'seq2vec_mlp':
+        logging.info(f"[MAIN] Starting seq2vec MLP nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
         outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(

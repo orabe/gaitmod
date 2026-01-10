@@ -9,6 +9,7 @@ from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score
 
 from gaitmod.models.seq2seq_lstm import Seq2SeqLSTM, MaskAwareScaler
 from gaitmod.models.seq2vec_lstm import Seq2VecLSTM
+from gaitmod.models.seq2vec_mlp import Seq2VecMLP
 from gaitmod.feature_selection import FeatureSelector
 
 try:
@@ -32,7 +33,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'seq2seq_lstm', 'seq2vec_lstm')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -55,7 +56,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    selector_mask_value = None if model_type == 'seq2vec_lstm' else mask_values.get('X_mask', 0.0)
+    selector_mask_value = None if model_type in ('seq2vec_lstm', 'seq2vec_mlp') else mask_values.get('X_mask', 0.0)
     selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     
@@ -63,8 +64,8 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     if model_type == 'seq2seq_lstm':
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
         scaler = MaskAwareScaler(x_mask_value=mask_values.get('X_mask', 0.0), scaler_type='standard')
-    elif model_type == 'seq2vec_lstm':
-        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for seq2vec LSTM (no masking applied)")
+    elif model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
+        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for seq2vec model (no masking applied)")
         scaler = MaskAwareScaler(x_mask_value=None, scaler_type='standard')
     else:
         logging.info(f"[BUILD_PIPELINE] Adding StandardScaler for non-LSTM model")
@@ -134,6 +135,18 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
         logging.info(f"[BUILD_PIPELINE] Seq2VecLSTM created for raw segments.")
+    elif model_type == 'seq2vec_mlp':
+        classifier = Seq2VecMLP(
+            callbacks=callbacks or [],
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+        )
+        classifier._effective_monitor = effective_monitor
+        classifier._has_validation_data = has_validation_data
+        logging.info(f"[BUILD_PIPELINE] Seq2VecMLP created for raw segments.")
     else:
         # Default to dummy classifier
         logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")

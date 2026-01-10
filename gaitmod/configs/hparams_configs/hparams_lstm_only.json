@@ -145,5 +145,39 @@
       ],
       "classifier__threshold": [0.5]
     }
+  },
+  "seq2vec_mlp": {
+    "feature_params": {
+      "scaler__scaler_type": ["standard"]
+    },
+    "architecture_configs": [
+      {
+        "classifier__hidden_dims": [64, 96, 64],
+        "classifier__activations": ["relu", "relu", "relu"]
+      }
+    ],
+    "other_params": {
+      "classifier__dropout": [
+        0.2,
+        0.5,
+        0.8
+      ],
+      "classifier__dense_units": [1],
+      "classifier__dense_activation": ["sigmoid"],
+      "classifier__optimizer": ["adam"],
+      "classifier__lr": [
+        0.001,
+        0.0001,
+        0.00001,
+        0.000001
+      ],
+      "classifier__patience": [10],
+      "classifier__epochs": [100],
+      "classifier__batch_size": [
+        8,
+        16
+      ],
+      "classifier__threshold": [0.5]
+    }
   }
 }
