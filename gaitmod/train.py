@@ -167,6 +167,8 @@ SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
     'svm',
     'xgb',
     'logreg',
+    'lda',
+    'knn',
     'dummy',
 )
 DEFAULT_MODEL_TYPE: Optional[str] = None

@@ -2,6 +2,8 @@ import logging
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
@@ -35,7 +37,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn', 'seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -94,6 +96,12 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     elif model_type == 'logreg':
         classifier = LogisticRegression(max_iter=1000, solver='lbfgs', random_state=42)
         logging.info(f"[BUILD_PIPELINE] Created LogisticRegression")
+    elif model_type == 'lda':
+        classifier = LinearDiscriminantAnalysis()
+        logging.info(f"[BUILD_PIPELINE] Created LinearDiscriminantAnalysis")
+    elif model_type == 'knn':
+        classifier = KNeighborsClassifier()
+        logging.info(f"[BUILD_PIPELINE] Created KNeighborsClassifier")
     elif model_type == 'xgb':
         if not XGBOOST_AVAILABLE:
             raise ImportError("XGBoost requested but not importable in this environment")

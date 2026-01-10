@@ -93,6 +93,19 @@
       "classifier__max_iter": [1000]
     }
   },
+  "lda": {
+    "param_grid": {
+      "classifier__solver": ["svd", "lsqr"],
+      "classifier__shrinkage": [null, "auto"]
+    }
+  },
+  "knn": {
+    "param_grid": {
+      "classifier__n_neighbors": [3, 5, 7, 11],
+      "classifier__weights": ["uniform", "distance"],
+      "classifier__metric": ["minkowski"]
+    }
+  },
   "xgb": {
     "param_grid": {
       "classifier__n_estimators": [100, 200],
