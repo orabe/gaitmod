@@ -15,7 +15,13 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
     """
     MLP classifier for epoch-level vectors.
 
-    Each sample represents a single epoch shaped as (n_features,).
+    Each sample represents a single epoch. Input shape depends on channel_mode:
+    - channel_mode='concat' (default): (n_samples, n_features)
+    - channel_mode='channel_dim': (n_samples, n_features, n_channels) is accepted
+      and flattened to 2D before Dense layers.
+
+    Use 'concat' for standard MLP behavior; 'channel_dim' is only useful for keeping
+    a structured input before flattening.
     """
 
     def __init__(
@@ -34,6 +40,8 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
         threshold=0.5,
         loss='binary_crossentropy',
         use_class_weights=True,
+        channel_mode='concat',
+        n_channels=None,
         callbacks=None,
         experiment_dir=None,
         outer_fold=None,
@@ -58,6 +66,8 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
         self.threshold = threshold
         self.loss = loss
         self.use_class_weights = use_class_weights
+        self.channel_mode = channel_mode
+        self.n_channels = n_channels
         self.callbacks = callbacks if callbacks is not None else []
         self.experiment_dir = experiment_dir
         self.outer_fold = outer_fold
@@ -126,8 +136,8 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
         logging.info(f"[FIT] Training Seq2Vec MLP: X={X.shape}, y={y.shape}")
 
         X = np.asarray(X, dtype=np.float32)
-        if X.ndim == 3 and X.shape[-1] == 1:
-            X = X.reshape(X.shape[0], X.shape[1])
+        if X.ndim == 3:
+            X = X.reshape(X.shape[0], X.shape[1] * X.shape[2])
         if X.ndim != 2:
             raise ValueError("Seq2VecMLP expects X to be 2D (samples, features).")
 
@@ -183,8 +193,8 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
         if validation_data_to_use is not None:
             X_val, y_val = validation_data_to_use
             X_val = np.asarray(X_val, dtype=np.float32)
-            if X_val.ndim == 3 and X_val.shape[-1] == 1:
-                X_val = X_val.reshape(X_val.shape[0], X_val.shape[1])
+            if X_val.ndim == 3:
+                X_val = X_val.reshape(X_val.shape[0], X_val.shape[1] * X_val.shape[2])
             y_val = np.asarray(y_val, dtype=np.float32)
 
             if X_val.ndim != 2:
@@ -228,8 +238,8 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
         if self.model is None:
             raise ValueError("Model has not been fitted yet.")
         X_prepared = np.asarray(X, dtype=np.float32)
-        if X_prepared.ndim == 3 and X_prepared.shape[-1] == 1:
-            X_prepared = X_prepared.reshape(X_prepared.shape[0], X_prepared.shape[1])
+        if X_prepared.ndim == 3:
+            X_prepared = X_prepared.reshape(X_prepared.shape[0], X_prepared.shape[1] * X_prepared.shape[2])
         if X_prepared.ndim != 2:
             raise ValueError("Seq2VecMLP expects X to be 2D for prediction.")
         proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)

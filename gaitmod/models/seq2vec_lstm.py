@@ -12,7 +12,13 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
     """
     Sequence-to-vector LSTM classifier that operates on raw, unpadded segments.
 
-    Each sample represents a single segment shaped as (timesteps, 1).
+    Each sample represents a single segment. Input shape depends on channel_mode:
+    - channel_mode='concat' (default): (n_samples, n_features) -> reshaped to (n_samples, n_features, 1)
+    - channel_mode='channel_dim': (n_samples, n_features_total) -> reshaped to
+      (n_samples, n_features_total / n_channels, n_channels)
+
+    Use 'channel_dim' when you want the LSTM to treat channels as separate features
+    per timestep; use 'concat' for simpler feature-vector behavior and safer feature selection.
     """
 
     def __init__(
@@ -31,6 +37,8 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         threshold=0.5,
         loss='binary_crossentropy',
         use_class_weights=True,
+        channel_mode='concat',
+        n_channels=None,
         callbacks=None,
         experiment_dir=None,
         outer_fold=None,
@@ -55,6 +63,8 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         self.threshold = threshold
         self.loss = loss
         self.use_class_weights = use_class_weights
+        self.channel_mode = channel_mode
+        self.n_channels = n_channels
         self.callbacks = callbacks if callbacks is not None else []
         self.experiment_dir = experiment_dir
         self.outer_fold = outer_fold
@@ -67,6 +77,19 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         self.classes_ = None
         self.input_shape = None
         self.history_ = []
+
+    def _reshape_channel_dim(self, X, n_channels):
+        if X.ndim != 2:
+            return X
+        n_features_total = X.shape[1]
+        if not n_channels or n_channels <= 0:
+            raise ValueError("Seq2VecLSTM channel_dim requires a valid n_channels value.")
+        if n_features_total % n_channels != 0:
+            raise ValueError(
+                f"Seq2VecLSTM cannot reshape features of size {n_features_total} into {n_channels} channels."
+            )
+        n_features = n_features_total // n_channels
+        return X.reshape(X.shape[0], n_features, n_channels)
 
     def build_model(self, input_shape):
         """Build the LSTM model with the given input shape."""
@@ -124,6 +147,8 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         logging.info(f"[FIT] Training Seq2Vec LSTM: X={X.shape}, y={y.shape}")
         
         X = np.asarray(X, dtype=np.float32)
+        if X.ndim == 2 and self.channel_mode == 'channel_dim':
+            X = self._reshape_channel_dim(X, self.n_channels)
         if X.ndim != 3:
             raise ValueError("Seq2VecLSTM expects X to be 3D (samples, timesteps, features).")
        
@@ -185,6 +210,8 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         if validation_data_to_use is not None:
             X_val, y_val = validation_data_to_use
             X_val = np.asarray(X_val, dtype=np.float32)
+            if X_val.ndim == 2 and self.channel_mode == 'channel_dim':
+                X_val = self._reshape_channel_dim(X_val, self.n_channels)
             y_val = np.asarray(y_val, dtype=np.float32)
             
             if X_val.ndim != 3:
@@ -229,7 +256,10 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
             raise ValueError("Model has not been fitted yet.")
         X_prepared = np.asarray(X, dtype=np.float32)
         if X_prepared.ndim == 2:
-            X_prepared = X_prepared[:, :, np.newaxis]
+            if self.channel_mode == 'channel_dim':
+                X_prepared = self._reshape_channel_dim(X_prepared, self.n_channels)
+            else:
+                X_prepared = X_prepared[:, :, np.newaxis]
         elif X_prepared.ndim != 3:
             raise ValueError("Seq2VecLSTM expects X to be 3D for prediction.")
         proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)

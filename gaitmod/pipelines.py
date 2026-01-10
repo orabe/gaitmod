@@ -23,7 +23,8 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
                    params=None, has_validation_data=False,
-                   callbacks=None, effective_monitor=None):
+                   callbacks=None, effective_monitor=None,
+                   channel_mode=None, n_channels=None):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -43,6 +44,12 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         has_validation_data: Whether validation data is available
         callbacks: Prebuilt callbacks for sequence models
         effective_monitor: Monitor key associated with callbacks
+        channel_mode: For seq2vec models, how multi-channel inputs are arranged:
+            - 'concat': channels concatenated along feature axis
+            - 'channel_dim': channels kept in last dimension
+            Use 'concat' for MLP/classical models or when feature selection is enabled;
+            use 'channel_dim' for seq2vec LSTM when you want channels treated as features.
+        n_channels: Number of channels used when channel_mode='channel_dim'
         
     Returns:
         tuple: (pipeline, scoring_functions)
@@ -131,6 +138,8 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
             inner_fold=inner_fold,
             outer_test_subject=outer_test_subject,
             inner_validation_subject=inner_validation_subject,
+            channel_mode=channel_mode or 'concat',
+            n_channels=n_channels,
         )
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
@@ -143,6 +152,8 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
             inner_fold=inner_fold,
             outer_test_subject=outer_test_subject,
             inner_validation_subject=inner_validation_subject,
+            channel_mode=channel_mode or 'concat',
+            n_channels=n_channels,
         )
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
