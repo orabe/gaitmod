@@ -9,10 +9,11 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score, balanced_accuracy_score
 
-from gaitmod.models.seq2seq_lstm import Seq2SeqLSTM, MaskAwareScaler
-from gaitmod.models.seq2vec_lstm import Seq2VecLSTM
-from gaitmod.models.seq2vec_mlp import Seq2VecMLP
-from gaitmod.models.seq2vec_cnn import Seq2VecCNN
+from gaitmod.models import Seq2SeqLSTM
+from gaitmod.models import Seq2VecLSTM
+from gaitmod.models import Seq2VecMLP
+from gaitmod.models import Seq2VecCNN
+from gaitmod.models.seq2seq_lstm import MaskAwareScaler
 from gaitmod.feature_selection import FeatureSelector
 
 try:
@@ -22,12 +23,13 @@ except ImportError:
     XGBClassifier = None
     XGBOOST_AVAILABLE = False
 
-def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
+def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
                    params=None, has_validation_data=False,
                    callbacks=None, effective_monitor=None,
-                   n_channels=None):
+                   n_channels=None, threshold_range=None, n_thresholds=None,
+                   threshold_metrics=None):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -37,7 +39,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn', 'seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn', 'Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -48,6 +50,9 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         callbacks: Prebuilt callbacks for sequence models
         effective_monitor: Monitor key associated with callbacks
         n_channels: Number of channels used for seq2vec LSTM/CNN reshaping
+        threshold_range: Threshold sweep range for Seq2SeqLSTM (required)
+        n_thresholds: Number of thresholds to evaluate for Seq2SeqLSTM (required)
+        threshold_metrics: Metrics to optimize thresholds for Seq2SeqLSTM (required)
         
     Returns:
         tuple: (pipeline, scoring_functions)
@@ -55,21 +60,29 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     logging.info(f"[BUILD_PIPELINE] Building pipeline for model_type: {model_type}")
     
     # Normalize mask dict for downstream access
-    mask_values = mask_values or {}
+    if model_type == 'Seq2SeqLSTM':
+        if mask_values is None:
+            raise ValueError("Seq2SeqLSTM requires mask_values with 'X_mask' and 'y_mask'.")
+        if not isinstance(mask_values, dict):
+            raise ValueError("Seq2SeqLSTM mask_values must be a dict.")
+        if 'X_mask' not in mask_values or 'y_mask' not in mask_values:
+            raise ValueError("Seq2SeqLSTM mask_values must include 'X_mask' and 'y_mask'.")
+    else:
+        mask_values = mask_values or {}
 
     # Pipeline steps
     steps = []
     
     # Feature selection step (always use advanced)
-    selector_mask_value = None if model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn') else mask_values.get('X_mask', 0.0)
+    selector_mask_value = None if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN') else mask_values['X_mask']
     selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     
     # Scaling step (mask-aware for LSTM variants)
-    if model_type == 'seq2seq_lstm':
+    if model_type == 'Seq2SeqLSTM':
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
-        scaler = MaskAwareScaler(x_mask_value=mask_values.get('X_mask', 0.0), scaler_type='standard')
-    elif model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn'):
+        scaler = MaskAwareScaler(x_mask_value=mask_values['X_mask'], scaler_type='standard')
+    elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN'):
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for seq2vec model (no masking applied)")
         scaler = MaskAwareScaler(x_mask_value=None, scaler_type='standard')
     else:
@@ -102,30 +115,23 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
             raise ImportError("XGBoost requested but not importable in this environment")
         classifier = XGBClassifier(random_state=42)
         logging.info(f"[BUILD_PIPELINE] Created XGBClassifier")
-    elif model_type == 'seq2seq_lstm':
+    elif model_type == 'Seq2SeqLSTM':
         # Create the LSTM classifier with simplified configuration and subject tracking
-        if mask_values:
-            classifier = Seq2SeqLSTM(
-                mask_values=mask_values,
-                experiment_dir=experiment_dir,
-                outer_fold=outer_fold,
-                inner_fold=inner_fold,
-                outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject,
-                callbacks=callbacks or []
-            )
-            logging.info(f"[BUILD_PIPELINE] Created Seq2SeqLSTM with provided mask_values: {mask_values}")
-        else:
-            classifier = Seq2SeqLSTM(
-                mask_values={'X_mask': mask_values.get('X_mask', 0.0), 'y_mask': mask_values.get('y_mask', -1)},
-                experiment_dir=experiment_dir,
-                outer_fold=outer_fold,
-                inner_fold=inner_fold,
-                outer_test_subject=outer_test_subject,
-                inner_validation_subject=inner_validation_subject,
-                callbacks=callbacks or []
-            )
-            logging.info(f"[BUILD_PIPELINE] Created Seq2SeqLSTM with default mask_values")
+        if threshold_range is None or n_thresholds is None or threshold_metrics is None:
+            raise ValueError("Seq2SeqLSTM requires threshold_range, n_thresholds, and threshold_metrics.")
+        classifier = Seq2SeqLSTM(
+            mask_values=mask_values,
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+            callbacks=callbacks or [],
+            threshold_range=threshold_range,
+            n_thresholds=n_thresholds,
+            threshold_metrics=threshold_metrics,
+        )
+        logging.info(f"[BUILD_PIPELINE] Created Seq2SeqLSTM with mask_values: {mask_values}")
         
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
@@ -134,7 +140,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         if outer_fold is not None:
             logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
             logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
-    elif model_type == 'seq2vec_lstm':
+    elif model_type == 'Seq2VecLSTM':
         classifier = Seq2VecLSTM(
             callbacks=callbacks or [],
             experiment_dir=experiment_dir,
@@ -147,7 +153,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
         logging.info(f"[BUILD_PIPELINE] Seq2VecLSTM created for raw segments.")
-    elif model_type == 'seq2vec_mlp':
+    elif model_type == 'Seq2VecMLP':
         classifier = Seq2VecMLP(
             callbacks=callbacks or [],
             experiment_dir=experiment_dir,
@@ -159,7 +165,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
         logging.info(f"[BUILD_PIPELINE] Seq2VecMLP created for raw segments.")
-    elif model_type == 'seq2vec_cnn':
+    elif model_type == 'Seq2VecCNN':
         classifier = Seq2VecCNN(
             callbacks=callbacks or [],
             experiment_dir=experiment_dir,
@@ -186,35 +192,35 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
     
     # Scoring functions - use masked versions for LSTM, standard for others
     logging.info(f"[BUILD_PIPELINE] Setting up scoring functions for {model_type}")
-    if model_type == 'seq2seq_lstm':
+    if model_type == 'Seq2SeqLSTM':
         # Use masked scoring functions that match the training metrics
         logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
         scoring_functions = {
             'accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_accuracy_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),
             'balanced_accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_balanced_accuracy_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),            
             'f1': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_f1_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),
             'roc_auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: Seq2SeqLSTM.eval_masked_roc_auc_score(
                     y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 needs_proba=True,
                 greater_is_better=True
@@ -222,7 +228,7 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
             'pr_auc': make_scorer(
                 lambda y_true, y_pred_proba, **kwargs: Seq2SeqLSTM.eval_masked_pr_auc_score(
                     y_true, y_pred_proba, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 needs_proba=True,
                 greater_is_better=True
@@ -230,21 +236,21 @@ def build_pipeline(model_type='seq2seq_lstm', mask_values=None,
             'precision': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_precision_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),
             'recall': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_recall_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),         
             'specificity': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_specificity_score(
                     y_true, y_pred, 
-                    y_mask_val=mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                    y_mask_val=mask_values['y_mask']
                 ),
                 greater_is_better=True
             ),        

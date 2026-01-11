@@ -10,7 +10,7 @@
 #SBATCH --partition=gpu-2d
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128gb
+#SBATCH --mem=64gb
 #SBATCH --output=logs/slurm/%x_%j.out
 #SBATCH --error=logs/slurm/%x_%j.err
 

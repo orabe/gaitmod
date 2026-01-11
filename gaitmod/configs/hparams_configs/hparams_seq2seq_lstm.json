@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_seq2seq_LSTM_hctsa_24configs_logRegF1Chs",
-    "model_type": "seq2seq_lstm",
+    "experiment_name": "hparams_seq2seq_LSTM_hctsa",
+    "model_type": "Seq2SeqLSTM",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -9,7 +9,7 @@
     "callbacks": {
       "progress_frequency": 1,
       "reduce_lr_factor": 0.5,
-      "reduce_lr_min_lr": 1e-5,
+      "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
       "monitor": "val_f1_score",
       "patience": 10
@@ -53,7 +53,8 @@
           "PW_SN66": "channel_0-LFP_L0-3",
           "PW_US68": "channel_4-LFP_R1-3"
         }
-      }
+      },
+      "channels": "all"
     },
     "selection_metrics": {
       "refit_scoring_metric": "val_f1",
@@ -62,23 +63,45 @@
     }
   },
   "feature_params": {
-    "feature_selector__variance_threshold": [0.01],
-    "feature_selector__enabled": [true],
-    "feature_selector__n_features": [400],
+    "feature_selector__variance_threshold": [
+      0.01
+    ],
+    "feature_selector__enabled": [
+      true
+    ],
+    "feature_selector__n_features": [
+      400
+    ],
     "feature_selector__selection_method": [
       "roc_auc"
     ],
-    "feature_selector__correlation_threshold": [0.7]
+    "feature_selector__correlation_threshold": [
+      0.7
+    ]
   },
   "seq2seq_lstm": {
     "feature_params": {
-      "scaler__scaler_type": ["standard"]
+      "scaler__scaler_type": [
+        "standard"
+      ]
     },
     "architecture_configs": [
       {
-        "classifier__hidden_dims": [64, 96, 64],
-        "classifier__activations": ["tanh", "tanh", "tanh"],
-        "classifier__recurrent_activations": ["sigmoid", "sigmoid", "sigmoid"]
+        "classifier__hidden_dims": [
+          64,
+          96,
+          64
+        ],
+        "classifier__activations": [
+          "tanh",
+          "tanh",
+          "tanh"
+        ],
+        "classifier__recurrent_activations": [
+          "sigmoid",
+          "sigmoid",
+          "sigmoid"
+        ]
       }
     ],
     "other_params": {
@@ -87,22 +110,34 @@
         0.5,
         0.8
       ],
-      "classifier__dense_units": [1],
-      "classifier__dense_activation": ["sigmoid"],
-      "classifier__optimizer": ["adam"],
+      "classifier__dense_units": [
+        1
+      ],
+      "classifier__dense_activation": [
+        "sigmoid"
+      ],
+      "classifier__optimizer": [
+        "adam"
+      ],
       "classifier__lr": [
         0.001,
         0.0001,
-        0.00001,
-        0.000001
+        1e-05,
+        1e-06
       ],
-      "classifier__patience": [10],
-      "classifier__epochs": [100],
+      "classifier__patience": [
+        10
+      ],
+      "classifier__epochs": [
+        100
+      ],
       "classifier__batch_size": [
         8,
         16
       ],
-      "classifier__threshold": [0.5]
+      "classifier__threshold": [
+        0.5
+      ]
     }
   }
 }
