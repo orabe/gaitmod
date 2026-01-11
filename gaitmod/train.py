@@ -306,16 +306,14 @@ def _fit_pipeline_with_validation(
     X_train,
     y_train,
     validation_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
-    channel_mode: Optional[str] = None,
     n_channels: Optional[int] = None,
 ):
     """
     Manually fit a pipeline so that the final estimator (e.g., Seq2VecLSTM)
     receives preprocessed validation data for Keras metrics logging.
 
-    For seq2vec models, channel_mode controls the reshaping:
-    - 'concat': (n_samples, n_features) -> (n_samples, n_features, 1)
-    - 'channel_dim': (n_samples, n_features_total) -> (n_samples, n_features, n_channels)
+    For seq2vec LSTM/CNN models, inputs are reshaped to
+    (n_samples, n_features, n_channels) before fitting.
     """
     preprocessing_steps = pipeline.steps[:-1]
     classifier = pipeline.steps[-1][1]
@@ -337,10 +335,7 @@ def _fit_pipeline_with_validation(
 
     X_train_processed = np.asarray(X_train_processed, dtype=np.float32)
     if X_train_processed.ndim == 2:
-        if channel_mode == 'channel_dim':
-            X_train_processed = _reshape_seq2vec_channel_dim(X_train_processed, n_channels)
-        else:
-            X_train_processed = X_train_processed[:, :, np.newaxis]
+        X_train_processed = _reshape_seq2vec_channel_dim(X_train_processed, n_channels)
     elif X_train_processed.ndim != 3:
         raise ValueError(
             f"Expected training data to be 3D after preprocessing, got shape {X_train_processed.shape}"
@@ -356,10 +351,7 @@ def _fit_pipeline_with_validation(
     if X_val_processed is not None and y_val_processed is not None:
         X_val_processed = np.asarray(X_val_processed, dtype=np.float32)
         if X_val_processed.ndim == 2:
-            if channel_mode == 'channel_dim':
-                X_val_processed = _reshape_seq2vec_channel_dim(X_val_processed, n_channels)
-            else:
-                X_val_processed = X_val_processed[:, :, np.newaxis]
+            X_val_processed = _reshape_seq2vec_channel_dim(X_val_processed, n_channels)
         elif X_val_processed.ndim != 3:
             raise ValueError(
                 f"Expected validation data to be 3D after preprocessing, got shape {X_val_processed.shape}"
@@ -389,7 +381,7 @@ def resolve_feature_cache_directory() -> str:
 
 
 def _normalize_channel_list(channels_value, segment_cache: HCTSASegmentCache) -> Optional[List[str]]:
-    """Normalize channel list inputs to canonical channel labels."""
+    """Normalize channel override to canonical labels; only 'all' or null is supported."""
     if channels_value is None:
         return None
 
@@ -397,22 +389,15 @@ def _normalize_channel_list(channels_value, segment_cache: HCTSASegmentCache) ->
         raw = channels_value.strip()
         if not raw:
             return None
-        if raw.lower() == 'all':
-            index_df = segment_cache.load_index()
-            if index_df.empty:
-                raise ValueError("Segment cache index is empty; cannot resolve channels='all'.")
-            channels = sorted(set(index_df['channel_canonical'].tolist()))
-        else:
-            channels = [part.strip() for part in raw.split(',') if part.strip()]
-    elif isinstance(channels_value, (list, tuple, set)):
-        channels = [str(ch).strip() for ch in channels_value if str(ch).strip()]
-    else:
-        raise ValueError("feature_data.channels must be a list, set, tuple, or string.")
+        if raw.lower() != 'all':
+            raise ValueError("channel_selection.channels only supports 'all' or null.")
+        index_df = segment_cache.load_index()
+        if index_df.empty:
+            raise ValueError("Segment cache index is empty; cannot resolve channels='all'.")
+        channels = sorted(set(index_df['channel_canonical'].tolist()))
+        return [segment_cache._canonical_channel_label(ch) for ch in channels]
 
-    if not channels:
-        return None
-
-    return [segment_cache._canonical_channel_label(ch) for ch in channels]
+    raise ValueError("channel_selection.channels only supports 'all' or null.")
 
 
 def _reshape_seq2vec_channel_dim(X: np.ndarray, n_channels: Optional[int]) -> np.ndarray:
@@ -2446,7 +2431,6 @@ def run_nested_cv_classical(
     feature_names=None,
     outer_test_subjects=None,
     data_source=None,
-    channel_mode: Optional[str] = None,
     n_channels: Optional[int] = None
 ):
     """
@@ -2455,9 +2439,7 @@ def run_nested_cv_classical(
     Each sample corresponds to a single epoch (no padding), preserving LOSO CV
     by grouping epochs by subject.
 
-    For seq2vec models, channel_mode controls how multi-channel inputs are shaped:
-    - 'concat': channels concatenated along feature axis
-    - 'channel_dim': channels kept in a separate last dimension (requires n_channels)
+    For seq2vec LSTM/CNN, inputs are reshaped to (n_samples, n_features, n_channels).
     """
     from sklearn.model_selection import ParameterGrid, LeaveOneGroupOut
     from sklearn.metrics import (
@@ -2620,7 +2602,6 @@ def run_nested_cv_classical(
                         has_validation_data=True,
                         callbacks=callbacks,
                         effective_monitor=effective_monitor,
-                        channel_mode=channel_mode,
                         n_channels=n_channels,
                     )
                     inner_pipeline.set_params(**params)
@@ -2630,7 +2611,6 @@ def run_nested_cv_classical(
                             X_inner_train,
                             y_inner_train,
                             validation_data=(X_inner_val, y_inner_val),
-                            channel_mode=channel_mode,
                             n_channels=n_channels,
                         )
                     else:
@@ -2886,7 +2866,6 @@ def run_nested_cv_classical(
             has_validation_data=False,
             callbacks=callbacks,
             effective_monitor=effective_monitor,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
         final_pipeline.set_params(**best_params)
@@ -2902,8 +2881,8 @@ def run_nested_cv_classical(
         }
 
         # For seq2vec models, add test evaluation callback before training
-            if model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn'):
-                classifier = final_pipeline.steps[-1][1]
+        if model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn'):
+            classifier = final_pipeline.steps[-1][1]
             
             # Add test evaluation callbacks (CSV + TensorBoard) BEFORE CSVLogger
             existing_callbacks = getattr(classifier, 'callbacks', [])
@@ -2950,7 +2929,6 @@ def run_nested_cv_classical(
                 final_pipeline,
                 X_outer_train,
                 y_outer_train,
-                channel_mode=channel_mode,
                 n_channels=n_channels,
             )
         else:
@@ -3173,7 +3151,6 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                           feature_names=None,
                           outer_test_subjects=None,
                           data_source=None,
-                          channel_mode: Optional[str] = None,
                           n_channels: Optional[int] = None):
     """
     Nested cross-validation for sequence-aware models (seq2seq LSTM, seq2vec LSTM, seq2vec MLP).
@@ -3206,8 +3183,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
         feature_names: Optional list/sequence of feature names aligned with features
         outer_test_subjects: Optional iterable of subject names to evaluate
         selection_score_aggregation: Aggregation strategy for inner-fold scores ('median' or 'mean')
-        channel_mode: For seq2vec models, 'concat' or 'channel_dim'
-        n_channels: Number of channels when channel_mode='channel_dim'
+        n_channels: Number of channels when using seq2vec LSTM/CNN
         
     Returns:
         tuple: (outer_results, all_best_params, experiment_dir)
@@ -3244,7 +3220,6 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             f"got '{model_type}'."
         )
 
-    channel_mode = (channel_mode or 'concat').strip().lower()
     
     # Validate input dimensions based on model type
     if model_type == 'seq2seq_lstm':
@@ -3446,7 +3421,6 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         has_validation_data=True,  # Enable validation data monitoring
                         callbacks=callbacks,
                         effective_monitor=effective_monitor,
-                        channel_mode=channel_mode,
                         n_channels=n_channels,
                     )
                     inner_pipeline.set_params(**params)
@@ -3485,27 +3459,13 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     if model_type in ('seq2vec_lstm', 'seq2vec_cnn'):
                         # Seq2Vec LSTM: reshape 2D data to 3D where columns become timesteps and features=1
                         if X_train_transformed.ndim == 2:
-                            if channel_mode == 'channel_dim':
-                                X_train_transformed = _reshape_seq2vec_channel_dim(
-                                    X_train_transformed, n_channels
-                                )
-                            else:
-                                X_train_transformed = X_train_transformed.reshape(
-                                    X_train_transformed.shape[0],
-                                    X_train_transformed.shape[1],
-                                    1
-                                )
+                            X_train_transformed = _reshape_seq2vec_channel_dim(
+                                X_train_transformed, n_channels
+                            )
                         if X_val_transformed.ndim == 2:
-                            if channel_mode == 'channel_dim':
-                                X_val_transformed = _reshape_seq2vec_channel_dim(
-                                    X_val_transformed, n_channels
-                                )
-                            else:
-                                X_val_transformed = X_val_transformed.reshape(
-                                    X_val_transformed.shape[0],
-                                    X_val_transformed.shape[1],
-                                    1
-                                )
+                            X_val_transformed = _reshape_seq2vec_channel_dim(
+                                X_val_transformed, n_channels
+                            )
 
                         # Ensure y is 2D for Seq2VecLSTM
                         y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
@@ -4095,7 +4055,6 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 has_validation_data=False,
                 callbacks=callbacks,
                 effective_monitor=effective_monitor,
-                channel_mode=channel_mode,
                 n_channels=n_channels,
             )
             final_pipeline.set_params(**best_params)
@@ -4188,30 +4147,16 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             if model_type in ('seq2vec_lstm', 'seq2vec_cnn'):
                 # Reshape for seq2vec LSTM
                 if X_train_final.ndim == 2:
-                    if channel_mode == 'channel_dim':
-                        X_train_final_for_fit = _reshape_seq2vec_channel_dim(
-                            X_train_final, n_channels
-                        )
-                    else:
-                        X_train_final_for_fit = X_train_final.reshape(
-                            X_train_final.shape[0],
-                            X_train_final.shape[1],
-                            1
-                        )
+                    X_train_final_for_fit = _reshape_seq2vec_channel_dim(
+                        X_train_final, n_channels
+                    )
                 else:
                     X_train_final_for_fit = X_train_final
                     
                 if X_test_final.ndim == 2:
-                    if channel_mode == 'channel_dim':
-                        X_test_final_for_callbacks = _reshape_seq2vec_channel_dim(
-                            X_test_final, n_channels
-                        )
-                    else:
-                        X_test_final_for_callbacks = X_test_final.reshape(
-                            X_test_final.shape[0],
-                            X_test_final.shape[1],
-                            1
-                        )
+                    X_test_final_for_callbacks = _reshape_seq2vec_channel_dim(
+                        X_test_final, n_channels
+                    )
                 else:
                     X_test_final_for_callbacks = X_test_final
                     
@@ -4926,13 +4871,12 @@ def main(argv=None):
         canonical_ch = segment_cache._canonical_channel_label(ch)
         subject_channel_map[subj] = canonical_ch
 
-    channel_mode = str(FEATURE_DATA_SETTINGS.get('channel_mode', 'concat')).strip().lower()
-    if channel_mode not in ('concat', 'channel_dim'):
-        raise ValueError(f"Unsupported channel_mode '{channel_mode}'. Use 'concat' or 'channel_dim'.")
-    if channel_mode == 'channel_dim' and selected_model_type not in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn'):
-        raise ValueError("channel_mode='channel_dim' is currently supported only for seq2vec models.")
+    combine_mode = 'channel_dim' if selected_model_type in ('seq2vec_lstm', 'seq2vec_cnn') else 'concat'
 
-    channels_override = _normalize_channel_list(FEATURE_DATA_SETTINGS.get('channels'), segment_cache)
+    channels_override = _normalize_channel_list(
+        CHANNEL_SELECTION_SETTINGS.get('channels'),
+        segment_cache
+    )
     if channels_override:
         subject_channel_map = {
             subj: list(channels_override)
@@ -4943,7 +4887,7 @@ def main(argv=None):
                 "[MAIN] Overriding channel selection with %d channel(s): %s (mode=%s)",
                 len(channels_override),
                 ", ".join(channels_override),
-                channel_mode,
+                combine_mode,
             )
     
     if verbose >= 1 and subject_channel_map:
@@ -4961,7 +4905,7 @@ def main(argv=None):
     if any(isinstance(value, (list, tuple, set)) for value in subject_channel_map.values()):
         TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channels_data(
             subject_channels_map=subject_channel_map,
-            combine_mode=channel_mode,
+            combine_mode=combine_mode,
         )
     else:
         TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
@@ -4970,8 +4914,7 @@ def main(argv=None):
     log_memory_usage()
 
     if (
-        channel_mode == 'channel_dim'
-        and selected_model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn')
+        selected_model_type in ('seq2vec_lstm', 'seq2vec_cnn')
         and TS_DataMat.ndim == 3
     ):
         n_channels = TS_DataMat.shape[-1]
@@ -4985,7 +4928,7 @@ def main(argv=None):
                 ops_frames.append(ops_copy)
             operations = pd.concat(ops_frames, ignore_index=True)
         TS_DataMat = TS_DataMat.reshape(TS_DataMat.shape[0], -1)
-    elif channel_mode == 'channel_dim' and selected_model_type in ('seq2vec_lstm', 'seq2vec_mlp', 'seq2vec_cnn'):
+    elif selected_model_type in ('seq2vec_lstm', 'seq2vec_cnn'):
         n_channels = 1
     
     # Filter invalid features (only for HCTSA source)
@@ -5033,7 +4976,7 @@ def main(argv=None):
     else:
         feature_names = None
 
-    # n_channels assigned above when channel_mode='channel_dim'
+    # n_channels assigned above when using seq2vec LSTM/CNN
     
     # Parse metadata and group by trials
     if verbose >= 1:
@@ -5123,7 +5066,6 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
     elif selected_model_type == 'seq2vec_lstm':
@@ -5147,7 +5089,6 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
     elif selected_model_type == 'seq2vec_mlp':
@@ -5171,7 +5112,6 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
     elif selected_model_type == 'seq2vec_cnn':
@@ -5195,7 +5135,6 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
     else:
@@ -5217,7 +5156,6 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
-            channel_mode=channel_mode,
             n_channels=n_channels,
         )
 

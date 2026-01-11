@@ -15,13 +15,9 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
     """
     Sequence-to-vector CNN classifier for segmented inputs.
 
-    Each sample represents a single segment. Input shape depends on channel_mode:
-    - channel_mode='concat' (default): (n_samples, n_features) -> reshaped to (n_samples, n_features, 1)
-    - channel_mode='channel_dim': (n_samples, n_features_total) -> reshaped to
-      (n_samples, n_features_total / n_channels, n_channels)
-
-    Use 'channel_dim' when you want channels treated as separate features per timestep;
-    use 'concat' for simpler feature-vector behavior and safer feature selection.
+    Each sample represents a single segment. Inputs are always reshaped to
+    (n_samples, n_features, n_channels) so channels are treated as separate
+    features per timestep.
     """
 
     def __init__(
@@ -44,8 +40,7 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         threshold=0.5,
         loss='binary_crossentropy',
         use_class_weights=True,
-        channel_mode='concat',
-        n_channels=None,
+        n_channels=1,
         callbacks=None,
         experiment_dir=None,
         outer_fold=None,
@@ -74,7 +69,6 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         self.threshold = threshold
         self.loss = loss
         self.use_class_weights = use_class_weights
-        self.channel_mode = channel_mode
         self.n_channels = n_channels
         self.callbacks = callbacks if callbacks is not None else []
         self.experiment_dir = experiment_dir
@@ -89,23 +83,26 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         self.input_shape = None
         self.history_ = []
 
-    def _reshape_channel_dim(self, X, n_channels):
-        if X.ndim != 2:
+    def _ensure_3d(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        if X.ndim == 3:
             return X
-        n_features_total = X.shape[1]
-        if not n_channels or n_channels <= 0:
-            raise ValueError("Seq2VecCNN channel_dim requires a valid n_channels value.")
-        if n_features_total % n_channels != 0:
+        if X.ndim != 2:
+            raise ValueError("Seq2VecCNN expects X to be 2D or 3D.")
+        n_channels = int(self.n_channels) if self.n_channels is not None else 1
+        if n_channels <= 0:
+            raise ValueError("Seq2VecCNN requires n_channels >= 1.")
+        if X.shape[1] % n_channels != 0:
             raise ValueError(
-                f"Seq2VecCNN cannot reshape features of size {n_features_total} into {n_channels} channels."
+                f"Seq2VecCNN cannot reshape features of size {X.shape[1]} into {n_channels} channels."
             )
-        n_features = n_features_total // n_channels
+        n_features = X.shape[1] // n_channels
         return X.reshape(X.shape[0], n_features, n_channels)
 
     def build_model(self, input_shape):
         """Build the CNN model with the given input shape."""
         logging.info(f"\n[BUILD_MODEL] {'='*60}")
-        logging.info(f"[BUILD_MODEL] CNN MODEL CONSTRUCTION")
+        logging.info("[BUILD_MODEL] CNN MODEL CONSTRUCTION")
         logging.info(f"[BUILD_MODEL] {'='*60}")
 
         model = Sequential()
@@ -151,22 +148,15 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
             ],
         )
 
-        logging.debug(f"[BUILD_MODEL] Model summary:")
+        logging.debug("[BUILD_MODEL] Model summary:")
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             model.summary()
 
         return model
 
     def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
+        X = self._ensure_3d(X)
         logging.info(f"[FIT] Training Seq2Vec CNN: X={X.shape}, y={y.shape}")
-
-        X = np.asarray(X, dtype=np.float32)
-        if X.ndim == 2 and self.channel_mode == 'channel_dim':
-            X = self._reshape_channel_dim(X, self.n_channels)
-        if X.ndim == 2:
-            X = X[:, :, np.newaxis]
-        if X.ndim != 3:
-            raise ValueError("Seq2VecCNN expects X to be 3D (samples, timesteps, features).")
 
         y = np.asarray(y, dtype=np.float32)
         if y.ndim != 2:
@@ -205,7 +195,7 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
             else:
                 logging.info("[FIT] Insufficient class diversity for class weights; proceeding without them.")
         else:
-            logging.info(f"[FIT] Not using class weights.")
+            logging.info("[FIT] Not using class weights.")
 
         fit_kwargs = {
             'epochs': self.epochs,
@@ -219,15 +209,9 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         validation_data_to_use = validation_data or getattr(self, '_validation_data', None)
         if validation_data_to_use is not None:
             X_val, y_val = validation_data_to_use
-            X_val = np.asarray(X_val, dtype=np.float32)
-            if X_val.ndim == 2 and self.channel_mode == 'channel_dim':
-                X_val = self._reshape_channel_dim(X_val, self.n_channels)
-            if X_val.ndim == 2:
-                X_val = X_val[:, :, np.newaxis]
+            X_val = self._ensure_3d(X_val)
             y_val = np.asarray(y_val, dtype=np.float32)
 
-            if X_val.ndim != 3:
-                raise ValueError("Validation X must be 3D for Seq2VecCNN.")
             if y_val.ndim != 2:
                 raise ValueError("Validation y must be 2D (samples, output_steps=1).")
             if X_val.shape[0] != y_val.shape[0]:
@@ -238,7 +222,7 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
             logging.info(f"[CNN FIT] Using validation data: X_val={X_val.shape}, y_val={y_val.shape}")
 
         if validation_data_to_use is None:
-            logging.info(f"[CNN FIT] No validation data provided - training only")
+            logging.info("[CNN FIT] No validation data provided - training only")
 
         available_gpus = tf.config.list_physical_devices('GPU')
         using_gpu = bool(available_gpus)
@@ -248,16 +232,22 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
             try:
                 with tf.device('/device:GPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[CNN FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}")
+                    logging.info(
+                        f"[CNN FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}"
+                    )
             except Exception as gpu_error:
                 logging.warning(f"[FIT] GPU training failed ({gpu_error}); falling back to CPU.")
                 with tf.device('/CPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[CNN FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
+                    logging.info(
+                        f"[CNN FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}"
+                    )
         else:
             with tf.device('/CPU:0'):
                 history = self.model.fit(X, y, **fit_kwargs).history
-                logging.info(f"[CNN FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
+                logging.info(
+                    f"[CNN FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}"
+                )
 
         self.history_.append(history)
 
@@ -266,13 +256,7 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X):
         if self.model is None:
             raise ValueError("Model has not been fitted yet.")
-        X_prepared = np.asarray(X, dtype=np.float32)
-        if X_prepared.ndim == 2 and self.channel_mode == 'channel_dim':
-            X_prepared = self._reshape_channel_dim(X_prepared, self.n_channels)
-        if X_prepared.ndim == 2:
-            X_prepared = X_prepared[:, :, np.newaxis]
-        if X_prepared.ndim != 3:
-            raise ValueError("Seq2VecCNN expects X to be 3D for prediction.")
+        X_prepared = self._ensure_3d(X)
         proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)
         proba_pos = np.clip(proba_pos, 1e-7, 1 - 1e-7)
         return np.column_stack([1 - proba_pos, proba_pos])
