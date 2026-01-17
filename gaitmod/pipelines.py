@@ -13,6 +13,7 @@ from gaitmod.models import Seq2SeqLSTM
 from gaitmod.models import Seq2VecLSTM
 from gaitmod.models import Seq2VecMLP
 from gaitmod.models import Seq2VecCNN
+from gaitmod.models import Seq2VecMLPLSTM
 from gaitmod.models.seq2seq_lstm import MaskAwareScaler
 from gaitmod.feature_selection import FeatureSelector
 
@@ -29,7 +30,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
                    params=None, has_validation_data=False,
                    callbacks=None, effective_monitor=None,
                    n_channels=None, threshold_range=None, n_thresholds=None,
-                   threshold_metrics=None):
+                   threshold_metrics=None, raw_feature_dim=None):
     """
     Build a scikit-learn pipeline with sensible defaults.
     
@@ -39,7 +40,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     - The specified classifier
     
     Args:
-        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn', 'Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN')
+        model_type: Type of classifier ('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn', 'Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM')
         mask_values: Full mask values dictionary (for LSTM)
         outer_fold: Current outer fold number
         inner_fold: Current inner fold number
@@ -50,6 +51,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
         callbacks: Prebuilt callbacks for sequence models
         effective_monitor: Monitor key associated with callbacks
         n_channels: Number of channels used for seq2vec LSTM/CNN reshaping
+        raw_feature_dim: Raw feature dimension for Seq2VecMLPLSTM
         threshold_range: Threshold sweep range for Seq2SeqLSTM (required)
         n_thresholds: Number of thresholds to evaluate for Seq2SeqLSTM (required)
         threshold_metrics: Metrics to optimize thresholds for Seq2SeqLSTM (required)
@@ -74,7 +76,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    selector_mask_value = None if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN') else mask_values['X_mask']
+    selector_mask_value = None if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM') else mask_values['X_mask']
     selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     
@@ -82,7 +84,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     if model_type == 'Seq2SeqLSTM':
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
         scaler = MaskAwareScaler(x_mask_value=mask_values['X_mask'], scaler_type='standard')
-    elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN'):
+    elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for seq2vec model (no masking applied)")
         scaler = MaskAwareScaler(x_mask_value=None, scaler_type='standard')
     else:
@@ -178,6 +180,20 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
         classifier._effective_monitor = effective_monitor
         classifier._has_validation_data = has_validation_data
         logging.info(f"[BUILD_PIPELINE] Seq2VecCNN created for raw segments.")
+    elif model_type == 'Seq2VecMLPLSTM':
+        classifier = Seq2VecMLPLSTM(
+            callbacks=callbacks or [],
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+            raw_n_channels=n_channels,
+            raw_feature_dim=raw_feature_dim,
+        )
+        classifier._effective_monitor = effective_monitor
+        classifier._has_validation_data = has_validation_data
+        logging.info("[BUILD_PIPELINE] Seq2VecMLPLSTM created for raw+HCTSA segments.")
     else:
         # Default to dummy classifier
         logging.info(f"[BUILD_PIPELINE] Unknown model_type, using DummyClassifier")
