@@ -59,7 +59,7 @@ def load_hctsa_data(base_path: str, normalized: bool = True, verbose: bool = Tru
         raise ValueError(f"TS_DataMat contains {nan_count:,} NaN values. Data cleaning required before processing.")
     
     if verbose:
-        print(f"  ✓ No NaN values found in TS_DataMat")
+        print(f"  No NaN values found in TS_DataMat")
     
     return TS_DataMat, timeseries, operations, labels
 
