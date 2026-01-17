@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_seq2vec_cnn_raw",
+    "experiment_name": "Seq2VecCNN_raw_betaChs",
     "model_type": "Seq2VecCNN",
     "feature_data": {
       "source": "raw",
@@ -19,13 +19,9 @@
         0.3,
         0.8
       ],
-      "num_sweep_thresholds": 41,
+      "num_sweep_thresholds": 3,
       "metrics": [
-        "f1",
-        "accuracy",
-        "balanced_accuracy",
-        "precision",
-        "recall"
+        "f1"
       ]
     },
     "masking": {
@@ -54,7 +50,7 @@
           "PW_US68": "channel_4-LFP_R1-3"
         }
       },
-      "channels": "all"
+      "channels": null
     },
     "selection_metrics": {
       "refit_scoring_metric": "val_f1",
@@ -79,7 +75,7 @@
       0.7
     ]
   },
-  "seq2vec_cnn": {
+  "Seq2VecCNN": {
     "feature_params": {
       "scaler__scaler_type": [
         "standard"
@@ -87,27 +83,13 @@
     },
     "architecture_configs": [
       {
-        "classifier__conv_filters": [
-          64
-        ],
-        "classifier__kernel_size": [
-          5
-        ],
-        "classifier__conv_layers": [
-          4
-        ],
-        "classifier__conv_activation": [
-          "relu"
-        ],
-        "classifier__dense_units": [
-          128
-        ],
-        "classifier__dense_layers": [
-          2
-        ],
-        "classifier__dense_activation": [
-          "relu"
-        ]
+        "classifier__conv_filters": 64,
+        "classifier__kernel_size": 5,
+        "classifier__conv_layers": 4,
+        "classifier__conv_activation": "relu",
+        "classifier__dense_units": 128,
+        "classifier__dense_layers": 2,
+        "classifier__dense_activation": "relu"
       }
     ],
     "other_params": {
@@ -121,8 +103,7 @@
         "sigmoid"
       ],
       "classifier__optimizer": [
-        "adam",
-        "RMSprop"
+        "adam"
       ],
       "classifier__lr": [
         0.001,

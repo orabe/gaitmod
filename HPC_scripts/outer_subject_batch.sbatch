@@ -3,10 +3,10 @@
 # SLURM batch script for training on a subject subset.
 #
 # Usage:
-#   sbatch HPC_scripts/lstm_outer_subject_batch.sbatch <CONFIG_PATH> <SUBJECTS> [RUN_ID]
-#   sbatch --job-name=PW_EM59 HPC_scripts/lstm_outer_subject_batch.sbatch config.json PW_EM59 20250101_120000
+#   sbatch HPC_scripts/outer_subject_batch.sbatch <CONFIG_PATH> <SUBJECTS> [RUN_ID]
+#   sbatch --job-name=PW_EM59 HPC_scripts/outer_subject_batch.sbatch config.json PW_EM59 20250101_120000
 
-#SBATCH --job-name=lstm_subject
+#SBATCH --job-name=subject
 #SBATCH --partition=gpu-2d
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8

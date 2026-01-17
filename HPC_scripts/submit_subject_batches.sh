@@ -3,12 +3,11 @@
 # Helper script to submit multiple subject batches in sequence.
 
 set -euo pipefail
-CONFIG_NAME="hparams_seq2vec_lstm.json"
-# CONFIG_NAME="hparams_dummy.json"
+CONFIG_NAME="hparams_seq2vec_mlplstm.json"
 
 # SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BATCH_SCRIPT="HPC_scripts/lstm_outer_subject_batch.sbatch"
+BATCH_SCRIPT="HPC_scripts/outer_subject_batch.sbatch"
 HYPERPARAMS_CONFIG="gaitmod/configs/hparams_configs/$CONFIG_NAME"
 if [[ ! -f "$HYPERPARAMS_CONFIG" ]]; then
     echo "Hyperparameter config not found: $HYPERPARAMS_CONFIG" >&2
