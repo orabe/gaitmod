@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_dummy",
-    "model_type": "dummy",
+    "experiment_name": "Seq2VecCNN_raw_betaChs",
+    "model_type": "Seq2VecCNN",
     "feature_data": {
       "source": "raw",
       "segment_cache_dir": "data/raw_segments"
@@ -11,15 +11,15 @@
       "reduce_lr_factor": 0.5,
       "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
-      "monitor": "loss",
-      "patience": 5
+      "monitor": "val_f1_score",
+      "patience": 10
     },
     "decision_threshold_search": {
       "range": [
         0.3,
-        0.7
+        0.8
       ],
-      "num_sweep_thresholds": 21,
+      "num_sweep_thresholds": 3,
       "metrics": [
         "f1"
       ]
@@ -50,11 +50,11 @@
           "PW_US68": "channel_4-LFP_R1-3"
         }
       },
-      "channels": "all"
+      "channels": null
     },
     "selection_metrics": {
-      "refit_scoring_metric": "val_tuned_f1",
-      "selection_score_metric": "val_tuned_f1",
+      "refit_scoring_metric": "val_f1",
+      "selection_score_metric": "val_f1",
       "selection_score_aggregation": "median"
     }
   },
@@ -62,23 +62,64 @@
     "feature_selector__enabled": [
       false
     ],
+    "feature_selector__selection_method": [
+      "roc_auc"
+    ],
     "feature_selector__n_features": [
-      100
+      400
     ],
     "feature_selector__variance_threshold": [
-      0.1
-    ],
-    "feature_selector__selection_method": [
-      "mann_whitney"
+      0.01
     ],
     "feature_selector__correlation_threshold": [
-      0.5
+      0.7
     ]
   },
-  "dummy": {
-    "param_grid": {
-      "classifier__strategy": [
-        "stratified"
+  "Seq2VecCNN": {
+    "feature_params": {
+      "scaler__scaler_type": [
+        "standard"
+      ]
+    },
+    "architecture_configs": [
+      {
+        "classifier__conv_filters": 64,
+        "classifier__kernel_size": 5,
+        "classifier__conv_layers": 4,
+        "classifier__conv_activation": "relu",
+        "classifier__dense_units": 128,
+        "classifier__dense_layers": 2,
+        "classifier__dense_activation": "relu"
+      }
+    ],
+    "other_params": {
+      "classifier__dropout": [
+        0.5
+      ],
+      "classifier__output_units": [
+        1
+      ],
+      "classifier__output_activation": [
+        "sigmoid"
+      ],
+      "classifier__optimizer": [
+        "adam"
+      ],
+      "classifier__lr": [
+        0.001,
+        0.0001
+      ],
+      "classifier__patience": [
+        10
+      ],
+      "classifier__epochs": [
+        100
+      ],
+      "classifier__batch_size": [
+        16
+      ],
+      "classifier__threshold": [
+        0.5
       ]
     }
   }

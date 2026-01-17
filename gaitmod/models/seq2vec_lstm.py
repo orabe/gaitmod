@@ -8,11 +8,14 @@ from tensorflow.keras.metrics import Precision, Recall, AUC, BinaryAccuracy, Met
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 
+
 class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
     """
     Sequence-to-vector LSTM classifier that operates on raw, unpadded segments.
 
-    Each sample represents a single segment shaped as (timesteps, 1).
+    Each sample represents a single segment. Inputs are always reshaped to
+    (n_samples, n_features, n_channels) so channels are treated as separate
+    features per timestep.
     """
 
     def __init__(
@@ -31,6 +34,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         threshold=0.5,
         loss='binary_crossentropy',
         use_class_weights=True,
+        n_channels=1,
         callbacks=None,
         experiment_dir=None,
         outer_fold=None,
@@ -45,7 +49,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         self.dropout = dropout
         self.dense_units = dense_units
         self.dense_activation = dense_activation
-        
+
         # Training parameters
         self.optimizer = optimizer
         self.lr = lr
@@ -55,6 +59,7 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         self.threshold = threshold
         self.loss = loss
         self.use_class_weights = use_class_weights
+        self.n_channels = n_channels
         self.callbacks = callbacks if callbacks is not None else []
         self.experiment_dir = experiment_dir
         self.outer_fold = outer_fold
@@ -68,12 +73,28 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         self.input_shape = None
         self.history_ = []
 
+    def _ensure_3d(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        if X.ndim == 3:
+            return X
+        if X.ndim != 2:
+            raise ValueError("Seq2VecLSTM expects X to be 2D or 3D.")
+        n_channels = int(self.n_channels) if self.n_channels is not None else 1
+        if n_channels <= 0:
+            raise ValueError("Seq2VecLSTM requires n_channels >= 1.")
+        if X.shape[1] % n_channels != 0:
+            raise ValueError(
+                f"Seq2VecLSTM cannot reshape features of size {X.shape[1]} into {n_channels} channels."
+            )
+        n_features = X.shape[1] // n_channels
+        return X.reshape(X.shape[0], n_features, n_channels)
+
     def build_model(self, input_shape):
         """Build the LSTM model with the given input shape."""
         logging.info(f"\n[BUILD_MODEL] {'='*60}")
-        logging.info(f"[BUILD_MODEL] LSTM MODEL CONSTRUCTION")
+        logging.info("[BUILD_MODEL] LSTM MODEL CONSTRUCTION")
         logging.info(f"[BUILD_MODEL] {'='*60}")
-        
+
         model = Sequential()
         model.add(Input(shape=input_shape))
 
@@ -114,45 +135,39 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
             ],
         )
 
-        logging.debug(f"[BUILD_MODEL] Model summary:")
+        logging.debug("[BUILD_MODEL] Model summary:")
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             model.summary()
-        
+
         return model
 
     def fit(self, X, y, callbacks=None, validation_data=None, **kwargs):
+        X = self._ensure_3d(X)
         logging.info(f"[FIT] Training Seq2Vec LSTM: X={X.shape}, y={y.shape}")
-        
-        X = np.asarray(X, dtype=np.float32)
-        if X.ndim != 3:
-            raise ValueError("Seq2VecLSTM expects X to be 3D (samples, timesteps, features).")
-       
+
         y = np.asarray(y, dtype=np.float32)
         if y.ndim != 2:
             raise ValueError("Seq2VecLSTM expects y to be 2D (samples, output_steps=1).")
-        
+
         if X.shape[0] != y.shape[0]:
             raise ValueError(f"Mismatched sample counts: X has {X.shape[0]}, y has {y.shape[0]}.")
-        
-        self.input_shape = X.shape[1:]
-        
-        logging.debug(f"[FIT] Final shapes: X={X.shape}, y={y.shape}, input_shape={self.input_shape}")        
 
-        # Setup callbacks - use provided callbacks or create simple defaults
+        self.input_shape = X.shape[1:]
+
+        logging.debug(f"[FIT] Final shapes: X={X.shape}, y={y.shape}, input_shape={self.input_shape}")
+
         if callbacks is not None:
             final_callbacks = callbacks.copy()
             final_callbacks.extend(self.callbacks)
         else:
             final_callbacks = self.callbacks.copy()
-            
-        # Build model with determined input shape
+
         strategy = tf.distribute.MirroredStrategy()
         with strategy.scope():
             self.model = self.build_model(self.input_shape)
 
         self.classes_ = np.unique(y)
-        
-        # Compute class weights if enabled
+
         class_weight = None
         if self.use_class_weights:
             classes = np.unique(y)
@@ -167,9 +182,8 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
             else:
                 logging.info("[FIT] Insufficient class diversity for class weights; proceeding without them.")
         else:
-            logging.info(f"[FIT] Not using class weights.")
+            logging.info("[FIT] Not using class weights.")
 
-        # Prepare fit arguments
         fit_kwargs = {
             'epochs': self.epochs,
             'batch_size': self.batch_size,
@@ -179,28 +193,26 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         if class_weight:
             fit_kwargs['class_weight'] = class_weight
 
-        # Check for validation data (either passed directly or stored as attribute)
         validation_data_to_use = validation_data or getattr(self, '_validation_data', None)
-        
+
         if validation_data_to_use is not None:
             X_val, y_val = validation_data_to_use
-            X_val = np.asarray(X_val, dtype=np.float32)
+            X_val = self._ensure_3d(X_val)
             y_val = np.asarray(y_val, dtype=np.float32)
-            
-            if X_val.ndim != 3:
-                raise ValueError("Validation X must be 3D for Seq2VecLSTM.")
+
             if y_val.ndim != 2:
                 raise ValueError("Validation y must be 2D (samples, output_steps=1).")
             if X_val.shape[0] != y_val.shape[0]:
-                raise ValueError(f"Mismatched validation sample counts: X_val has {X_val.shape[0]}, y_val has {y_val.shape[0]}.")
-            
+                raise ValueError(
+                    f"Mismatched validation sample counts: X_val has {X_val.shape[0]}, y_val has {y_val.shape[0]}."
+                )
+
             fit_kwargs['validation_data'] = (X_val, y_val)
             logging.info(f"[LSTM FIT] Using validation data: X_val={X_val.shape}, y_val={y_val.shape}")
-        
+
         if validation_data_to_use is None:
-            logging.info(f"[LSTM FIT] No validation data provided - training only")                    
-        
-        # Try GPU first, fall back to CPU if needed
+            logging.info("[LSTM FIT] No validation data provided - training only")
+
         available_gpus = tf.config.list_physical_devices('GPU')
         using_gpu = bool(available_gpus)
         logging.info(f"[FIT] Training device: {'GPU' if using_gpu else 'CPU'}")
@@ -209,29 +221,33 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
             try:
                 with tf.device('/device:GPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[LSTM FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}")
+                    logging.info(
+                        f"[LSTM FIT] Training completed successfully on GPU. Epochs trained: {len(history.get('loss', []))}"
+                    )
             except Exception as gpu_error:
-                logging.warning(f"[FIT] GPU training failed ({gpu_error}); falling back to CPU. Falling back to CPU training")
+                logging.warning(
+                    f"[FIT] GPU training failed ({gpu_error}); falling back to CPU. Falling back to CPU training"
+                )
                 with tf.device('/CPU:0'):
                     history = self.model.fit(X, y, **fit_kwargs).history
-                    logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
+                    logging.info(
+                        f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}"
+                    )
         else:
             with tf.device('/CPU:0'):
                 history = self.model.fit(X, y, **fit_kwargs).history
-                logging.info(f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}")
-        
+                logging.info(
+                    f"[LSTM FIT] Training completed successfully on CPU. Epochs trained: {len(history.get('loss', []))}"
+                )
+
         self.history_.append(history)
-        
+
         return self
 
     def predict_proba(self, X):
         if self.model is None:
             raise ValueError("Model has not been fitted yet.")
-        X_prepared = np.asarray(X, dtype=np.float32)
-        if X_prepared.ndim == 2:
-            X_prepared = X_prepared[:, :, np.newaxis]
-        elif X_prepared.ndim != 3:
-            raise ValueError("Seq2VecLSTM expects X to be 3D for prediction.")
+        X_prepared = self._ensure_3d(X)
         proba_pos = self.model.predict(X_prepared, verbose=0).reshape(-1)
         proba_pos = np.clip(proba_pos, 1e-7, 1 - 1e-7)
         return np.column_stack([1 - proba_pos, proba_pos])
@@ -246,8 +262,10 @@ class Seq2VecLSTM(BaseEstimator, ClassifierMixin):
         else:
             logging.info("Seq2Vec LSTM model not built yet.")
 
+
 class BinaryBalancedAccuracy(Metric):
     """Non-masked balanced accuracy metric for binary classification."""
+
     def __init__(self, name='balanced_accuracy', **kwargs):
         super().__init__(name=name, **kwargs)
         self.tp = self.add_weight(name='tp', initializer='zeros')

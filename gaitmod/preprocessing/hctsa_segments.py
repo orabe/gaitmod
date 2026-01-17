@@ -315,6 +315,113 @@ class HCTSASegmentCache:
         labels = combined_df['label'].to_numpy(dtype=np.int64)
         return TS_DataMat, timeseries_df, operations_df, labels
 
+    def load_subject_channels_data(
+        self,
+        subject_channels_map: Dict[str, Sequence[str]],
+        combine_mode: str = "concat",
+    ) -> Tuple[np.ndarray, pd.DataFrame, pd.DataFrame, np.ndarray]:
+        """
+        Assemble data per subject with multiple channels concatenated or stacked.
+
+        Parameters
+        ----------
+        subject_channels_map : Dict[str, Sequence[str]]
+            Mapping of subject IDs to lists of canonical channel labels.
+        combine_mode : str
+            "concat" (default) concatenates channels along feature axis so output
+            is (n_samples, n_features * n_channels).
+            "channel_dim" stacks into a new channel dimension so output is
+            (n_samples, n_features, n_channels).
+
+        Returns
+        -------
+        Tuple containing:
+            - TS_DataMat: stacked feature matrix
+            - timeseries_df: metadata DataFrame for each segment
+            - operations_df: operations metadata
+            - labels: numpy array of binary labels
+        """
+        mode = (combine_mode or "concat").strip().lower()
+        if mode not in {"concat", "channel_dim"}:
+            raise ValueError(f"Unsupported combine_mode '{combine_mode}'. Use 'concat' or 'channel_dim'.")
+
+        index_df = self.load_index()
+        if index_df.empty:
+            raise ValueError("Segment cache index is empty.")
+
+        all_channel_lists = []
+        for channels in subject_channels_map.values():
+            all_channel_lists.extend(list(channels))
+        unique_channels = list(dict.fromkeys(all_channel_lists))
+        if not unique_channels:
+            raise ValueError("No channels provided for multi-channel loading.")
+
+        subject_frames = []
+        subject_features = []
+        subject_labels = []
+
+        for subject, channels in subject_channels_map.items():
+            channel_features = []
+            channel_subset = None
+            channel_labels = None
+
+            for channel in channels:
+                subset = index_df[
+                    (index_df['subject'] == subject) &
+                    (index_df['channel_canonical'] == channel)
+                ]
+                if subset.empty:
+                    raise ValueError(f"No cached data for subject {subject} using channel {channel}")
+                subset = subset.sort_values(['trial', 'epoch', 'flat_index']).reset_index(drop=True)
+                features = [self.load_segment_features(path) for path in subset['segment_path']]
+                feature_mat = np.vstack(features)
+
+                if channel_subset is None:
+                    channel_subset = subset
+                    channel_labels = subset['label'].to_numpy(dtype=np.int64)
+                else:
+                    if len(subset) != len(channel_subset):
+                        raise ValueError(
+                            f"Channel {channel} for subject {subject} has {len(subset)} segments; "
+                            f"expected {len(channel_subset)}."
+                        )
+                    other_labels = subset['label'].to_numpy(dtype=np.int64)
+                    if not np.array_equal(other_labels, channel_labels):
+                        raise ValueError(
+                            f"Label mismatch across channels for subject {subject}."
+                        )
+
+                channel_features.append(feature_mat)
+
+            if channel_subset is None:
+                raise ValueError(f"No channels resolved for subject {subject}.")
+
+            if mode == "concat":
+                combined_features = np.concatenate(channel_features, axis=1)
+            else:
+                combined_features = np.stack(channel_features, axis=-1)
+
+            subject_frames.append(channel_subset)
+            subject_features.append(combined_features)
+            subject_labels.append(channel_labels)
+
+        combined_df = pd.concat(subject_frames, ignore_index=True)
+        if mode == "concat":
+            TS_DataMat = np.vstack(subject_features)
+        else:
+            TS_DataMat = np.concatenate(subject_features, axis=0)
+        labels = np.concatenate(subject_labels, axis=0)
+
+        timeseries_df = pd.DataFrame({
+            'ID': combined_df['timeseries_id'],
+            'Name': combined_df['name'],
+            'Keywords': combined_df['keywords'],
+            'Length': combined_df['length'],
+            'Group': combined_df['group'],
+        })
+        operations_df = self.load_operations()
+        return TS_DataMat, timeseries_df, operations_df, labels
+
 
 def export_channels_to_segment_cache(
     hctsa_root: Union[str, Path],

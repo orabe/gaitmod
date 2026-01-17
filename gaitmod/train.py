@@ -30,10 +30,11 @@ os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
 os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 
 
-from gaitmod.models import seq2seq_lstm as lstm_classifier_module
-from gaitmod.models.seq2seq_lstm import Seq2SeqLSTM
-from gaitmod.models.seq2vec_lstm import Seq2VecLSTM
-from gaitmod.models.seq2vec_mlp import Seq2VecMLP
+from gaitmod.models import Seq2SeqLSTM
+from gaitmod.models import Seq2VecLSTM
+from gaitmod.models import Seq2VecMLP
+from gaitmod.models import Seq2VecCNN
+from gaitmod.models import Seq2VecMLPLSTM
 from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 from gaitmod.feat_preproc import filter_features, parse_epoch_metadata, pad_trials, group_epochs_by_trial
 
@@ -140,7 +141,7 @@ class ConsoleVerbosityFilter(logging.Filter):
 HYPERPARAM_CONFIG_PATH: Optional[Path] = None
 GLOBAL_HPARAM_CONFIG: Dict[str, Any] = {}
 GLOBAL_SETTINGS: Dict[str, Any] = {}
-EXPERIMENT_NAME = 'nested_cv'
+EXPERIMENT_NAME: Optional[str] = None
 CALLBACK_SETTINGS: Dict[str, Any] = {}
 THRESHOLD_SETTINGS: Dict[str, Any] = {}
 MASK_SETTINGS: Dict[str, Any] = {}
@@ -150,44 +151,45 @@ CHANNEL_SELECTION_METHODS: Dict[str, Any] = {}
 # Track numbered hyperparameter directories per (outer_fold_dir, param_str)
 HYPERPARAM_RUN_DIRECTORY_MAP: Dict[Tuple[str, str], str] = {}
 HYPERPARAM_RUN_COUNTERS: Dict[str, int] = {}
-DEFAULT_CHANNEL_SELECTION_METHOD = 'beta'
-SELECTION_SETTINGS: Dict[str, Any] = {}
-DEFAULT_REFIT_SCORING_METRIC = 'f1'
-DEFAULT_SELECTION_SCORE_METRIC = 'val_tuned_f1'
-DEFAULT_SELECTION_SCORE_AGGREGATION = 'median'
-DEFAULT_FEATURE_PARAMS: Dict[str, Any] = {}
+DEFAULT_CHANNEL_SELECTION_METHOD: Optional[str] = None
+SELECTION_SETTINGS: Optional[Dict[str, Any]] = None
+DEFAULT_REFIT_SCORING_METRIC: Optional[str] = None
+DEFAULT_SELECTION_SCORE_METRIC: Optional[str] = None
+DEFAULT_SELECTION_SCORE_AGGREGATION: Optional[str] = None
+DEFAULT_FEATURE_PARAMS: Optional[Dict[str, Any]] = None
 
 SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
-    'seq2seq_lstm',
-    'seq2vec_lstm',
-    'seq2vec_mlp',
+    'Seq2SeqLSTM',
+    'Seq2VecLSTM',
+    'Seq2VecMLP',
+    'Seq2VecCNN',
+    'Seq2VecMLPLSTM',
     'rf',
     'svm',
     'xgb',
     'logreg',
+    'lda',
+    'knn',
     'dummy',
 )
 DEFAULT_MODEL_TYPE: Optional[str] = None
 
-DEFAULT_THRESHOLD_RANGE: Tuple[float, float] = (0.1, 0.9)
-DEFAULT_THRESHOLD_STEPS: int = 81
-DEFAULT_THRESHOLD_METRICS: List[str] = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
-THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+SEQ2SEQ_THRESHOLD_RANGE: Optional[Tuple[float, float]] = None
+SEQ2SEQ_THRESHOLD_STEPS: Optional[int] = None
+SEQ2SEQ_THRESHOLD_METRICS: Optional[List[str]] = None
+SEQ2VEC_THRESHOLD_SETTINGS: Dict[str, Tuple[Tuple[float, float], int, List[str]]] = {}
+THRESHOLD_BASE_METRICS: set = set()
+SEQ2SEQ_MASK_VALUES: Dict[str, Any] = {}
 
-DEFAULT_PROGRESS_FREQUENCY = 1
-DEFAULT_REDUCE_LR_FACTOR = 0.5
-DEFAULT_REDUCE_LR_MIN_LR = 1e-7
-DEFAULT_REDUCE_LR_PATIENCE_RATIO = 0.5
-DEFAULT_CALLBACK_MONITOR = 'loss'
-DEFAULT_CALLBACK_PATIENCE = 10
-
-DEFAULT_GLOBAL_X_MASK_VALUE = 1e6
-DEFAULT_Y_MASK_VALUE = -1
+DEFAULT_PROGRESS_FREQUENCY: Optional[int] = None
+DEFAULT_REDUCE_LR_FACTOR: Optional[float] = None
+DEFAULT_REDUCE_LR_MIN_LR: Optional[float] = None
+DEFAULT_REDUCE_LR_PATIENCE_RATIO: Optional[float] = None
+DEFAULT_CALLBACK_MONITOR: Optional[str] = None
+DEFAULT_CALLBACK_PATIENCE: Optional[int] = None
 
 FEATURE_DATA_SETTINGS: Dict[str, Any] = {}
-DEFAULT_FEATURE_SOURCE = 'hctsa'
-
-DEFAULT_HPARAMS_CONFIG = Path("gaitmod/configs/hparams_configs/hparams_test.json")
+DEFAULT_FEATURE_SOURCE: Optional[str] = None
 
 
 @lru_cache(maxsize=1)
@@ -207,10 +209,11 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     global HYPERPARAM_CONFIG_PATH, GLOBAL_HPARAM_CONFIG, GLOBAL_SETTINGS
     global EXPERIMENT_NAME, CALLBACK_SETTINGS, THRESHOLD_SETTINGS, MASK_SETTINGS
     global CHANNEL_SELECTION_SETTINGS, CHANNEL_SELECTION_METHODS, DEFAULT_CHANNEL_SELECTION_METHOD
-    global DEFAULT_THRESHOLD_RANGE, DEFAULT_THRESHOLD_STEPS, DEFAULT_THRESHOLD_METRICS, THRESHOLD_BASE_METRICS
+    global SEQ2SEQ_THRESHOLD_RANGE, SEQ2SEQ_THRESHOLD_STEPS, SEQ2SEQ_THRESHOLD_METRICS, THRESHOLD_BASE_METRICS
+    global SEQ2VEC_THRESHOLD_SETTINGS
     global DEFAULT_PROGRESS_FREQUENCY, DEFAULT_REDUCE_LR_FACTOR, DEFAULT_REDUCE_LR_MIN_LR
     global DEFAULT_REDUCE_LR_PATIENCE_RATIO, DEFAULT_CALLBACK_MONITOR, DEFAULT_CALLBACK_PATIENCE
-    global DEFAULT_GLOBAL_X_MASK_VALUE, DEFAULT_Y_MASK_VALUE
+    global SEQ2SEQ_MASK_VALUES
     global SELECTION_SETTINGS, DEFAULT_REFIT_SCORING_METRIC
     global DEFAULT_SELECTION_SCORE_METRIC, DEFAULT_SELECTION_SCORE_AGGREGATION
     global FEATURE_DATA_SETTINGS, DEFAULT_FEATURE_SOURCE
@@ -220,58 +223,92 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     resolved_path = Path(config_path).expanduser().resolve()
     config = load_hyperparameter_config(str(resolved_path))
 
+    def _require_key(container: Dict[str, Any], key: str, context: str) -> Any:
+        if key not in container:
+            raise ValueError(f"Hyperparameter config missing required key '{context}.{key}'")
+        return container[key]
+
+    def _require_dict(container: Dict[str, Any], key: str, context: str) -> Dict[str, Any]:
+        value = _require_key(container, key, context)
+        if not isinstance(value, dict):
+            raise ValueError(f"Hyperparameter config key '{context}.{key}' must be a dict")
+        return value
+
     HYPERPARAM_CONFIG_PATH = resolved_path
     GLOBAL_HPARAM_CONFIG = config
-    GLOBAL_SETTINGS = GLOBAL_HPARAM_CONFIG.get('global_settings', {})
-    EXPERIMENT_NAME = GLOBAL_SETTINGS.get('experiment_name', 'nested_cv')
+    GLOBAL_SETTINGS = _require_dict(GLOBAL_HPARAM_CONFIG, 'global_settings', 'root')
+    EXPERIMENT_NAME = _require_key(GLOBAL_SETTINGS, 'experiment_name', 'global_settings')
 
-    CALLBACK_SETTINGS = GLOBAL_SETTINGS.get('callbacks', {})
-    THRESHOLD_SETTINGS = GLOBAL_SETTINGS.get('decision_threshold_search', {})
+    CALLBACK_SETTINGS = _require_dict(GLOBAL_SETTINGS, 'callbacks', 'global_settings')
+    THRESHOLD_SETTINGS = _require_dict(GLOBAL_SETTINGS, 'decision_threshold_search', 'global_settings')
     MASK_SETTINGS = GLOBAL_SETTINGS.get('masking', {})
-    CHANNEL_SELECTION_SETTINGS = GLOBAL_SETTINGS.get('channel_selection', {})
-    CHANNEL_SELECTION_METHODS = CHANNEL_SELECTION_SETTINGS.get('methods', {})
-    DEFAULT_CHANNEL_SELECTION_METHOD = CHANNEL_SELECTION_SETTINGS.get('default_method', 'beta')
-    SELECTION_SETTINGS = GLOBAL_SETTINGS.get('selection_metrics', {})
+    if MASK_SETTINGS is None:
+        MASK_SETTINGS = {}
+    if not isinstance(MASK_SETTINGS, dict):
+        raise ValueError("Hyperparameter config key 'global_settings.masking' must be a dict.")
+    CHANNEL_SELECTION_SETTINGS = _require_dict(GLOBAL_SETTINGS, 'channel_selection', 'global_settings')
+    CHANNEL_SELECTION_METHODS = _require_dict(CHANNEL_SELECTION_SETTINGS, 'methods', 'global_settings.channel_selection')
+    DEFAULT_CHANNEL_SELECTION_METHOD = _require_key(CHANNEL_SELECTION_SETTINGS, 'default_method', 'global_settings.channel_selection')
+    _require_key(CHANNEL_SELECTION_SETTINGS, 'channels', 'global_settings.channel_selection')
+    SELECTION_SETTINGS = _require_dict(GLOBAL_SETTINGS, 'selection_metrics', 'global_settings')
 
-    feature_data_cfg = GLOBAL_SETTINGS.get('feature_data')
-    if isinstance(feature_data_cfg, dict):
-        feature_data = feature_data_cfg.copy()
+    FEATURE_DATA_SETTINGS = _require_dict(GLOBAL_SETTINGS, 'feature_data', 'global_settings')
+    _require_key(FEATURE_DATA_SETTINGS, 'source', 'global_settings.feature_data')
+    DEFAULT_FEATURE_SOURCE = str(FEATURE_DATA_SETTINGS['source']).strip().lower()
+    if DEFAULT_FEATURE_SOURCE == 'mlp_lstm':
+        _require_key(FEATURE_DATA_SETTINGS, 'raw_segment_cache_dir', 'global_settings.feature_data')
+        _require_key(FEATURE_DATA_SETTINGS, 'hctsa_segment_cache_dir', 'global_settings.feature_data')
     else:
-        feature_data = {}
-    legacy_feature_source = GLOBAL_SETTINGS.get('feature_source')
-    if legacy_feature_source and 'source' not in feature_data:
-        feature_data['source'] = legacy_feature_source
-    legacy_cache_dir = GLOBAL_SETTINGS.get('feature_cache_dir')
-    if legacy_cache_dir and 'segment_cache_dir' not in feature_data:
-        feature_data['segment_cache_dir'] = legacy_cache_dir
-    FEATURE_DATA_SETTINGS = feature_data
-    DEFAULT_FEATURE_SOURCE = str(FEATURE_DATA_SETTINGS.get('source', 'hctsa')).strip().lower()
+        _require_key(FEATURE_DATA_SETTINGS, 'segment_cache_dir', 'global_settings.feature_data')
 
-    DEFAULT_THRESHOLD_RANGE = tuple(THRESHOLD_SETTINGS.get('range', (0.1, 0.9)))
-    DEFAULT_THRESHOLD_STEPS = int(THRESHOLD_SETTINGS.get('num_sweep_thresholds', 81))
-    DEFAULT_THRESHOLD_METRICS = THRESHOLD_SETTINGS.get('metrics', [
-        'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy'
-    ]) or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
-    THRESHOLD_BASE_METRICS = set(DEFAULT_THRESHOLD_METRICS)
+    if not isinstance(THRESHOLD_SETTINGS, dict):
+        raise ValueError("decision_threshold_search settings must be a dict.")
+    if 'range' not in THRESHOLD_SETTINGS:
+        raise ValueError("decision_threshold_search.range is required.")
+    threshold_range = tuple(THRESHOLD_SETTINGS['range'])
+    if len(threshold_range) != 2:
+        raise ValueError("decision_threshold_search.range must be a 2-item tuple/list.")
+    if 'num_sweep_thresholds' not in THRESHOLD_SETTINGS:
+        raise ValueError("decision_threshold_search.num_sweep_thresholds is required.")
+    n_thresholds = int(THRESHOLD_SETTINGS['num_sweep_thresholds'])
+    if n_thresholds <= 0:
+        raise ValueError("decision_threshold_search.num_sweep_thresholds must be > 0.")
+    if 'metrics' not in THRESHOLD_SETTINGS:
+        raise ValueError("decision_threshold_search.metrics is required.")
+    metrics = THRESHOLD_SETTINGS['metrics']
+    if not isinstance(metrics, list) or not metrics:
+        raise ValueError("decision_threshold_search.metrics must be a non-empty list.")
 
-    DEFAULT_PROGRESS_FREQUENCY = CALLBACK_SETTINGS.get('progress_frequency', 1)
-    DEFAULT_REDUCE_LR_FACTOR = CALLBACK_SETTINGS.get('reduce_lr_factor', 0.5)
-    DEFAULT_REDUCE_LR_MIN_LR = CALLBACK_SETTINGS.get('reduce_lr_min_lr', 1e-7)
-    DEFAULT_REDUCE_LR_PATIENCE_RATIO = CALLBACK_SETTINGS.get('reduce_lr_patience_ratio', 0.5)
-    DEFAULT_CALLBACK_MONITOR = CALLBACK_SETTINGS.get('monitor', 'loss')
-    DEFAULT_CALLBACK_PATIENCE = CALLBACK_SETTINGS.get('patience', 10)
+    SEQ2SEQ_THRESHOLD_RANGE = threshold_range
+    SEQ2SEQ_THRESHOLD_STEPS = n_thresholds
+    SEQ2SEQ_THRESHOLD_METRICS = metrics
+    SEQ2VEC_THRESHOLD_SETTINGS = {
+        'Seq2VecLSTM': (threshold_range, n_thresholds, metrics),
+        'Seq2VecCNN': (threshold_range, n_thresholds, metrics),
+        'Seq2VecMLP': (threshold_range, n_thresholds, metrics),
+        'Seq2VecMLPLSTM': (threshold_range, n_thresholds, metrics),
+    }
+    THRESHOLD_BASE_METRICS = set(SEQ2SEQ_THRESHOLD_METRICS)
 
-    DEFAULT_GLOBAL_X_MASK_VALUE = MASK_SETTINGS.get('global_x_mask_value', 1e6)
-    DEFAULT_Y_MASK_VALUE = MASK_SETTINGS.get('y_mask_value', -1)
-    DEFAULT_REFIT_SCORING_METRIC = SELECTION_SETTINGS.get('refit_scoring_metric', 'f1')
-    DEFAULT_SELECTION_SCORE_METRIC = SELECTION_SETTINGS.get('selection_score_metric', 'val_tuned_f1')
-    DEFAULT_SELECTION_SCORE_AGGREGATION = SELECTION_SETTINGS.get('selection_score_aggregation', 'median')
+    DEFAULT_PROGRESS_FREQUENCY = _require_key(CALLBACK_SETTINGS, 'progress_frequency', 'global_settings.callbacks')
+    DEFAULT_REDUCE_LR_FACTOR = _require_key(CALLBACK_SETTINGS, 'reduce_lr_factor', 'global_settings.callbacks')
+    DEFAULT_REDUCE_LR_MIN_LR = _require_key(CALLBACK_SETTINGS, 'reduce_lr_min_lr', 'global_settings.callbacks')
+    DEFAULT_REDUCE_LR_PATIENCE_RATIO = _require_key(CALLBACK_SETTINGS, 'reduce_lr_patience_ratio', 'global_settings.callbacks')
+    DEFAULT_CALLBACK_MONITOR = _require_key(CALLBACK_SETTINGS, 'monitor', 'global_settings.callbacks')
+    DEFAULT_CALLBACK_PATIENCE = _require_key(CALLBACK_SETTINGS, 'patience', 'global_settings.callbacks')
+
+    SEQ2SEQ_MASK_VALUES = {}
+    DEFAULT_REFIT_SCORING_METRIC = _require_key(SELECTION_SETTINGS, 'refit_scoring_metric', 'global_settings.selection_metrics')
+    DEFAULT_SELECTION_SCORE_METRIC = _require_key(SELECTION_SETTINGS, 'selection_score_metric', 'global_settings.selection_metrics')
+    DEFAULT_SELECTION_SCORE_AGGREGATION = _require_key(SELECTION_SETTINGS, 'selection_score_aggregation', 'global_settings.selection_metrics')
     feature_params_cfg = GLOBAL_HPARAM_CONFIG.get('feature_params')
-    DEFAULT_FEATURE_PARAMS = copy.deepcopy(feature_params_cfg) if isinstance(feature_params_cfg, dict) else {}
-    configured_model_type_raw = GLOBAL_SETTINGS.get('model_type')
+    if not isinstance(feature_params_cfg, dict):
+        raise ValueError("Hyperparameter config missing root-level 'feature_params' dict.")
+    DEFAULT_FEATURE_PARAMS = copy.deepcopy(feature_params_cfg)
+    configured_model_type_raw = _require_key(GLOBAL_SETTINGS, 'model_type', 'global_settings')
     if configured_model_type_raw is None:
         raise ValueError("Hyperparameter config must specify 'global_settings.model_type'.")
-    configured_model_type = str(configured_model_type_raw).strip().lower()
+    configured_model_type = str(configured_model_type_raw).strip()
     if configured_model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(
             f"Unsupported model_type '{configured_model_type_raw}' in config. "
@@ -279,22 +316,22 @@ def configure_hyperparameter_settings(config_path: str) -> None:
         )
     DEFAULT_MODEL_TYPE = configured_model_type
 
-    # Keep the standalone LSTM classifier module synchronized with the config-driven defaults
-    lstm_classifier_module.configure_lstm_defaults(
-        threshold_range=DEFAULT_THRESHOLD_RANGE,
-        threshold_steps=DEFAULT_THRESHOLD_STEPS,
-        threshold_metrics=list(DEFAULT_THRESHOLD_METRICS) if DEFAULT_THRESHOLD_METRICS else None,
-        y_mask_value=DEFAULT_Y_MASK_VALUE,
-    )
-
 
 def _merge_feature_params(model_specific: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Combine global feature params with model-specific overrides."""
-    merged: Dict[str, Any] = copy.deepcopy(DEFAULT_FEATURE_PARAMS) if DEFAULT_FEATURE_PARAMS else {}
+    if DEFAULT_FEATURE_PARAMS is None:
+        raise ValueError("Feature params not configured. Check root-level 'feature_params'.")
+    merged: Dict[str, Any] = copy.deepcopy(DEFAULT_FEATURE_PARAMS)
     if model_specific:
         for key, value in model_specific.items():
             merged[key] = value
     return merged
+
+
+def _get_seq2vec_threshold_settings(model_type: str) -> Tuple[Tuple[float, float], int, List[str]]:
+    if model_type not in SEQ2VEC_THRESHOLD_SETTINGS:
+        raise ValueError(f"No seq2vec threshold settings configured for model_type='{model_type}'")
+    return SEQ2VEC_THRESHOLD_SETTINGS[model_type]
 
 
 def _fit_pipeline_with_validation(
@@ -302,10 +339,14 @@ def _fit_pipeline_with_validation(
     X_train,
     y_train,
     validation_data: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    n_channels: Optional[int] = None,
 ):
     """
     Manually fit a pipeline so that the final estimator (e.g., Seq2VecLSTM)
     receives preprocessed validation data for Keras metrics logging.
+
+    For seq2vec LSTM/CNN models, inputs are reshaped to
+    (n_samples, n_features, n_channels) before fitting.
     """
     preprocessing_steps = pipeline.steps[:-1]
     classifier = pipeline.steps[-1][1]
@@ -327,7 +368,7 @@ def _fit_pipeline_with_validation(
 
     X_train_processed = np.asarray(X_train_processed, dtype=np.float32)
     if X_train_processed.ndim == 2:
-        X_train_processed = X_train_processed[:, :, np.newaxis]
+        X_train_processed = _reshape_seq2vec_channel_dim(X_train_processed, n_channels)
     elif X_train_processed.ndim != 3:
         raise ValueError(
             f"Expected training data to be 3D after preprocessing, got shape {X_train_processed.shape}"
@@ -343,7 +384,7 @@ def _fit_pipeline_with_validation(
     if X_val_processed is not None and y_val_processed is not None:
         X_val_processed = np.asarray(X_val_processed, dtype=np.float32)
         if X_val_processed.ndim == 2:
-            X_val_processed = X_val_processed[:, :, np.newaxis]
+            X_val_processed = _reshape_seq2vec_channel_dim(X_val_processed, n_channels)
         elif X_val_processed.ndim != 3:
             raise ValueError(
                 f"Expected validation data to be 3D after preprocessing, got shape {X_val_processed.shape}"
@@ -363,6 +404,11 @@ def _fit_pipeline_with_validation(
 def resolve_feature_cache_directory() -> str:
     """Determine which segment cache directory to load based on the config."""
     feature_source = DEFAULT_FEATURE_SOURCE.strip().lower()
+    if feature_source == 'mlp_lstm':
+        raise ValueError(
+            "feature_data.source='mlp_lstm' requires branch-specific cache directories. "
+            "Use resolve_raw_hctsa_cache_directories()."
+        )
     configured_dir = FEATURE_DATA_SETTINGS.get('segment_cache_dir')
     if configured_dir:
         return str(Path(configured_dir).expanduser())
@@ -371,9 +417,133 @@ def resolve_feature_cache_directory() -> str:
         f"Received source '{feature_source}' without an explicit directory."
     )
 
-# ===================================================================
-# TensorBoard Hyperparameter Visualization
-# ===================================================================
+
+def resolve_raw_hctsa_cache_directories() -> Tuple[str, str]:
+    """Return raw/hctsa segment cache directories for mlp_lstm runs."""
+    feature_source = DEFAULT_FEATURE_SOURCE.strip().lower()
+    if feature_source != 'mlp_lstm':
+        raise ValueError(
+            "resolve_raw_hctsa_cache_directories only applies to "
+            "feature_data.source='mlp_lstm'."
+        )
+    raw_dir = FEATURE_DATA_SETTINGS.get('raw_segment_cache_dir')
+    hctsa_dir = FEATURE_DATA_SETTINGS.get('hctsa_segment_cache_dir')
+    if not raw_dir or not hctsa_dir:
+        raise ValueError(
+            "feature_data must define raw_segment_cache_dir and "
+            "hctsa_segment_cache_dir for mlp_lstm."
+        )
+    return str(Path(raw_dir).expanduser()), str(Path(hctsa_dir).expanduser())
+
+
+def resolve_raw_hctsa_sources() -> Tuple[str, str]:
+    """Return configured raw/hctsa feature sources for mlp_lstm runs."""
+    raw_source = str(FEATURE_DATA_SETTINGS.get('raw_source', 'raw')).strip().lower()
+    hctsa_source = str(FEATURE_DATA_SETTINGS.get('hctsa_source', 'hctsa')).strip().lower()
+    return raw_source, hctsa_source
+
+
+def align_raw_hctsa_segments(
+    raw_mat: np.ndarray,
+    raw_timeseries: pd.DataFrame,
+    raw_labels: np.ndarray,
+    hctsa_mat: np.ndarray,
+    hctsa_timeseries: pd.DataFrame,
+    hctsa_labels: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame, np.ndarray]:
+    """Align raw and hctsa segment matrices using timeseries IDs."""
+    raw_ids = raw_timeseries['ID'].to_numpy()
+    hctsa_ids = hctsa_timeseries['ID'].to_numpy()
+    if np.array_equal(raw_ids, hctsa_ids):
+        if not np.array_equal(raw_labels, hctsa_labels):
+            mismatch = np.where(raw_labels != hctsa_labels)[0]
+            sample = mismatch[:5]
+            details = ", ".join(
+                f"id={raw_ids[idx]} raw={raw_labels[idx]} hctsa={hctsa_labels[idx]}"
+                for idx in sample
+            )
+            logging.error(
+                "raw/hctsa label mismatch at %d segments. Examples: %s",
+                len(mismatch),
+                details,
+            )
+            raise ValueError("raw/hctsa labels do not match for aligned segments.")
+        return raw_mat, hctsa_mat, raw_timeseries, raw_labels
+
+    raw_index = {int(idx): i for i, idx in enumerate(raw_ids)}
+    hctsa_index = {int(idx): i for i, idx in enumerate(hctsa_ids)}
+    common_ids = [idx for idx in raw_ids if int(idx) in hctsa_index]
+    if len(common_ids) != len(raw_ids) or len(common_ids) != len(hctsa_ids):
+        missing_raw = [int(idx) for idx in hctsa_ids if int(idx) not in raw_index][:5]
+        missing_hctsa = [int(idx) for idx in raw_ids if int(idx) not in hctsa_index][:5]
+        logging.error(
+            "raw/hctsa segment ID mismatch. Missing in raw (examples): %s. Missing in hctsa (examples): %s.",
+            missing_raw,
+            missing_hctsa,
+        )
+        raise ValueError("raw/hctsa segment IDs do not align between caches.")
+
+    raw_order = [raw_index[int(idx)] for idx in common_ids]
+    hctsa_order = [hctsa_index[int(idx)] for idx in common_ids]
+
+    raw_mat = raw_mat[raw_order]
+    hctsa_mat = hctsa_mat[hctsa_order]
+    raw_labels = raw_labels[raw_order]
+    hctsa_labels = hctsa_labels[hctsa_order]
+    aligned_timeseries = raw_timeseries.iloc[raw_order].reset_index(drop=True)
+
+    if not np.array_equal(raw_labels, hctsa_labels):
+        mismatch = np.where(raw_labels != hctsa_labels)[0]
+        sample = mismatch[:5]
+        details = ", ".join(
+            f"id={aligned_timeseries['ID'].iloc[idx]} raw={raw_labels[idx]} hctsa={hctsa_labels[idx]}"
+            for idx in sample
+        )
+        logging.error(
+            "raw/hctsa label mismatch after alignment at %d segments. Examples: %s",
+            len(mismatch),
+            details,
+        )
+        raise ValueError("raw/hctsa labels do not match after alignment.")
+
+    return raw_mat, hctsa_mat, aligned_timeseries, raw_labels
+
+
+def _normalize_channel_list(channels_value, segment_cache: HCTSASegmentCache) -> Optional[List[str]]:
+    """Normalize channel override to canonical labels; only 'all' or null is supported."""
+    if channels_value is None:
+        return None
+
+    if isinstance(channels_value, str):
+        raw = channels_value.strip()
+        if not raw:
+            return None
+        if raw.lower() != 'all':
+            raise ValueError("channel_selection.channels only supports 'all' or null.")
+        index_df = segment_cache.load_index()
+        if index_df.empty:
+            raise ValueError("Segment cache index is empty; cannot resolve channels='all'.")
+        channels = sorted(set(index_df['channel_canonical'].tolist()))
+        return [segment_cache._canonical_channel_label(ch) for ch in channels]
+
+    raise ValueError("channel_selection.channels only supports 'all' or null.")
+
+
+def _reshape_seq2vec_channel_dim(X: np.ndarray, n_channels: Optional[int]) -> np.ndarray:
+    """Reshape flattened seq2vec features into (samples, features, channels)."""
+    if X.ndim != 2:
+        return X
+    if not n_channels or n_channels <= 0:
+        raise ValueError("channel_dim requires a valid n_channels value.")
+    n_features_total = X.shape[1]
+    if n_features_total % n_channels != 0:
+        raise ValueError(
+            "Cannot reshape features into channel_dim layout. "
+            "Ensure feature selection is disabled or preserves channel grouping."
+        )
+    n_features = n_features_total // n_channels
+    return X.reshape(X.shape[0], n_features, n_channels)
+
 
 class HyperparameterTuningLogger:
     """
@@ -608,11 +778,6 @@ class HyperparameterTuningLogger:
         except Exception as e:
             logging.warning(f"Failed to create hyperparameter summary: {e}")
 
-
-# ===================================================================
-# Enhanced TensorBoard Callback with Hyperparameter Logging
-# ===================================================================
-
 class HyperparameterTensorBoardCallback(TensorBoard):
     """
     Enhanced TensorBoard callback that includes hyperparameter information in logs.
@@ -663,9 +828,6 @@ class HyperparameterTensorBoardCallback(TensorBoard):
             except Exception as e:
                 logging.warning(f"Failed to log hyperparameters to TensorBoard: {e}")
 
-# ==================================================================
-# Streamlined Training Progress Logger
-# ==================================================================
 PROGRESS_METRIC_ALIASES = {
     # Explicit train metrics
     'loss': 'train_loss',
@@ -704,6 +866,15 @@ PROGRESS_METRIC_ALIASES = {
     'val_MASKED_balanced_accuracy': 'val_balanced_accuracy',
     'val_MASKED_pr_auc': 'val_pr_auc',
     'val_MASKED_roc_auc': 'val_roc_auc',
+
+    # Test metrics (from TestEvaluationCSVLogger)
+    'test_loss': 'test_loss',
+    'test_f1_score': 'test_f1',
+    'test_f1': 'test_f1',
+
+    # Seq2VecMLPLSTM weighted-sum head metrics
+    'lstm_head_weighted_sum_f1_score': 'train_f1',
+    'val_lstm_head_weighted_sum_f1_score': 'val_f1',
 }
 
 MONITOR_HISTORY_ALIASES = {
@@ -824,10 +995,9 @@ class ProgressTrainingLogger(Callback):
         if epoch % self.print_frequency == 0 or epoch == 0:
             metrics = self.format_metrics(logs)
             
-            # Core metrics display
+            # Core metrics display (loss + f1 for train/val/test)
             core_metrics = []
-            for metric in ['train_loss', 'train_balanced_accuracy', 'train_f1',
-                           'val_loss', 'val_balanced_accuracy', 'val_f1']:
+            for metric in ['train_loss', 'train_f1', 'val_loss', 'val_f1', 'test_loss', 'test_f1']:
                 if metric in metrics:
                     core_metrics.append(f"{metric}: {metrics[metric]}")
             
@@ -917,13 +1087,15 @@ class TestEvaluationCSVLogger(Callback):
         log_frequency: Log every N epochs (default: 1 = every epoch)
     """
     
-    def __init__(self, X_test, y_test, mask_value=None, 
-                 metrics_to_log=None, log_frequency=1):
+    def __init__(self, X_test, y_test, mask_value=None,
+                 metrics_to_log=None, log_frequency=1,
+                 predict_proba_fn=None):
         super().__init__()
         self.X_test = X_test
         self.y_test = y_test
         self.mask_value = mask_value
         self.log_frequency = log_frequency
+        self.predict_proba_fn = predict_proba_fn
         self.metrics_to_log = metrics_to_log or [
             'loss', 'accuracy', 'f1_score', 'precision', 'recall', 
             'balanced_accuracy', 'roc_auc', 'pr_auc'
@@ -943,8 +1115,11 @@ class TestEvaluationCSVLogger(Callback):
             return
             
         try:
-            # Get predictions
-            y_pred_proba = self.model.predict(self.X_test, verbose=0)
+            # Get predictions from final model output (if provided)
+            if self.predict_proba_fn is not None:
+                y_pred_proba = self.predict_proba_fn(self.X_test)
+            else:
+                y_pred_proba = self.model.predict(self.X_test, verbose=0)
             
             # Handle different output shapes
             if y_pred_proba.ndim > 2:
@@ -1044,19 +1219,22 @@ class TestTensorBoardLogger(Callback):
     """
     
     def __init__(self, X_test, y_test, tensorboard_dir, mask_value=None,
-                 metrics_to_log=None, log_frequency=1):
+                 metrics_to_log=None, log_frequency=1,
+                 log_subdir='test', predict_proba_fn=None):
         super().__init__()
         self.X_test = X_test
         self.y_test = y_test
         self.mask_value = mask_value
         self.log_frequency = log_frequency
+        self.log_subdir = log_subdir
+        self.predict_proba_fn = predict_proba_fn
         self.metrics_to_log = metrics_to_log or [
             'loss', 'accuracy', 'f1_score', 'precision', 'recall',
             'balanced_accuracy', 'roc_auc', 'pr_auc'
         ]
         
-        # Create test subdirectory under tensorboard directory
-        self.test_log_dir = os.path.join(tensorboard_dir, 'test')
+        # Create split subdirectory under tensorboard directory
+        self.test_log_dir = os.path.join(tensorboard_dir, self.log_subdir)
         os.makedirs(self.test_log_dir, exist_ok=True)
         
         self.writer = None
@@ -1080,8 +1258,11 @@ class TestTensorBoardLogger(Callback):
             return
         
         try:
-            # Get predictions
-            y_pred_proba = self.model.predict(self.X_test, verbose=0)
+            # Get predictions from final model output (if provided)
+            if self.predict_proba_fn is not None:
+                y_pred_proba = self.predict_proba_fn(self.X_test)
+            else:
+                y_pred_proba = self.model.predict(self.X_test, verbose=0)
             
             # Handle different output shapes
             if y_pred_proba.ndim > 2:
@@ -1165,9 +1346,6 @@ class TestTensorBoardLogger(Callback):
             self.writer.close()
             logging.info(f"[TEST_TENSORBOARD] Test TensorBoard logging complete. Logged {len(self.epoch_data)} epochs")
         
-# ===================================================================
-# Nested Cross-Validation Directory Structure and Callbacks
-# ===================================================================
 
 def _compose_outer_fold_dir(experiment_dir: Optional[str], outer_fold: Optional[int],
                             outer_test_subject: Optional[str]) -> str:
@@ -1394,6 +1572,15 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     Returns:
         List of Keras callbacks
     """
+    if (
+        DEFAULT_CALLBACK_PATIENCE is None
+        or DEFAULT_CALLBACK_MONITOR is None
+        or DEFAULT_PROGRESS_FREQUENCY is None
+        or DEFAULT_REDUCE_LR_FACTOR is None
+        or DEFAULT_REDUCE_LR_PATIENCE_RATIO is None
+        or DEFAULT_REDUCE_LR_MIN_LR is None
+    ):
+        raise ValueError("Callback defaults are not configured. Call configure_hyperparameter_settings first.")
     paths = _setup_nested_cv_logging(
         experiment_dir=experiment_dir,
         outer_fold=outer_fold,
@@ -1501,12 +1688,15 @@ def _prepare_sequence_model_callbacks(
     """
     Helper to create callbacks only for sequence models that require them.
     """
-    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
+    if model_type not in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         return None, None
 
     patience_value = 10
     if params is not None:
-        patience_value = params.get('classifier__patience', patience_value)
+        if model_type == 'Seq2VecMLPLSTM':
+            patience_value = params.get('classifier__lstm_patience', patience_value)
+        else:
+            patience_value = params.get('classifier__patience', patience_value)
 
     callbacks, effective_monitor = create_nested_cv_callbacks(
         experiment_dir=experiment_dir,
@@ -1516,9 +1706,9 @@ def _prepare_sequence_model_callbacks(
         hyperparameters=params,
         inner_validation_subject=inner_validation_subject,
         patience=patience_value,
-        monitor='f1',
+        monitor=DEFAULT_CALLBACK_MONITOR,
         save_models=False,
-        progress_frequency=1,
+        progress_frequency=DEFAULT_PROGRESS_FREQUENCY,
         has_validation_data=has_validation_data,
         is_refit=(inner_fold is None),
     )
@@ -1573,9 +1763,6 @@ def save_fold_history(history, paths, outer_fold=None, inner_fold=None, subject_
     return json_path
 
 
-# ===================================================================
-# Result Storage Functions
-# ===================================================================
 class NumpyEncoder(json.JSONEncoder):
     """Custom JSON encoder for numpy types"""
     def default(self, obj):
@@ -2111,13 +2298,32 @@ def _create_hyperparameter_string(hyperparams):
         'dense_units',
         'dense_activation',
         'enabled',
+        'lstm_activations',
+        'lstm_recurrent_activations',
+        'lstm_dense_activation',
+        'lstm_optimizer',
+        'lstm_patience',
+        'lstm_threshold',
+        'lstm_use_class_weights',
+        'mlp_loss',
+        'mlp_optimizer',
+        'mlp_use_class_weights',
+        'hctsa_fs_enabled',
     }
     param_name_map = {
         'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
         'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
         'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
         'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act',
-        'selection_method': 'fs'
+        'selection_method': 'fs',
+        'lstm_batch_size': 'bs', 'lstm_epochs': 'ep', 'lstm_lr': 'lr', 'lstm_dropout': 'do',
+        'lstm_hidden_dims': 'hd', 'lstm_dense_units': 'du',
+        'lstm_head_weights': 'lhw',
+        'mlp_hidden_units': 'mhu', 'mlp_dropout': 'mdo', 'mlp_lr': 'mlr', 'mlp_activation': 'mact',
+        'mlp_dense_activation': 'moact',
+        'mlp_epochs': 'mep', 'mlp_batch_size': 'mbs',
+        'hctsa_fs_n_features': 'nf', 'hctsa_fs_variance_threshold': 'vt',
+        'hctsa_fs_correlation_threshold': 'ct', 'hctsa_fs_selection_method': 'fs',
     }
     
     param_parts = []
@@ -2157,13 +2363,14 @@ def _create_hyperparameter_string(hyperparams):
     
     return param_str
 
-def build_feature_mapping(selected_features, feature_names=None):
+def build_feature_mapping(selected_features, feature_names=None, name_prefix='feature'):
     """
     Build parallel lists and detailed mappings between feature indices and names.
     
     Args:
         selected_features: Iterable of feature indices
         feature_names: Sequence of feature names aligned with column order
+        name_prefix: Prefix to use when feature_names are unavailable
     
     Returns:
         tuple: (feature_names_list, feature_details_list, feature_index_to_name_map)
@@ -2194,7 +2401,7 @@ def build_feature_mapping(selected_features, feature_names=None):
         if feature_names_seq is not None and 0 <= idx_int < len(feature_names_seq):
             name = feature_names_seq[idx_int]
         else:
-            name = f"feature_{idx_int}"
+            name = f"{name_prefix}_{idx_int}"
         mapped_names.append(name)
         details.append({'index': idx_int, 'name': name})
         index_to_name[idx_int] = name
@@ -2202,12 +2409,53 @@ def build_feature_mapping(selected_features, feature_names=None):
     return mapped_names, details, index_to_name
 
 
+def build_hctsa_selection_payload(
+    selected_features,
+    raw_feature_dim=None,
+    hctsa_feature_names=None,
+    selection_report=None,
+):
+    """Build a structured HCTSA selection payload for result serialization."""
+    if selected_features is None:
+        return {}
+    try:
+        indices = [int(i) for i in selected_features]
+    except TypeError:
+        indices = [int(selected_features)]
+    if not indices:
+        return {}
+
+    _, _, index_map = build_feature_mapping(
+        indices,
+        feature_names=hctsa_feature_names,
+        name_prefix='hctsa_feature',
+    )
+
+    payload = {
+        'selected_feature_index_map': index_map,
+        'n_selected_features': len(indices),
+    }
+
+    if selection_report:
+        payload['step_status'] = selection_report.get('steps', {})
+        payload['fallback_used'] = selection_report.get('fallback_used', False)
+        payload['initial_features'] = selection_report.get('initial_features')
+        payload['final_strategy'] = selection_report.get('final_feature_strategy')
+        payload['final_strategy_details'] = selection_report.get('final_feature_strategy_details', {})
+
+    return payload
+
+
 def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
                                       threshold_results, 
                                       selected_features, hyperparams, train_info, val_info,
                                       feature_names=None, trained_epochs=None,
                                       configured_epochs=None, restored_epoch=None,learning_rate_history=None,
-                                      feature_selection_report=None):
+                                      feature_selection_report=None,
+                                      hctsa_selected_features=None,
+                                      hctsa_selection_report=None,
+                                      hctsa_feature_names=None,
+                                      raw_feature_dim=None):
     """
     Create a comprehensive results dictionary for storage.
     
@@ -2221,6 +2469,10 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
         train_info: Training set information
         val_info: Validation set information
         feature_selection_report: Optional step-wise status dictionary produced by FeatureSelector
+        hctsa_selected_features: Optional list of HCTSA feature indices (Seq2VecMLPLSTM)
+        hctsa_selection_report: Optional FeatureSelector report for HCTSA selection
+        hctsa_feature_names: Optional list of HCTSA feature names
+        raw_feature_dim: Raw feature dimension for global index offsets
         learning_rate_history: Optional dictionary describing learning-rate evolution per epoch
         configured_epochs: Planned number of epochs for this training run
         restored_epoch: Epoch corresponding to restored/best weights (if early stopping applied)
@@ -2263,6 +2515,25 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
     feature_selection_strategy = feature_selection_report.get('final_feature_strategy')
     feature_selection_strategy_details = feature_selection_report.get('final_feature_strategy_details', {})
     
+    feature_selection_payload = {
+        'selected_feature_index_map': selected_feature_index_map,
+        'n_selected_features': len(selected_feature_index_map),
+        'step_status': feature_selection_steps,
+        'fallback_used': feature_selection_fallback,
+        'initial_features': feature_selection_initial,
+        'final_strategy': feature_selection_strategy,
+        'final_strategy_details': feature_selection_strategy_details,
+    }
+
+    hctsa_payload = build_hctsa_selection_payload(
+        hctsa_selected_features,
+        raw_feature_dim=raw_feature_dim,
+        hctsa_feature_names=hctsa_feature_names,
+        selection_report=hctsa_selection_report,
+    )
+    if hctsa_payload:
+        feature_selection_payload['hctsa'] = hctsa_payload
+
     return {
         # Core evaluation metrics
         'metric_scores': fold_scores.copy() if fold_scores else {},
@@ -2274,17 +2545,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
         },
         
         # Feature selection results  
-        'feature_selection': {
-            'selected_feature_index_map': selected_feature_index_map,
-            'n_selected_features': len(selected_feature_index_map),
-            'step_status': feature_selection_steps,
-            'fallback_used': feature_selection_fallback,
-            'initial_features': feature_selection_initial,
-            'final_strategy': feature_selection_strategy,
-            'final_strategy_details': feature_selection_strategy_details,
-        },
-        'selected_feature_names': selected_feature_names,
-        'selected_feature_details': selected_feature_details,
+        'feature_selection': feature_selection_payload,
         
         # Data information (only shapes and class distributions)
         'data_info': {
@@ -2298,11 +2559,7 @@ def create_comprehensive_results_dict(fold_scores, optimal_thresholds,
         'restored_epoch': int(restored_epoch) if restored_epoch is not None else None,
         'learning_rate_history': learning_rate_history if learning_rate_history else None,
     }
-
-# ===================================================================
-# Pipeline Building and Parameter Grid Functions
-# ===================================================================
-
+    
 
 def get_default_param_grid(model_type, mask_values=None):
     """
@@ -2329,7 +2586,7 @@ def get_default_param_grid(model_type, mask_values=None):
     
     param_grid: Any = {}
     
-    if model_type in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
+    if model_type in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         logging.info(f"[PARAM_GRID] Creating sequence-model parameter grid from config")
         feature_params = _merge_feature_params(model_config.get('feature_params'))
         architecture_configs = model_config.get('architecture_configs', [])
@@ -2367,9 +2624,6 @@ def get_default_param_grid(model_type, mask_values=None):
 
     return param_grid
 
-# ==================================================================
-# Nested Cross-Validation
-# ==================================================================
 
 def run_nested_cv_classical(
     X,
@@ -2386,13 +2640,16 @@ def run_nested_cv_classical(
     hparam_logger=None,
     feature_names=None,
     outer_test_subjects=None,
-    data_source=None
+    data_source=None,
+    n_channels: Optional[int] = None
 ):
     """
     Nested cross-validation for epoch-level models (classical + seq2vec LSTM).
     
     Each sample corresponds to a single epoch (no padding), preserving LOSO CV
     by grouping epochs by subject.
+
+    For seq2vec LSTM/CNN, inputs are reshaped to (n_samples, n_features, n_channels).
     """
     from sklearn.model_selection import ParameterGrid, LeaveOneGroupOut
     from sklearn.metrics import (
@@ -2430,6 +2687,9 @@ def run_nested_cv_classical(
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
+    if channel_selection_method is None:
+        raise ValueError("channel_selection_method is not configured. Check global_settings.channel_selection.default_method.")
+
     result_metadata = {'model_type': model_type, 'data_source': data_source}
 
     def _extract_selection_score(score_dict):
@@ -2461,7 +2721,10 @@ def run_nested_cv_classical(
     outer_splits = list(outer_cv.split(X, y, groups))
     n_outer_folds = len(outer_splits)
 
-    param_grid = get_default_param_grid(model_type=model_type, mask_values={'X_mask': 0.0, 'y_mask': -1})
+    param_grid = get_default_param_grid(
+        model_type=model_type,
+        mask_values=SEQ2SEQ_MASK_VALUES,
+    )
     if isinstance(param_grid, list):
         param_combinations = param_grid
     else:
@@ -2545,7 +2808,7 @@ def run_nested_cv_classical(
                     )
                     inner_pipeline, _ = build_pipeline(
                         model_type=model_type,
-                        mask_values={'X_mask': 0.0, 'y_mask': -1},
+                        mask_values=SEQ2SEQ_MASK_VALUES,
                         experiment_dir=experiment_dir,
                         outer_fold=outer_fold + 1,
                         inner_fold=inner_fold + 1,
@@ -2555,14 +2818,19 @@ def run_nested_cv_classical(
                         has_validation_data=True,
                         callbacks=callbacks,
                         effective_monitor=effective_monitor,
+                        n_channels=n_channels,
+                        threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
+                        n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
+                        threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
                     )
                     inner_pipeline.set_params(**params)
-                    if model_type == 'seq2vec_lstm':
+                    if model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
                         _fit_pipeline_with_validation(
                             inner_pipeline,
                             X_inner_train,
                             y_inner_train,
                             validation_data=(X_inner_val, y_inner_val),
+                            n_channels=n_channels,
                         )
                     else:
                         inner_pipeline.fit(X_inner_train, y_inner_train)
@@ -2662,6 +2930,13 @@ def run_nested_cv_classical(
                         'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
                     }
 
+                    hctsa_selected_features = None
+                    hctsa_selection_report = None
+                    if model_type == 'Seq2VecMLPLSTM':
+                        hctsa_classifier = inner_pipeline.steps[-1][1]
+                        hctsa_selected_features = getattr(hctsa_classifier, 'hctsa_selected_features_', None)
+                        hctsa_selection_report = getattr(hctsa_classifier, 'hctsa_selection_report_', None)
+
                     comprehensive_results = create_comprehensive_results_dict(
                         fold_scores=fold_scores,
                         optimal_thresholds=optimal_thresholds,
@@ -2676,6 +2951,10 @@ def run_nested_cv_classical(
                         restored_epoch=None,
                         learning_rate_history=None,
                         feature_selection_report=selection_report,
+                        hctsa_selected_features=hctsa_selected_features,
+                        hctsa_selection_report=hctsa_selection_report,
+                        hctsa_feature_names=hctsa_feature_names,
+                        raw_feature_dim=raw_feature_dim,
                     )
                     comprehensive_results.update(result_metadata)
                     comprehensive_results['selection_parameters'] = {
@@ -2807,7 +3086,7 @@ def run_nested_cv_classical(
 
         final_pipeline, _ = build_pipeline(
             model_type=model_type,
-            mask_values={'X_mask': 0.0, 'y_mask': -1},
+            mask_values=SEQ2SEQ_MASK_VALUES,
             experiment_dir=experiment_dir,
             outer_fold=outer_fold + 1,
             inner_fold=None,
@@ -2817,6 +3096,10 @@ def run_nested_cv_classical(
             has_validation_data=False,
             callbacks=callbacks,
             effective_monitor=effective_monitor,
+            n_channels=n_channels,
+            threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
+            n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
+            threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
         )
         final_pipeline.set_params(**best_params)
 
@@ -2831,7 +3114,7 @@ def run_nested_cv_classical(
         }
 
         # For seq2vec models, add test evaluation callback before training
-        if model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
+        if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
             classifier = final_pipeline.steps[-1][1]
             
             # Add test evaluation callbacks (CSV + TensorBoard) BEFORE CSVLogger
@@ -2853,7 +3136,8 @@ def run_nested_cv_classical(
                     X_test=X_outer_test,
                     y_test=y_outer_test,
                     mask_value=None,  # Classical models don't use masking
-                    log_frequency=1
+                    log_frequency=1,
+                    predict_proba_fn=classifier.predict_proba,
                 )
                 # Insert BEFORE CSVLogger so test metrics are added to logs before CSV write
                 if not hasattr(classifier, 'callbacks'):
@@ -2869,13 +3153,19 @@ def run_nested_cv_classical(
                         y_test=y_outer_test,
                         tensorboard_dir=tensorboard_dir,
                         mask_value=None,  # Classical models don't use masking
-                        log_frequency=1
+                        log_frequency=1,
+                        predict_proba_fn=classifier.predict_proba,
                     )
                     classifier.callbacks.append(test_tensorboard_callback)
                     if verbose >= 1:
                         logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
             
-            _fit_pipeline_with_validation(final_pipeline, X_outer_train, y_outer_train)
+            _fit_pipeline_with_validation(
+                final_pipeline,
+                X_outer_train,
+                y_outer_train,
+                n_channels=n_channels,
+            )
         else:
             final_pipeline.fit(X_outer_train, y_outer_train)
 
@@ -2990,9 +3280,6 @@ def run_nested_cv_classical(
                 'restored_epoch': None,
                 'learning_rate_history': None,
                 'best_hyperparameters': best_params.copy() if best_params else {},
-                'selected_features': best_features.copy() if best_features else [],
-                'selected_feature_names': best_feature_names.copy() if best_feature_names else [],
-                'selected_feature_details': best_feature_details.copy() if best_feature_details else [],
                 'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                 'n_selected_features': len(best_features) if best_features else 0,
                 'n_train_samples': train_info['n_samples'],
@@ -3009,6 +3296,16 @@ def run_nested_cv_classical(
                     'refit_scoring_metric': refit_scoring_metric,
                 },
             }
+            if model_type == 'Seq2VecMLPLSTM':
+                hctsa_classifier = final_pipeline.steps[-1][1]
+                hctsa_payload = build_hctsa_selection_payload(
+                    getattr(hctsa_classifier, 'hctsa_selected_features_', None),
+                    raw_feature_dim=raw_feature_dim,
+                    hctsa_feature_names=hctsa_feature_names,
+                    selection_report=getattr(hctsa_classifier, 'hctsa_selection_report_', None),
+                )
+                if hctsa_payload:
+                    comprehensive_refit_results['feature_selection']['hctsa'] = hctsa_payload
             comprehensive_refit_results.update(result_metadata)
             json_path = save_evaluation_results(
                 results_dict=comprehensive_refit_results,
@@ -3083,28 +3380,31 @@ def run_nested_cv_classical(
     return outer_results, all_best_params, experiment_dir
 
 
-def run_loso_cv_lstm(X, y, groups, mask_values=None, 
+def run_loso_cv_lstm(X, y, groups, mask_values=None,
                           subject_names=None,
-                          model_type='seq2seq_lstm',
+                          model_type='Seq2SeqLSTM',
                           refit_scoring_metric='f1',
                           selection_score_metric: str = 'val_tuned_f1',
                           selection_score_aggregation: str = 'median',
                           experiment_dir=None,
-                          n_jobs=1, 
+                          n_jobs=1,
                           verbose: int = 1,
                           hparam_logger=None,
                           feature_names=None,
+                          hctsa_feature_names=None,
                           outer_test_subjects=None,
-                          data_source=None):
+                          data_source=None,
+                          n_channels: Optional[int] = None,
+                          raw_feature_dim: Optional[int] = None):
     """
-    Nested cross-validation for sequence-aware models (seq2seq LSTM, seq2vec LSTM, seq2vec MLP).
+    Nested cross-validation for sequence-aware models (seq2seq LSTM, seq2vec LSTM, seq2vec MLP, seq2vec CNN, mlp-lstm).
     
-    For seq2seq_lstm:
+    For Seq2SeqLSTM:
         - Expects pre-padded 3D input (n_trials, max_seq_len, n_features)
         - Uses mask_values for padding
         - Operates on trial-level sequences
     
-    For seq2vec_lstm / seq2vec_mlp:
+    For Seq2VecLSTM / Seq2VecMLP / Seq2VecCNN / Seq2VecMLPLSTM:
         - Expects 2D input (n_samples, n_features) at epoch level
         - No padding required
         - Operates on individual epochs
@@ -3115,9 +3415,9 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
         y: For seq2seq: Pre-padded trial label arrays (n_trials, max_seq_len)
            For seq2vec: Epoch labels (n_epochs,)
         groups: Array indicating which subject each sample belongs to
-        mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length) - required for seq2seq_lstm
+        mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length) - required for Seq2SeqLSTM
         subject_names: List of subject names
-        model_type: Type of model ('seq2seq_lstm', 'seq2vec_lstm', or 'seq2vec_mlp')
+        model_type: Type of model ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or 'Seq2VecMLPLSTM')
         refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
@@ -3125,8 +3425,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
         verbose: Verbosity level
         hparam_logger: Hyperparameter logger
         feature_names: Optional list/sequence of feature names aligned with features
+        hctsa_feature_names: Optional list/sequence of HCTSA feature names (Seq2VecMLPLSTM)
         outer_test_subjects: Optional iterable of subject names to evaluate
         selection_score_aggregation: Aggregation strategy for inner-fold scores ('median' or 'mean')
+        n_channels: Number of channels when using seq2vec LSTM/CNN
+        raw_feature_dim: Raw feature dimension when using Seq2VecMLPLSTM
         
     Returns:
         tuple: (outer_results, all_best_params, experiment_dir)
@@ -3139,6 +3442,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             feature_names = feature_names.tolist()
         except AttributeError:
             feature_names = list(feature_names)
+    if hctsa_feature_names is not None:
+        try:
+            hctsa_feature_names = hctsa_feature_names.tolist()
+        except AttributeError:
+            hctsa_feature_names = list(hctsa_feature_names)
     
     selection_score_aggregation = (selection_score_aggregation or 'median').lower()
     if selection_score_aggregation not in {'median', 'mean'}:
@@ -3157,19 +3465,24 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
-    if model_type not in ('seq2seq_lstm', 'seq2vec_lstm', 'seq2vec_mlp'):
+    if model_type not in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         raise ValueError(
-            "run_loso_cv_lstm only supports model_type='seq2seq_lstm', 'seq2vec_lstm', or 'seq2vec_mlp', "
+            "run_loso_cv_lstm only supports model_type='Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or "
+            "'Seq2VecMLPLSTM', "
             f"got '{model_type}'."
         )
+    if model_type == 'Seq2VecMLPLSTM':
+        if raw_feature_dim is None or raw_feature_dim <= 0:
+            raise ValueError("Seq2VecMLPLSTM requires raw_feature_dim to be provided.")
+
     
     # Validate input dimensions based on model type
-    if model_type == 'seq2seq_lstm':
+    if model_type == 'Seq2SeqLSTM':
         if X.ndim != 3:
-            raise ValueError(f"seq2seq_lstm expects a 3D padded input array, got {X.ndim}D.")
+            raise ValueError(f"Seq2SeqLSTM expects a 3D padded input array, got {X.ndim}D.")
         if mask_values is None:
-            raise ValueError("seq2seq_lstm requires mask_values parameter.")
-    elif model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
+            raise ValueError("Seq2SeqLSTM requires mask_values parameter.")
+    elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         if X.ndim != 2:
             raise ValueError(f"{model_type} expects a 2D input array, got {X.ndim}D.")
 
@@ -3335,7 +3648,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     
                     # Step 5: Log mask/padding info based on model type
                     if verbose >= 2:
-                        if model_type == 'seq2seq_lstm' and mask_values:
+                        if model_type == 'Seq2SeqLSTM' and mask_values:
                             logging.info(f"[CV_SKLEARN]     Pre-computed padding: train={X_inner_train.shape}, val={X_inner_val.shape}, max_len={mask_values['max_length']}")
                         else:
                             logging.info(f"[CV_SKLEARN]     Data shapes: train={X_inner_train.shape}, val={X_inner_val.shape}")
@@ -3363,6 +3676,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         has_validation_data=True,  # Enable validation data monitoring
                         callbacks=callbacks,
                         effective_monitor=effective_monitor,
+                        n_channels=n_channels,
+                        raw_feature_dim=raw_feature_dim,
+                        threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
+                        n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
+                        threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
                     )
                     inner_pipeline.set_params(**params)
                     
@@ -3397,19 +3715,15 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     configured_epochs = getattr(lstm_classifier, 'epochs', None)
                     
                     # Handle model-specific fitting
-                    if model_type == 'seq2vec_lstm':
+                    if model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
                         # Seq2Vec LSTM: reshape 2D data to 3D where columns become timesteps and features=1
                         if X_train_transformed.ndim == 2:
-                            X_train_transformed = X_train_transformed.reshape(
-                                X_train_transformed.shape[0],
-                                X_train_transformed.shape[1],
-                                1
+                            X_train_transformed = _reshape_seq2vec_channel_dim(
+                                X_train_transformed, n_channels
                             )
                         if X_val_transformed.ndim == 2:
-                            X_val_transformed = X_val_transformed.reshape(
-                                X_val_transformed.shape[0],
-                                X_val_transformed.shape[1],
-                                1
+                            X_val_transformed = _reshape_seq2vec_channel_dim(
+                                X_val_transformed, n_channels
                             )
 
                         # Ensure y is 2D for Seq2VecLSTM
@@ -3417,17 +3731,56 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
 
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
+                        if getattr(lstm_classifier, 'callbacks', None):
+                            tensorboard_dir = None
+                            for cb in lstm_classifier.callbacks:
+                                if isinstance(cb, HyperparameterTensorBoardCallback):
+                                    tensorboard_dir = cb.log_dir
+                                    break
+                            if tensorboard_dir:
+                                lstm_classifier.callbacks.append(
+                                    TestTensorBoardLogger(
+                                        X_test=X_val_transformed,
+                                        y_test=y_inner_val_reshaped,
+                                        tensorboard_dir=tensorboard_dir,
+                                        mask_value=None,
+                                        log_frequency=1,
+                                        log_subdir='final_val',
+                                        predict_proba_fn=lstm_classifier.predict_proba,
+                                    )
+                                )
                         if verbose >= 2:
                             logging.info(f"[CV_SKLEARN]       Training Seq2Vec LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
                         lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
-                    elif model_type == 'seq2vec_mlp':
-                        # Seq2Vec MLP: keep 2D data and ensure y is 2D
+                    elif model_type in ('Seq2VecMLP', 'Seq2VecMLPLSTM'):
+                        # Seq2Vec MLP / mlp-lstm: keep 2D data and ensure y is 2D
                         y_inner_train_reshaped = y_inner_train.reshape(-1, 1) if y_inner_train.ndim == 1 else y_inner_train
                         y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
 
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
+                        if getattr(lstm_classifier, 'callbacks', None):
+                            tensorboard_dir = None
+                            for cb in lstm_classifier.callbacks:
+                                if isinstance(cb, HyperparameterTensorBoardCallback):
+                                    tensorboard_dir = cb.log_dir
+                                    break
+                            if tensorboard_dir:
+                                lstm_classifier.callbacks.append(
+                                    TestTensorBoardLogger(
+                                        X_test=X_val_transformed,
+                                        y_test=y_inner_val_reshaped,
+                                        tensorboard_dir=tensorboard_dir,
+                                        mask_value=None,
+                                        log_frequency=1,
+                                        log_subdir='final_val',
+                                        predict_proba_fn=lstm_classifier.predict_proba,
+                                    )
+                                )
                         if verbose >= 2:
-                            logging.info(f"[CV_SKLEARN]       Training Seq2Vec MLP: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                            if model_type == 'Seq2VecMLP':
+                                logging.info(f"[CV_SKLEARN]       Training Seq2Vec MLP: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                            else:
+                                logging.info(f"[CV_SKLEARN]       Training Seq2Vec Distill LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
                         lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
                     else:
                         # Seq2Seq: Set validation data and fit
@@ -3454,13 +3807,17 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
 
                     y_val_pred = lstm_classifier.predict(X_val_transformed)
                     y_val_proba = lstm_classifier.predict_proba(X_val_transformed)
-                    default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
+                    default_threshold = getattr(
+                        lstm_classifier,
+                        'lstm_threshold',
+                        getattr(lstm_classifier, 'threshold', 0.5),
+                    )
                     base_confusion_components = None
                     
                     # Handle model-specific metrics
-                    if model_type == 'seq2seq_lstm':
+                    if model_type == 'Seq2SeqLSTM':
                         try:
-                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            y_mask_val = mask_values['y_mask']
                             y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
                             y_val_pred_default = (y_val_proba_pos > default_threshold).astype(int)
                             if y_val_pred_default.size == y_inner_val.size:
@@ -3490,10 +3847,16 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
 
-                    threshold_metrics = DEFAULT_THRESHOLD_METRICS
+                    threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS if model_type == 'Seq2SeqLSTM' else None
+                    seq2vec_threshold_range = None
+                    seq2vec_threshold_steps = None
+                    if model_type != 'Seq2SeqLSTM':
+                        seq2vec_threshold_range, seq2vec_threshold_steps, threshold_metrics = (
+                            _get_seq2vec_threshold_settings(model_type)
+                        )
                     
                     # Handle model-specific threshold optimization
-                    if model_type == 'seq2seq_lstm':
+                    if model_type == 'Seq2SeqLSTM':
                         threshold_results = lstm_classifier.optimize_thresholds_with_model(
                             X_val=X_val_transformed,
                             y_val=y_inner_val,
@@ -3513,7 +3876,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         for metric_name in threshold_metrics:
                             best_threshold = 0.5
                             best_score = 0.0
-                            for threshold in np.linspace(0.1, 0.9, 81):
+                            for threshold in np.linspace(
+                                seq2vec_threshold_range[0],
+                                seq2vec_threshold_range[1],
+                                seq2vec_threshold_steps,
+                            ):
                                 y_pred = (y_val_proba_pos > threshold).astype(int)
                                 if metric_name == 'f1':
                                     score = f1_score(y_inner_val, y_pred, zero_division=0)
@@ -3550,9 +3917,9 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     score = _extract_selection_score(fold_scores)
 
                     # Handle model-specific confusion matrix at tuned threshold
-                    if model_type == 'seq2seq_lstm':
+                    if model_type == 'Seq2SeqLSTM':
                         try:
-                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                            y_mask_val = mask_values['y_mask']
                             conf_threshold = optimal_thresholds.get('f1', 0.5)
                             y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
                             y_val_pred_conf = (y_val_proba_pos > conf_threshold).astype(int)
@@ -3596,14 +3963,14 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     })
                     per_sample_scores = None
                     try:
-                        if model_type == 'seq2seq_lstm':
-                            y_mask_val = mask_values.get('y_mask', -1) if isinstance(mask_values, dict) else -1
+                        if model_type == 'Seq2SeqLSTM':
+                            y_mask_val = mask_values['y_mask']
                             y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
                         else:
                             y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
                         y_true_flat = y_inner_val.ravel()
                         y_score_flat = y_val_proba_pos.ravel()
-                        if model_type == 'seq2seq_lstm':
+                        if model_type == 'Seq2SeqLSTM':
                             mask = y_true_flat != y_mask_val
                             y_true_flat = y_true_flat[mask]
                             y_score_flat = y_score_flat[mask]
@@ -3643,6 +4010,13 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                             'shape': val_shape_for_logging,
                             'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
                         }
+
+                        hctsa_selected_features = None
+                        hctsa_selection_report = None
+                        if model_type == 'Seq2VecMLPLSTM':
+                            hctsa_classifier = inner_pipeline.steps[-1][1]
+                            hctsa_selected_features = getattr(hctsa_classifier, 'hctsa_selected_features_', None)
+                            hctsa_selection_report = getattr(hctsa_classifier, 'hctsa_selection_report_', None)
                         
                         # Create comprehensive results dictionary
                         comprehensive_results = create_comprehensive_results_dict(
@@ -3658,7 +4032,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                             configured_epochs=configured_epochs,
                             restored_epoch=restored_epoch,
                             learning_rate_history=learning_rate_history,
-                            feature_selection_report=selection_report
+                            feature_selection_report=selection_report,
+                            hctsa_selected_features=hctsa_selected_features,
+                            hctsa_selection_report=hctsa_selection_report,
+                            hctsa_feature_names=hctsa_feature_names,
+                            raw_feature_dim=raw_feature_dim,
                         )
                         comprehensive_results.update(result_metadata)
                         comprehensive_results['selection_parameters'] = {
@@ -3798,58 +4176,95 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]   Computing stable thresholds on {len(all_val_labels)} aggregated validation samples (LSTM only)")
                     
-                    threshold_metrics = DEFAULT_THRESHOLD_METRICS
-                    
-                    # Simple threshold optimization for aggregated data
                     # Extract positive class probabilities
                     if all_val_proba.ndim > 1 and all_val_proba.shape[1] == 2:
                         y_pred_proba_pos = all_val_proba[:, 1]
                     else:
                         y_pred_proba_pos = all_val_proba.ravel()
-                    
-                    # Search thresholds
-                    thresholds = np.linspace(
-                        DEFAULT_THRESHOLD_RANGE[0],
-                        DEFAULT_THRESHOLD_RANGE[1],
-                        DEFAULT_THRESHOLD_STEPS
-                    )
+
                     aggregated_optimal_thresholds = {}
                     aggregated_optimized_scores = {}
-                    
-                    for metric in threshold_metrics:
-                        best_score = 0.0
-                        best_threshold = 0.5
-                        
-                        for threshold in thresholds:
-                            y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
-                            
-                            # Use Seq2SeqLSTM's evaluation methods for consistency
-                            y_mask_val = mask_values.get('y_mask', -1)
-                            if metric == 'accuracy':
-                                score = Seq2SeqLSTM.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
-                            elif metric == 'balanced_accuracy':
-                                score = Seq2SeqLSTM.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)   
-                            elif metric == 'f1':
-                                score = Seq2SeqLSTM.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)                                        
-                            elif metric == 'roc_auc':
-                                score = Seq2SeqLSTM.eval_masked_roc_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
-                            elif metric == 'pr_auc':
-                                score = Seq2SeqLSTM.eval_masked_pr_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)                            
-                            elif metric == 'precision':
-                                score = Seq2SeqLSTM.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
-                            elif metric == 'recall':
-                                score = Seq2SeqLSTM.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
-                            elif metric == 'specificity':
-                                score = Seq2SeqLSTM.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val) 
-                            else:
-                                score = 0.0
-                            
-                            if score > best_score:
-                                best_score = score
-                                best_threshold = threshold
-                        
-                        aggregated_optimal_thresholds[metric] = best_threshold
-                        aggregated_optimized_scores[metric] = best_score
+
+                    if model_type == 'Seq2SeqLSTM':
+                        threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS
+                        thresholds = np.linspace(
+                            SEQ2SEQ_THRESHOLD_RANGE[0],
+                            SEQ2SEQ_THRESHOLD_RANGE[1],
+                            SEQ2SEQ_THRESHOLD_STEPS
+                        )
+
+                        for metric in threshold_metrics:
+                            best_score = 0.0
+                            best_threshold = 0.5
+
+                            for threshold in thresholds:
+                                y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
+
+                                # Use Seq2SeqLSTM's evaluation methods for consistency
+                                y_mask_val = mask_values['y_mask']
+                                if metric == 'accuracy':
+                                    score = Seq2SeqLSTM.eval_masked_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                                elif metric == 'balanced_accuracy':
+                                    score = Seq2SeqLSTM.eval_masked_balanced_accuracy_score(all_val_labels, y_pred_binary, y_mask_val)
+                                elif metric == 'f1':
+                                    score = Seq2SeqLSTM.eval_masked_f1_score(all_val_labels, y_pred_binary, y_mask_val)
+                                elif metric == 'roc_auc':
+                                    score = Seq2SeqLSTM.eval_masked_roc_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
+                                elif metric == 'pr_auc':
+                                    score = Seq2SeqLSTM.eval_masked_pr_auc_score(all_val_labels, y_pred_proba_pos, y_mask_val)
+                                elif metric == 'precision':
+                                    score = Seq2SeqLSTM.eval_masked_precision_score(all_val_labels, y_pred_binary, y_mask_val)
+                                elif metric == 'recall':
+                                    score = Seq2SeqLSTM.eval_masked_recall_score(all_val_labels, y_pred_binary, y_mask_val)
+                                elif metric == 'specificity':
+                                    score = Seq2SeqLSTM.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val)
+                                else:
+                                    score = 0.0
+
+                                if score > best_score:
+                                    best_score = score
+                                    best_threshold = threshold
+
+                            aggregated_optimal_thresholds[metric] = best_threshold
+                            aggregated_optimized_scores[metric] = best_score
+                    else:
+                        from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
+
+                        seq2vec_threshold_range, seq2vec_threshold_steps, threshold_metrics = (
+                            _get_seq2vec_threshold_settings(model_type)
+                        )
+                        thresholds = np.linspace(
+                            seq2vec_threshold_range[0],
+                            seq2vec_threshold_range[1],
+                            seq2vec_threshold_steps
+                        )
+
+                        for metric in threshold_metrics:
+                            best_score = 0.0
+                            best_threshold = 0.5
+
+                            for threshold in thresholds:
+                                y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
+
+                                if metric == 'accuracy':
+                                    score = accuracy_score(all_val_labels, y_pred_binary)
+                                elif metric == 'balanced_accuracy':
+                                    score = balanced_accuracy_score(all_val_labels, y_pred_binary)
+                                elif metric == 'f1':
+                                    score = f1_score(all_val_labels, y_pred_binary, zero_division=0)
+                                elif metric == 'precision':
+                                    score = precision_score(all_val_labels, y_pred_binary, zero_division=0)
+                                elif metric == 'recall':
+                                    score = recall_score(all_val_labels, y_pred_binary, zero_division=0)
+                                else:
+                                    score = 0.0
+
+                                if score > best_score:
+                                    best_score = score
+                                    best_threshold = threshold
+
+                            aggregated_optimal_thresholds[metric] = best_threshold
+                            aggregated_optimized_scores[metric] = best_score
                     
                     aggregated_threshold_results = {
                         'optimal_thresholds': aggregated_optimal_thresholds,
@@ -4000,6 +4415,11 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 has_validation_data=False,
                 callbacks=callbacks,
                 effective_monitor=effective_monitor,
+                n_channels=n_channels,
+                raw_feature_dim=raw_feature_dim,
+                threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
+                n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
+                threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
             )
             final_pipeline.set_params(**best_params)
             final_feature_selection_report = None
@@ -4015,17 +4435,20 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 logging.info(f"[CV_SKLEARN] Pre-computed mask values: {mask_values}")
             
             # Train on full outer training set
-            threshold_metrics = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+            if model_type == 'Seq2SeqLSTM':
+                threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS
+            else:
+                _, _, threshold_metrics = _get_seq2vec_threshold_settings(model_type)
             refit_trained_epochs = None
             refit_restored_epoch = None
             refit_configured_epochs = None
             train_metrics = {}
             test_metrics = {}
             refit_learning_rate_history = None
-            if model_type == 'seq2seq_lstm':
+            if model_type == 'Seq2SeqLSTM':
                 if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
-                    raise ValueError('run_loso_cv_lstm with seq2seq_lstm requires 3D padded inputs for final retraining.')
-            elif model_type in ('seq2vec_lstm', 'seq2vec_mlp'):
+                    raise ValueError('run_loso_cv_lstm with Seq2SeqLSTM requires 3D padded inputs for final retraining.')
+            elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
                 if X_outer_train.ndim != 2 or X_outer_test.ndim != 2:
                     raise ValueError(f"run_loso_cv_lstm with {model_type} requires 2D inputs for final retraining.")
 
@@ -4054,7 +4477,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     hyperparameters=best_params,
                     inner_validation_subject=None,
                     patience=refit_epochs,
-                    monitor='f1',
+                    monitor=DEFAULT_CALLBACK_MONITOR,
                     save_models=False,
                     progress_frequency=1,
                     has_validation_data=False,
@@ -4088,29 +4511,25 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             test_shape_for_logging = X_test_final.shape
 
             # Prepare reshaped data for seq2vec models BEFORE adding callbacks
-            if model_type == 'seq2vec_lstm':
+            if model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
                 # Reshape for seq2vec LSTM
                 if X_train_final.ndim == 2:
-                    X_train_final_for_fit = X_train_final.reshape(
-                        X_train_final.shape[0],
-                        X_train_final.shape[1],
-                        1
+                    X_train_final_for_fit = _reshape_seq2vec_channel_dim(
+                        X_train_final, n_channels
                     )
                 else:
                     X_train_final_for_fit = X_train_final
                     
                 if X_test_final.ndim == 2:
-                    X_test_final_for_callbacks = X_test_final.reshape(
-                        X_test_final.shape[0],
-                        X_test_final.shape[1],
-                        1
+                    X_test_final_for_callbacks = _reshape_seq2vec_channel_dim(
+                        X_test_final, n_channels
                     )
                 else:
                     X_test_final_for_callbacks = X_test_final
                     
                 y_outer_train_for_fit = y_outer_train.reshape(-1, 1) if y_outer_train.ndim == 1 else y_outer_train
                 y_outer_test_for_callbacks = y_outer_test.reshape(-1, 1) if y_outer_test.ndim == 1 else y_outer_test
-            elif model_type == 'seq2vec_mlp':
+            elif model_type in ('Seq2VecMLP', 'Seq2VecMLPLSTM'):
                 X_train_final_for_fit = X_train_final
                 X_test_final_for_callbacks = X_test_final
                 y_outer_train_for_fit = y_outer_train.reshape(-1, 1) if y_outer_train.ndim == 1 else y_outer_train
@@ -4136,14 +4555,15 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 
                 if csv_logger_idx is not None:
                     # Determine mask value based on model type
-                    mask_value_for_test = mask_values.get('y_mask', -1) if model_type == 'seq2seq_lstm' else None
+                    mask_value_for_test = mask_values['y_mask'] if model_type == 'Seq2SeqLSTM' else None
                     
                     # Add CSV logger for test metrics
                     test_eval_callback = TestEvaluationCSVLogger(
                         X_test=X_test_final_for_callbacks,
                         y_test=y_outer_test_for_callbacks,
                         mask_value=mask_value_for_test,
-                        log_frequency=1
+                        log_frequency=1,
+                        predict_proba_fn=lstm_classifier.predict_proba,
                     )
                     # Insert BEFORE CSVLogger so test metrics are added to logs before CSV write
                     lstm_classifier.callbacks.insert(csv_logger_idx, test_eval_callback)
@@ -4157,7 +4577,8 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                             y_test=y_outer_test_for_callbacks,
                             tensorboard_dir=tensorboard_dir,
                             mask_value=mask_value_for_test,
-                            log_frequency=1
+                            log_frequency=1,
+                            predict_proba_fn=lstm_classifier.predict_proba,
                         )
                         lstm_classifier.callbacks.append(test_tensorboard_callback)
                         if verbose >= 1:
@@ -4236,13 +4657,17 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 y_test_proba_pos = y_test_pred_proba.ravel()
             
             # Handle model-specific test metrics
-            default_threshold = getattr(lstm_classifier, 'threshold', 0.5)
+            default_threshold = getattr(
+                lstm_classifier,
+                'lstm_threshold',
+                getattr(lstm_classifier, 'threshold', 0.5),
+            )
             
-            if model_type == 'seq2seq_lstm':
+            if model_type == 'Seq2SeqLSTM':
                 # Seq2Seq: Apply masking to test data
                 y_test_flat = y_outer_test.ravel()
                 y_test_proba_flat = y_test_proba_pos.ravel()
-                y_mask_val = mask_values.get('y_mask', -1)
+                y_mask_val = mask_values['y_mask']
                 mask = y_test_flat != y_mask_val
             else:
                 # Seq2Vec: No masking needed
@@ -4283,10 +4708,10 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 # Base confusion matrix components
                 try:
                     y_test_pred_default_full = (y_test_proba_pos > default_threshold).astype(int)
-                    if model_type == 'seq2seq_lstm':
+                    if model_type == 'Seq2SeqLSTM':
                         if y_test_pred_default_full.size == y_outer_test.size:
                             y_test_pred_default_full = y_test_pred_default_full.reshape(y_outer_test.shape)
-                        y_mask_val = mask_values.get('y_mask', -1)
+                        y_mask_val = mask_values['y_mask']
                         cm_base = Seq2SeqLSTM.eval_masked_confusion_matrix_components(
                             y_outer_test, y_test_pred_default_full, y_mask_val
                         )
@@ -4348,10 +4773,10 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 confusion_threshold = optimal_thresholds.get('f1', 0.5)
                 y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
                 
-                if model_type == 'seq2seq_lstm':
+                if model_type == 'Seq2SeqLSTM':
                     if y_test_pred_conf.size == y_outer_test.size:
                         y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
-                    y_mask_val = mask_values.get('y_mask', -1)
+                    y_mask_val = mask_values['y_mask']
                     cm_components = Seq2SeqLSTM.eval_masked_confusion_matrix_components(y_outer_test, y_test_pred_conf, y_mask_val)
                 else:
                     # Seq2Vec: Standard confusion matrix
@@ -4437,9 +4862,6 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                 
                 # Model and feature information
                 'best_hyperparameters': best_params.copy() if best_params else {},
-                'selected_features': best_features.copy() if best_features else [],
-                'selected_feature_names': best_feature_names.copy() if best_feature_names else [],
-                'selected_feature_details': best_feature_details.copy() if best_feature_details else [],
                 'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                 'n_selected_features': len(best_features) if best_features else 0,
                 
@@ -4456,10 +4878,20 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     'test_subject_name': test_subject_name,
                     'selection_parameters': {
                         'selection_score_metric': selection_score_metric,
-                        'selection_score_aggregation': selection_score_aggregation,
-                        'refit_scoring_metric': refit_scoring_metric,
-                    }
+                    'selection_score_aggregation': selection_score_aggregation,
+                    'refit_scoring_metric': refit_scoring_metric,
                 }
+                }
+                if model_type == 'Seq2VecMLPLSTM':
+                    hctsa_classifier = final_pipeline.steps[-1][1]
+                    hctsa_payload = build_hctsa_selection_payload(
+                        getattr(hctsa_classifier, 'hctsa_selected_features_', None),
+                        raw_feature_dim=raw_feature_dim,
+                        hctsa_feature_names=hctsa_feature_names,
+                        selection_report=getattr(hctsa_classifier, 'hctsa_selection_report_', None),
+                    )
+                    if hctsa_payload:
+                        comprehensive_sklearn_refit_results['feature_selection']['hctsa'] = hctsa_payload
                 comprehensive_sklearn_refit_results.update(result_metadata)
                 
                 # Save comprehensive sklearn refit results immediately
@@ -4718,20 +5150,20 @@ def main(argv=None):
     parser.add_argument(
         "--outer-subjects",
         type=str,
-        default="PW_SN61",
+        default=None,
         help="Comma-separated list of outer subjects to run (e.g., 'PW_EM59,PW_SN61')"
     )
     parser.add_argument(
         "--run-id",
         type=str,
-        default="hparams_test",
-        help="Optional string inserted into log directory names (default: ). Example: --run-id hparams_test"
+        default=None,
+        help="Optional string inserted into log directory names."
     )
     parser.add_argument(
         "--hyperparams-config",
         type=Path,
-        default=DEFAULT_HPARAMS_CONFIG,
-        help=f"Path to the hyperparameter JSON config (default: {DEFAULT_HPARAMS_CONFIG})"
+        required=True,
+        help="Path to the hyperparameter JSON config."
     )
     parser.add_argument(
         "--model-type",
@@ -4744,14 +5176,27 @@ def main(argv=None):
 
     hyperparams_config_path = Path(args.hyperparams_config).expanduser()
     configure_hyperparameter_settings(str(hyperparams_config_path))
-    selected_model_type = str(args.model_type or DEFAULT_MODEL_TYPE).strip().lower()
+    if DEFAULT_FEATURE_SOURCE is None or EXPERIMENT_NAME is None:
+        raise ValueError("Hyperparameter settings not configured. Check global_settings.feature_data and experiment_name.")
+    selected_model_type = str(args.model_type or DEFAULT_MODEL_TYPE).strip()
     if selected_model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(f"Unsupported model_type '{selected_model_type}'. Expected one of {SUPPORTED_MODEL_TYPES}.")
     
     verbose = 3
     n_jobs = 1  # Optimal for LSTM with GPU
     feature_source = DEFAULT_FEATURE_SOURCE
-    segment_cache_dir = resolve_feature_cache_directory()
+    segment_cache_dir = None
+    raw_cache_dir = None
+    hctsa_cache_dir = None
+    raw_source = None
+    hctsa_source = None
+    if feature_source.strip().lower() == 'mlp_lstm':
+        raw_cache_dir, hctsa_cache_dir = resolve_raw_hctsa_cache_directories()
+        raw_source, hctsa_source = resolve_raw_hctsa_sources()
+    else:
+        segment_cache_dir = resolve_feature_cache_directory()
+    if selected_model_type == 'Seq2VecMLPLSTM' and feature_source.strip().lower() != 'mlp_lstm':
+        raise ValueError("Seq2VecMLPLSTM requires feature_data.source='mlp_lstm'.")
     
     outer_subject_selection_str = args.outer_subjects
     outer_subject_filters = parse_outer_subject_selection(outer_subject_selection_str)
@@ -4761,7 +5206,7 @@ def main(argv=None):
     
         
     # Setup hierarchical experiment logging structure
-    channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD or 'beta'
+    channel_selection_method = DEFAULT_CHANNEL_SELECTION_METHOD
     run_id_raw = args.run_id
     run_id = sanitize_path_component(run_id_raw) if run_id_raw else None
     experiment_name = EXPERIMENT_NAME
@@ -4797,7 +5242,17 @@ def main(argv=None):
     logging.info(f"Using n_jobs={n_jobs} for parallel processing")
     logging.info(f"Log file: {log_file}")
     logging.info(f"Results directory: {experiment_dir}")
-    logging.info("[MAIN] Feature source: %s (cache dir: %s)", feature_source, segment_cache_dir)
+    if feature_source.strip().lower() == 'mlp_lstm':
+        logging.info(
+            "[MAIN] Feature source: %s (raw=%s, hctsa=%s)",
+            feature_source,
+            raw_source,
+            hctsa_source,
+        )
+        logging.info("[MAIN] raw cache dir: %s", raw_cache_dir)
+        logging.info("[MAIN] hctsa cache dir: %s", hctsa_cache_dir)
+    else:
+        logging.info("[MAIN] Feature source: %s (cache dir: %s)", feature_source, segment_cache_dir)
     logging.info("="*80)
     logging.info("NESTED CROSS-VALIDATION PIPELINE")
     logging.info("="*80)
@@ -4812,22 +5267,200 @@ def main(argv=None):
     logging.info("1. PREPROCESSING PIPELINE")
     logging.info("-" * 80)
 
-    segment_cache = HCTSASegmentCache(segment_cache_dir)
-    subject_channel_map_raw = SUBJECT_CHANNEL_PRIOR.copy()
-    subject_channel_map = {}
-    for subj, ch in subject_channel_map_raw.items():
-        canonical_ch = segment_cache._canonical_channel_label(ch)
-        subject_channel_map[subj] = canonical_ch
-    
-    if verbose >= 1 and subject_channel_map:
-        channel_counts = Counter(subject_channel_map.values())
-        channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
-        logging.info("[MAIN] Using subject-specific channel selection. Assignments: %s", channel_summary)
-        
-    TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
-        subject_channel_map=subject_channel_map
-    )
-    log_memory_usage()
+    raw_feature_dim = None
+    hctsa_feature_names = None
+    if feature_source.strip().lower() == 'mlp_lstm':
+        raw_cache = HCTSASegmentCache(raw_cache_dir)
+        hctsa_cache = HCTSASegmentCache(hctsa_cache_dir)
+
+        subject_channel_map_raw = SUBJECT_CHANNEL_PRIOR.copy()
+        subject_channel_map = {}
+        for subj, ch in subject_channel_map_raw.items():
+            canonical_ch = raw_cache._canonical_channel_label(ch)
+            subject_channel_map[subj] = canonical_ch
+
+        raw_combine_mode = 'channel_dim'
+        hctsa_combine_mode = 'concat'
+
+        channels_override = _normalize_channel_list(
+            CHANNEL_SELECTION_SETTINGS.get('channels'),
+            raw_cache
+        )
+        if channels_override:
+            subject_channel_map = {
+                subj: list(channels_override)
+                for subj in subject_channel_map_raw.keys()
+            }
+            if verbose >= 1:
+                logging.info(
+                    "[MAIN] Overriding channel selection with %d channel(s): %s (raw_mode=%s, hctsa_mode=%s)",
+                    len(channels_override),
+                    ", ".join(channels_override),
+                    raw_combine_mode,
+                    hctsa_combine_mode,
+                )
+
+        if verbose >= 1 and subject_channel_map:
+            channel_values = []
+            for value in subject_channel_map.values():
+                if isinstance(value, (list, tuple, set)):
+                    channel_values.extend(list(value))
+                else:
+                    channel_values.append(value)
+            channel_counts = Counter(channel_values)
+            channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
+            logging.info("[MAIN] Using subject-specific channel selection. Assignments: %s", channel_summary)
+
+        if any(isinstance(value, (list, tuple, set)) for value in subject_channel_map.values()):
+            raw_mat, raw_timeseries, raw_ops, raw_labels = raw_cache.load_subject_channels_data(
+                subject_channels_map=subject_channel_map,
+                combine_mode=raw_combine_mode,
+            )
+            hctsa_mat, hctsa_timeseries, hctsa_ops, hctsa_labels = hctsa_cache.load_subject_channels_data(
+                subject_channels_map=subject_channel_map,
+                combine_mode=hctsa_combine_mode,
+            )
+        else:
+            raw_mat, raw_timeseries, raw_ops, raw_labels = raw_cache.load_subject_channel_data(
+                subject_channel_map=subject_channel_map
+            )
+            hctsa_mat, hctsa_timeseries, hctsa_ops, hctsa_labels = hctsa_cache.load_subject_channel_data(
+                subject_channel_map=subject_channel_map
+            )
+
+        raw_mat, hctsa_mat, timeseries, labels = align_raw_hctsa_segments(
+            raw_mat,
+            raw_timeseries,
+            raw_labels,
+            hctsa_mat,
+            hctsa_timeseries,
+            hctsa_labels,
+        )
+        operations = hctsa_ops
+        log_memory_usage()
+
+        n_channels = None
+        if raw_mat.ndim == 3:
+            n_channels = raw_mat.shape[-1]
+            raw_mat = raw_mat.reshape(raw_mat.shape[0], -1)
+        else:
+            n_channels = 1
+        raw_feature_dim = raw_mat.shape[1]
+
+        if hctsa_source and hctsa_source.lower() == 'hctsa':
+            if verbose >= 1:
+                logging.info(f"[MAIN] 1.1 FEATURE FILTERING (HCTSA)")
+                logging.info("[MAIN] " + "-" * 40)
+
+            hctsa_mat, valid_features_mask, filter_report = filter_features(
+                hctsa_mat,
+                operations_df=operations,
+                variance_threshold=-np.inf,
+                missing_threshold=0.0,
+                outlier_iqr_factor=0.0,
+                outlier_contamination_threshold=0.1,
+                verbose=verbose
+            )
+
+            if isinstance(operations, pd.DataFrame):
+                operations = operations.iloc[valid_features_mask].reset_index(drop=True)
+            if verbose >= 1:
+                logging.info(
+                    "[MAIN] HCTSA feature filtering completed: %d -> %d features",
+                    int(valid_features_mask.sum()),
+                    hctsa_mat.shape[1]
+                )
+        else:
+            if verbose >= 1:
+                logging.info("[MAIN] 1.1 FEATURE FILTERING skipped (hctsa source='%s')", hctsa_source)
+            valid_features_mask = np.ones(hctsa_mat.shape[1], dtype=bool)
+            filter_report = {}
+
+        if channels_override and isinstance(operations, pd.DataFrame):
+            ops_frames = []
+            for channel in channels_override:
+                ops_copy = operations.copy()
+                if 'Name' in ops_copy.columns:
+                    ops_copy['Name'] = ops_copy['Name'].astype(str).apply(lambda name: f"{channel}:{name}")
+                ops_copy['channel'] = channel
+                ops_frames.append(ops_copy)
+            operations = pd.concat(ops_frames, ignore_index=True)
+
+        if isinstance(operations, pd.DataFrame):
+            if 'Name' in operations.columns:
+                hctsa_feature_names = operations['Name'].astype(str).tolist()
+            else:
+                hctsa_feature_names = operations.index.astype(str).tolist()
+
+        TS_DataMat = np.concatenate([raw_mat, hctsa_mat], axis=1)
+        operations = None
+    else:
+        segment_cache = HCTSASegmentCache(segment_cache_dir)
+        subject_channel_map_raw = SUBJECT_CHANNEL_PRIOR.copy()
+        subject_channel_map = {}
+        for subj, ch in subject_channel_map_raw.items():
+            canonical_ch = segment_cache._canonical_channel_label(ch)
+            subject_channel_map[subj] = canonical_ch
+
+        combine_mode = 'channel_dim' if selected_model_type in ('Seq2VecLSTM', 'Seq2VecCNN') else 'concat'
+
+        channels_override = _normalize_channel_list(
+            CHANNEL_SELECTION_SETTINGS.get('channels'),
+            segment_cache
+        )
+        if channels_override:
+            subject_channel_map = {
+                subj: list(channels_override)
+                for subj in subject_channel_map_raw.keys()
+            }
+            if verbose >= 1:
+                logging.info(
+                    "[MAIN] Overriding channel selection with %d channel(s): %s (mode=%s)",
+                    len(channels_override),
+                    ", ".join(channels_override),
+                    combine_mode,
+                )
+
+        if verbose >= 1 and subject_channel_map:
+            channel_values = []
+            for value in subject_channel_map.values():
+                if isinstance(value, (list, tuple, set)):
+                    channel_values.extend(list(value))
+                else:
+                    channel_values.append(value)
+            channel_counts = Counter(channel_values)
+            channel_summary = ", ".join(f"{ch}: {count}x" for ch, count in channel_counts.items())
+            logging.info("[MAIN] Using subject-specific channel selection. Assignments: %s", channel_summary)
+
+        n_channels = None
+        if any(isinstance(value, (list, tuple, set)) for value in subject_channel_map.values()):
+            TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channels_data(
+                subject_channels_map=subject_channel_map,
+                combine_mode=combine_mode,
+            )
+        else:
+            TS_DataMat, timeseries, operations, labels = segment_cache.load_subject_channel_data(
+                subject_channel_map=subject_channel_map
+            )
+        log_memory_usage()
+
+        if (
+            selected_model_type in ('Seq2VecLSTM', 'Seq2VecCNN')
+            and TS_DataMat.ndim == 3
+        ):
+            n_channels = TS_DataMat.shape[-1]
+            if channels_override and isinstance(operations, pd.DataFrame):
+                ops_frames = []
+                for channel in channels_override:
+                    ops_copy = operations.copy()
+                    if 'Name' in ops_copy.columns:
+                        ops_copy['Name'] = ops_copy['Name'].astype(str).apply(lambda name: f"{channel}:{name}")
+                    ops_copy['channel'] = channel
+                    ops_frames.append(ops_copy)
+                operations = pd.concat(ops_frames, ignore_index=True)
+            TS_DataMat = TS_DataMat.reshape(TS_DataMat.shape[0], -1)
+        elif selected_model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
+            n_channels = 1
     
     # Filter invalid features (only for HCTSA source)
     if feature_source.lower() == 'hctsa':
@@ -4860,6 +5493,9 @@ def main(argv=None):
         # Use filtered data for downstream processing
         TS_DataMat = TS_DataMat_filtered
         operations = operations_filtered
+    elif feature_source.lower() == 'mlp_lstm':
+        if verbose >= 1:
+            logging.info("[MAIN] 1.1 FEATURE FILTERING handled in raw/hctsa load")
     else:
         if verbose >= 1:
             logging.info(f"[MAIN] 1.1 FEATURE FILTERING skipped (source='{feature_source}')")
@@ -4873,6 +5509,8 @@ def main(argv=None):
             feature_names = operations.index.astype(str).tolist()
     else:
         feature_names = None
+
+    # n_channels assigned above when using seq2vec LSTM/CNN
     
     # Parse metadata and group by trials
     if verbose >= 1:
@@ -4910,7 +5548,7 @@ def main(argv=None):
     
     # Get parameter grid for hyperparameter logging setup (using dummy mask values for initial setup)
     from sklearn.model_selection import ParameterGrid
-    dummy_mask_values = {'X_mask': 0.0, 'y_mask': -1}  # Temporary for parameter grid setup
+    dummy_mask_values = SEQ2SEQ_MASK_VALUES
     default_param_grid = get_default_param_grid(selected_model_type, dummy_mask_values)
     
     # Handle different parameter grid structures
@@ -4940,7 +5578,7 @@ def main(argv=None):
         logging.error(f"Failed to setup hyperparameter experiment: {e}")
         hparam_logger = None
     
-    if selected_model_type == 'seq2seq_lstm':
+    if selected_model_type == 'Seq2SeqLSTM':
         # Sequence-to-sequence path (padding required)
         logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding (seq2seq LSTM)")
         logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
@@ -4961,9 +5599,10 @@ def main(argv=None):
             hparam_logger=hparam_logger,
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
-            data_source=feature_source
+            data_source=feature_source,
+            n_channels=n_channels,
         )
-    elif selected_model_type == 'seq2vec_lstm':
+    elif selected_model_type == 'Seq2VecLSTM':
         logging.info(f"[MAIN] Starting seq2vec LSTM nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
@@ -4984,8 +5623,9 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
+            n_channels=n_channels,
         )
-    elif selected_model_type == 'seq2vec_mlp':
+    elif selected_model_type == 'Seq2VecMLP':
         logging.info(f"[MAIN] Starting seq2vec MLP nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
@@ -5006,6 +5646,55 @@ def main(argv=None):
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
+            n_channels=n_channels,
+        )
+    elif selected_model_type == 'Seq2VecCNN':
+        logging.info(f"[MAIN] Starting seq2vec CNN nested CV on raw segments (no padding)")
+        epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+            TS_DataMat,
+            labels,
+            epoch_groups,
+            mask_values=None,
+            subject_names=subject_names,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters,
+            data_source=feature_source,
+            n_channels=n_channels,
+        )
+    elif selected_model_type == 'Seq2VecMLPLSTM':
+        logging.info("[MAIN] Starting seq2vec mlp-lstm nested CV (no padding)")
+        epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+            TS_DataMat,
+            labels,
+            epoch_groups,
+            mask_values=None,
+            subject_names=subject_names,
+            model_type=selected_model_type,
+            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            hctsa_feature_names=hctsa_feature_names,
+            outer_test_subjects=outer_subject_filters,
+            data_source=feature_source,
+            n_channels=n_channels,
+            raw_feature_dim=raw_feature_dim,
         )
     else:
         # Classical models operate per epoch (no padding)
@@ -5025,7 +5714,8 @@ def main(argv=None):
             hparam_logger=hparam_logger,
             feature_names=feature_names,
             outer_test_subjects=outer_subject_filters,
-            data_source=feature_source
+            data_source=feature_source,
+            n_channels=n_channels,
         )
 
     # Step 19: Final Evaluation (logged only; aggregation handled separately)
@@ -5036,7 +5726,7 @@ def main(argv=None):
     total_runtime_seconds = time.time() - script_start_time
     total_runtime_formatted = str(timedelta(seconds=int(total_runtime_seconds)))
     if verbose >= 1:
-        logging.info(f"[MAIN] Nested cross-validation complete!")
+        logging.info(f"\n[MAIN] Nested cross-validation complete!")
         logging.info(f"[MAIN] Total runtime: {total_runtime_formatted}")
 
 

@@ -11,32 +11,6 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_THRESHOLD_RANGE = (0.1, 0.9)
-DEFAULT_THRESHOLD_STEPS = 81
-DEFAULT_THRESHOLD_METRICS: List[str] = ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
-DEFAULT_Y_MASK_VALUE = -1
-
-
-def configure_lstm_defaults(
-    threshold_range: Optional[Tuple[float, float]] = None,
-    threshold_steps: Optional[int] = None,
-    threshold_metrics: Optional[List[str]] = None,
-    y_mask_value: Optional[float] = None,
-) -> None:
-    """
-    Update module-level defaults so external configuration changes propagate here.
-    """
-    global DEFAULT_THRESHOLD_RANGE, DEFAULT_THRESHOLD_STEPS
-    global DEFAULT_THRESHOLD_METRICS, DEFAULT_Y_MASK_VALUE
-
-    if threshold_range is not None:
-        DEFAULT_THRESHOLD_RANGE = tuple(threshold_range)
-    if threshold_steps is not None:
-        DEFAULT_THRESHOLD_STEPS = int(threshold_steps)
-    if threshold_metrics is not None:
-        DEFAULT_THRESHOLD_METRICS = list(threshold_metrics)
-    if y_mask_value is not None:
-        DEFAULT_Y_MASK_VALUE = y_mask_value
 
 class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
     def __init__(self, hidden_dims=[64], activations=['tanh'], 
@@ -46,7 +20,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                  loss='binary_crossentropy', mask_values=None, 
                  use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
                  outer_test_subject=None, inner_validation_subject=None,
-                 threshold_range=None, n_thresholds=None):
+                 threshold_range=None, n_thresholds=None, threshold_metrics=None):
         """
         LSTM Classifier for sequence-to-sequence binary classification.
         
@@ -57,6 +31,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         Args:
             threshold_range: Range of thresholds to search during optimization (min, max)
             n_thresholds: Number of threshold values to test during optimization
+            threshold_metrics: Metrics to optimize thresholds for
         """
         # LSTM architecture parameters
         self.hidden_dims = hidden_dims
@@ -84,7 +59,11 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         self.history_ = []
         
         if mask_values is None:
-            mask_values = {'X_mask': 0.0, 'y_mask': DEFAULT_Y_MASK_VALUE}
+            raise ValueError("Seq2SeqLSTM requires mask_values with 'X_mask' and 'y_mask'.")
+        if not isinstance(mask_values, dict):
+            raise ValueError("Seq2SeqLSTM mask_values must be a dict.")
+        if 'X_mask' not in mask_values or 'y_mask' not in mask_values:
+            raise ValueError("Seq2SeqLSTM mask_values must include 'X_mask' and 'y_mask'.")
         
         # Masking parameters
         self.mask_values = mask_values
@@ -92,8 +71,13 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         self.y_mask_ = None
         
         # Threshold optimization parameters
-        self.threshold_range = threshold_range or DEFAULT_THRESHOLD_RANGE
-        self.n_thresholds = n_thresholds or DEFAULT_THRESHOLD_STEPS
+        if threshold_range is None or n_thresholds is None or threshold_metrics is None:
+            raise ValueError("Seq2SeqLSTM requires threshold_range, n_thresholds, and threshold_metrics.")
+        if not isinstance(threshold_metrics, list) or not threshold_metrics:
+            raise ValueError("Seq2SeqLSTM threshold_metrics must be a non-empty list.")
+        self.threshold_metrics = threshold_metrics
+        self.threshold_range = threshold_range
+        self.n_thresholds = n_thresholds
         
         # Subject and fold tracking parameters
         self.experiment_dir = experiment_dir
@@ -797,7 +781,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
             raise ValueError("Model must be fitted before threshold optimization")
         
         if metrics is None:
-            metrics = DEFAULT_THRESHOLD_METRICS
+            metrics = self.threshold_metrics
 
         threshold_range = threshold_range or self.threshold_range
         n_thresholds = n_thresholds or self.n_thresholds
@@ -910,7 +894,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         Returns:
             dict: Optimized thresholds and scores for each metric (compatible with existing code)
         """
-        metrics = metrics or DEFAULT_THRESHOLD_METRICS
+        metrics = metrics or self.threshold_metrics
         threshold_range = threshold_range or self.threshold_range
         n_thresholds = n_thresholds or self.n_thresholds
         # Use the comprehensive threshold tuning method
