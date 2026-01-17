@@ -12,12 +12,14 @@ from .seq2seq_lstm import (
 from .seq2vec_lstm import Seq2VecLSTM
 from .seq2vec_mlp import Seq2VecMLP
 from .seq2vec_cnn import Seq2VecCNN
+from .seq2vec_mlplstm import Seq2VecMLPLSTM
 
 __all__ = [
     "Seq2SeqLSTM",
     "Seq2VecLSTM",
     "Seq2VecMLP",
     "Seq2VecCNN",
+    "Seq2VecMLPLSTM",
     "MonitoringMaskedAccuracy",
     "MonitoringMaskedF1Score",
     "MonitoringMaskedPrecision",
