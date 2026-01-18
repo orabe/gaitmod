@@ -1,6 +1,7 @@
-# gaitmod desktop client (PySide6)
+# gaitmod config editor (PySide6)
 
-Desktop UI that talks to the FastAPI backend over HTTP.
+Local desktop UI that loads/saves hyperparameter JSON configs with form controls,
+plus a basic local training launcher.
 
 ## First-time setup (laptop)
 
@@ -16,22 +17,13 @@ pip install -r requirements.txt
 ```bash
 cd /home/orabe/gaitmod/desktop_client
 source .venv/bin/activate
-export GAITMOD_API_BASE=http://localhost:8000
 python app.py
 ```
 
-## Backend (head node)
-
-Start the FastAPI backend on the HPC head node and forward port 8000:
-
-```bash
-ssh -L 8000:localhost:8000 <user>@<hpc-head-node>
-```
-
-The app expects the API to respond at `http://localhost:8000`. You can also
-change the API base URL inside the app header.
+If the config directory is different on your machine, click Browse and select
+the folder that contains your `*.json` config files.
 
 ## Notes
 
-- This app only calls the API; it does not run `sbatch` directly.
-- Files open in your default browser via the API `/api/results/{run_id}/file` endpoint.
+- Training runs `python gaitmod/train.py --hyperparams-config <path>` in the repo root.
+- Form controls are inferred from existing configs and `gaitmod/train.py` constants.
