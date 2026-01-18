@@ -11,8 +11,8 @@ Examples:
 
     # Compare two runs directly from refit JSON files
     python scripts/compare_nested_cv_results.py \
-        --refit-run Run1 "logs/PW_SN61/.../refit/*/refit_results.json" "logs/PW_EM59/.../refit/*/refit_results.json" \
-        --refit-run Run2 "logs/PW_SN61/.../refit/*/refit_results.json" "logs/PW_EM59/.../refit/*/refit_results.json"
+        --refit-run Run1 "logs/ExpA/PW_SN61/.../refit/*/refit_results.json" "logs/ExpA/PW_EM59/.../refit/*/refit_results.json" \
+        --refit-run Run2 "logs/ExpB/PW_SN61/.../refit/*/refit_results.json" "logs/ExpB/PW_EM59/.../refit/*/refit_results.json"
 """
 
 import argparse

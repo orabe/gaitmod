@@ -60,6 +60,21 @@
       "refit_scoring_metric": "f1",
       "selection_score_metric": "val_tuned_f1",
       "selection_score_aggregation": "median"
+    },
+    "global_selection": {
+      "inner_aggregation": "median",
+      "outer_aggregation": "median",
+      "selection_metric": null,
+      "subjects": [
+        "PW_EM59",
+        "PW_FH57",
+        "PW_HK59",
+        "PW_HZ58",
+        "PW_SN61",
+        "PW_SN66",
+        "PW_US68"
+      ],
+      "output_path": "logs/hparams_baselines_hctsa"
     }
   },
   "feature_params": {

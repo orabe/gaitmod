@@ -4,8 +4,8 @@ Aggregate nested CV refit JSON files (one per outer fold).
 
 Example:
     python scripts/aggregate_nested_cv_results.py \
-        "logs/PW_SN61/beta_fast_test_20251202_231856/outer_fold_05_test_PW_SN61/refit/*/refit_results.json" \
-        "logs/PW_EM59/beta_fast_test_20251202_231900/outer_fold_03_test_PW_EM59/refit/*/refit_results.json"
+        "logs/beta_fast_test_20251202_231856/PW_SN61/outer_fold_05_test_PW_SN61/refit/*/refit_results.json" \
+        "logs/beta_fast_test_20251202_231900/PW_EM59/outer_fold_03_test_PW_EM59/refit/*/refit_results.json"
 """
 
 import argparse

@@ -135,7 +135,7 @@ def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ou
 
 
 def main() -> None:
-    # pattern = 'logs/PW_US68/hparams_seq2vec_LSTM_raw/outer_fold_07_test_PW_US68/001_nf400_fsroc_auc_hd64_do0.2_lr0.001_ep5_bs8/'
+    # pattern = 'logs/hparams_seq2vec_LSTM_raw/PW_US68/outer_fold_07_test_PW_US68/001_nf400_fsroc_auc_hd64_do0.2_lr0.001_ep5_bs8/'
     # subject_paths = {
     #     "PW_EM59": [Path(pattern + "inner_fold_01_val_PW_EM59" + "/evaluation_results_scores.npz")],
     #     "PW_FH57": [Path(pattern + "inner_fold_02_val_PW_FH57" + "/evaluation_results_scores.npz")],
@@ -147,13 +147,13 @@ def main() -> None:
     
     model_type = "hparams_seq2seq_LSTM_hctsa_24configs_corrScr"
     pattern = (
-        f"logs/*/{model_type}/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
+        f"logs/{model_type}/*/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
     )
-    # example: logs/PW_US68/hparams_seq2seq_LSTM_raw/outer_fold_07_test_PW_US68/refit/001_nf400_fsroc_auc_hd64_do0.2_lr0.001_ep5_bs8/refit_results_scores.npz
+    # example: logs/hparams_seq2seq_LSTM_raw/PW_US68/outer_fold_07_test_PW_US68/refit/001_nf400_fsroc_auc_hd64_do0.2_lr0.001_ep5_bs8/refit_results_scores.npz
     
     subject_paths: dict[str, list[Path]] = {}
     for score_path in Path(".").glob(pattern):
-        subject = score_path.parts[1]
+        subject = score_path.parts[2]
         if subject not in subject_paths:
             subject_paths[subject] = []
         subject_paths[subject].append(score_path)

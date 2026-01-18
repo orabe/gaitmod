@@ -1,10 +1,10 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2VecCNN_raw_betaChs",
+    "experiment_name": "Seq2VecCNN_hctsa_betaChs",
     "model_type": "Seq2VecCNN",
     "feature_data": {
-      "source": "raw",
-      "segment_cache_dir": "data/raw_segments"
+      "source": "hctsa",
+      "segment_cache_dir": "data/hctsa_segments"
     },
     "callbacks": {
       "progress_frequency": 1,
@@ -56,11 +56,26 @@
       "refit_scoring_metric": "val_f1",
       "selection_score_metric": "val_f1",
       "selection_score_aggregation": "median"
+    },
+    "global_selection": {
+      "inner_aggregation": "median",
+      "outer_aggregation": "median",
+      "selection_metric": null,
+      "subjects": [
+        "PW_EM59",
+        "PW_FH57",
+        "PW_HK59",
+        "PW_HZ58",
+        "PW_SN61",
+        "PW_SN66",
+        "PW_US68"
+      ],
+      "output_path": "logs/Seq2VecCNN_raw_betaChs"
     }
   },
   "feature_params": {
     "feature_selector__enabled": [
-      false
+      true
     ],
     "feature_selector__selection_method": [
       "roc_auc"
