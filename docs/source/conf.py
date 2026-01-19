@@ -22,7 +22,7 @@ extensions = [
 autosummary_generate = True  # Turn on sphinx.ext.autosummary
 
 # -- Options for HTML output -------------------------------------------------
-html_theme = 'sphinx_rtd_theme' # "pydata_sphinx_theme" 
+html_theme = 'pydata_sphinx_theme' # "pydata_sphinx_theme" 
 
 html_theme_options = {
     "navigation_with_keys": True,
