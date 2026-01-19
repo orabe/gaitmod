@@ -12,6 +12,9 @@ It provides tools to:
 * Train and evaluate machine learning models
 * Visualize results
 
+![GaitMod GUI Overview](docs/images/gaitmod_app1.png)
+*GaitMod desktop application interface*
+
 ## Table of Contents
 
 - [GaitMod](#gaitmod)
@@ -59,6 +62,8 @@ python main.py
 
 Refer to the [documentation on Read the Docs](https://gaitmod.readthedocs.io/) for detailed usage instructions.
 
+![GaitMod Analysis Panel](docs/images/gaitmod_app2.png)
+*Analysis panel for model selection and hyperparameters tuning*
 
 ## Project Structure
 

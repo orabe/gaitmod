@@ -1,4 +1,5 @@
 sphinx>=4.0 # Or a specific recent version
 sphinx-rtd-theme
+pydata-sphinx-theme
 sphinx-autodoc-typehints
 myst-parser
