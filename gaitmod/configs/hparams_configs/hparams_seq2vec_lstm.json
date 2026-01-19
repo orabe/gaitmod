@@ -78,10 +78,10 @@
       0.01
     ],
     "feature_selector__enabled": [
-      false
+      true
     ],
     "feature_selector__n_features": [
-      400
+      50
     ],
     "feature_selector__selection_method": [
       "roc_auc"
@@ -90,7 +90,7 @@
       0.7
     ]
   },
-  "seq2vec_lstm": {
+  "Seq2VecLSTM": {
     "feature_params": {
       "scaler__scaler_type": [
         "standard"
@@ -130,7 +130,7 @@
         10
       ],
       "classifier__epochs": [
-        100
+        5
       ],
       "classifier__batch_size": [
         128

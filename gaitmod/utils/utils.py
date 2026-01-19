@@ -1,6 +1,4 @@
 import os
-# Ensure TensorFlow C++ backend hides INFO and WARNING logs before imports
-os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
 import yaml
 from sklearn.model_selection import StratifiedKFold
 import numpy as np
@@ -11,7 +9,6 @@ import subprocess
 import h5py
 import pandas as pd
 from pathlib import Path
-import tensorflow as tf
 
 def create_directory(directory: str) -> None:
     """Creates a directory if it does not already exist.
@@ -459,84 +456,16 @@ def _sync_folder(config, target_base_path, direction, force_sync, verbose):
 #     _reset_tf_session()
 
 
-# Suppress TensorFlow logs (should be set before importing TensorFlow)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs (0 = all, 1 = info, 2 = warnings, 3 = errors)
-
-# Function to enable memory growth for GPUs
-def _enable_memory_growth():
-    # This won't be applicable on Mac unless you have NVIDIA GPU or Metal API (for Apple Silicon).
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        for gpu in gpus:
-            try:
-                tf.config.experimental.set_memory_growth(gpu, True)
-                print(f"Memory growth enabled for GPU {gpu}")
-            except RuntimeError as e:
-                print(f"Failed to enable memory growth for GPU {gpu}: {e}")
-    else:
-        print("No GPU available for memory growth settings.")
-
-
-# Log available devices and GPU details
-def _log_device_details():
-    print("Available devices:")
-    for device in tf.config.list_logical_devices():
-        print(f"  - {device}")
-
-    gpus = tf.config.list_physical_devices('GPU')
-    if gpus:
-        print(f"\nRunning on GPU ({len(gpus)} available):")
-        for i, gpu in enumerate(gpus):
-            print(f"  - GPU {i}: {gpu}")
-            try:
-                gpu_details = tf.config.experimental.get_device_details(gpu)
-                for key, value in gpu_details.items():
-                    print(f"    {key}: {value}")
-            except Exception:
-                print("    No additional GPU details available.")
-    else:
-        print("\nRunning on CPU.")
-    
-    # Log logical GPUs (useful for multi-GPU setups)
-    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-    print(f"\nLogical GPUs Available: {len(logical_gpus)}")
-    for i, lgpu in enumerate(logical_gpus):
-        print(f"Logical GPU {i}: {lgpu}")
-
-# Enable device placement logging
-def _configure_tf_logs():
-    tf.debugging.set_log_device_placement(True)
-    tf.get_logger().setLevel('ERROR')  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR', 'FATAL'
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logs
-
-# Clear TensorFlow session and log CUDA details
-def _reset_tf_session():
-    tf.keras.backend.clear_session()
-    print("\nTensorFlow Build Details:")
-    print("Built with CUDA:", tf.test.is_built_with_cuda())
-    print("Available GPUs:", tf.config.list_physical_devices('GPU'))
-    if tf.test.is_built_with_cuda():
-        print("CUDA version:", tf.__version__)
-    else:
-        print("TensorFlow is not built with CUDA.")
-
-# Initialize TensorFlow configuration
 def initialize_tf():
-    _enable_memory_growth() # Enable memory growth for GPUs before initializing TensorFlow
-    _log_device_details()
-    _configure_tf_logs()
-    _reset_tf_session()
+    """Compatibility shim for TensorFlow setup (moved to training.tf_setup)."""
+    from gaitmod.training.tf_setup import initialize_tf as _initialize_tf
 
-    # Additional Mac-specific checks (if using Metal API for Apple Silicon)
-    if tf.config.list_physical_devices('GPU'):
-        if not tf.test.is_built_with_cuda():
-            # If TensorFlow is built for Metal (Apple Silicon) but not CUDA, it indicates Metal backend is used
-            print("\nUsing Metal API for Apple Silicon (if applicable).")
-        else:
-            print("\nCUDA-compatible GPU detected, using NVIDIA GPU.")
+    return _initialize_tf()
 
 
-# Optional: Disable XLA if needed
 def disable_xla():
-    os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices=false'
+    """Compatibility shim for disabling XLA (moved to training.tf_setup)."""
+    from gaitmod.training.tf_setup import disable_xla as _disable_xla
+
+    return _disable_xla()
    

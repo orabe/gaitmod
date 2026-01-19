@@ -94,7 +94,7 @@
       0.7
     ]
   },
-  "seq2vec_mlp": {
+  "Seq2VecMLP": {
     "feature_params": {
       "scaler__scaler_type": [
         "standard"
