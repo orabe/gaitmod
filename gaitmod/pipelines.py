@@ -76,7 +76,8 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    selector_mask_value = None if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM') else mask_values['X_mask']
+    # Only Seq2SeqLSTM uses value-based masking; all other models should treat inputs as fully valid.
+    selector_mask_value = mask_values.get('X_mask') if model_type == 'Seq2SeqLSTM' else None
     selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     

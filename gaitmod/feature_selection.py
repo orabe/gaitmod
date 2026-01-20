@@ -321,9 +321,29 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         
         return final_indices
     
-    def fit(self, X, y):
+    def fit(self, X, y, **kwargs):
         """Fit feature selector."""
         X = np.asarray(X)
+        channel_grouping = bool(kwargs.get('channel_grouping', False))
+        n_channels = kwargs.get('n_channels', None)
+        preferred_channel_indices = kwargs.get('preferred_channel_indices', None)
+
+        if (
+            channel_grouping
+            and self.enabled
+            and X.ndim == 2
+            and n_channels is not None
+            and int(n_channels) > 1
+        ):
+            n_channels_int = int(n_channels)
+            if X.shape[1] % n_channels_int == 0:
+                return self._fit_channel_grouped(
+                    X,
+                    y,
+                    n_channels=n_channels_int,
+                    preferred_channel_indices=preferred_channel_indices,
+                )
+
         # Determine number of features (handle both 2D and 3D data)
         n_features = X.shape[-1]  # Last dimension is always features
         self.selection_report_ = self._init_selection_report(n_features)
@@ -495,6 +515,92 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             )
             self._mark_pending_steps(status='skipped', reason='Exception triggered fallback selection')
             
+        return self
+
+    def _fit_channel_grouped(self, X, y, n_channels: int, preferred_channel_indices=None):
+        """
+        Channel-grouped feature selection for flattened multi-channel inputs.
+
+        Assumes X was flattened from (n_samples, n_base_features, n_channels) using
+        C-order reshape, so columns are ordered as:
+            base_feature_0: [ch0, ch1, ..., chN-1],
+            base_feature_1: [ch0, ch1, ..., chN-1], ...
+
+        The selector learns which *base features* to keep using only one reference
+        channel per sample (usually the subject's preferred channel), then applies
+        the same base-feature selection to all channels (keeps complete groups).
+        """
+        X = np.asarray(X)
+        y = np.asarray(y).ravel()
+        n_total_features = int(X.shape[1])
+        n_base_features = n_total_features // int(n_channels)
+
+        # Build per-sample reference channel indices.
+        if preferred_channel_indices is None:
+            ref_idx = np.zeros(X.shape[0], dtype=np.int64)
+        else:
+            ref_idx = np.asarray(preferred_channel_indices, dtype=np.int64).reshape(-1)
+            if ref_idx.shape[0] != X.shape[0]:
+                raise ValueError("preferred_channel_indices must have the same length as X.")
+            ref_idx = np.clip(ref_idx, 0, int(n_channels) - 1)
+
+        base_offsets = (np.arange(n_base_features, dtype=np.int64) * int(n_channels))[None, :]
+        gather_idx = base_offsets + ref_idx[:, None]
+        X_ref = np.take_along_axis(X, gather_idx, axis=1)
+
+        # Interpret n_features as a budget for total selected columns; convert to base-feature budget.
+        requested_total = int(self.n_features)
+        requested_base = max(1, int(np.ceil(requested_total / float(n_channels))))
+
+        original_n_features = self.n_features
+        try:
+            self.n_features = requested_base
+            self.fit(X_ref, y, channel_grouping=False)
+            base_selected = list(self.selected_features_ or [])
+            base_scores = np.asarray(self.feature_scores_, dtype=float) if self.feature_scores_ is not None else None
+            base_report = dict(self.selection_report_) if self.selection_report_ is not None else None
+        finally:
+            self.n_features = original_n_features
+
+        expanded_selected = [
+            int(base_idx) * int(n_channels) + int(ch)
+            for base_idx in base_selected
+            for ch in range(int(n_channels))
+        ]
+        expanded_selected = sorted(set(expanded_selected))
+
+        self.selected_features_ = expanded_selected
+        if base_scores is not None and base_scores.shape[0] == n_base_features:
+            self.feature_scores_ = np.repeat(base_scores, int(n_channels))
+        else:
+            self.feature_scores_ = np.ones(n_total_features)
+
+        # Build a report that reflects the expanded feature space.
+        self.selection_report_ = base_report or self._init_selection_report(n_base_features)
+        self.selection_report_['channel_grouping'] = {
+            'enabled': True,
+            'n_channels': int(n_channels),
+            'base_features': int(n_base_features),
+            'requested_total_features': int(requested_total),
+            'requested_base_features': int(requested_base),
+            'selected_base_features': int(len(base_selected)),
+            'selected_total_features': int(len(expanded_selected)),
+        }
+        self._set_final_strategy(
+            'channel_grouped_top_k',
+            requested_total_features=int(requested_total),
+            requested_base_features=int(requested_base),
+            selected_base_features=int(len(base_selected)),
+            selected_total_features=int(len(expanded_selected)),
+            n_channels=int(n_channels),
+        )
+
+        logging.info(
+            "Feature selection (channel-grouped): selected %d base features -> %d total features across %d channels",
+            len(base_selected),
+            len(expanded_selected),
+            int(n_channels),
+        )
         return self
     
     def transform(self, X):

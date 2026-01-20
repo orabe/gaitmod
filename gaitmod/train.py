@@ -2646,12 +2646,10 @@ def run_nested_cv_classical(
     fixed_params_source: Optional[str] = None,
 ):
     """
-    Nested cross-validation for epoch-level models (classical + seq2vec LSTM).
+    Nested cross-validation for epoch-level classical (non-neural) models.
     
     Each sample corresponds to a single epoch (no padding), preserving LOSO CV
     by grouping epochs by subject.
-
-    For seq2vec LSTM/CNN, inputs are reshaped to (n_samples, n_features, n_channels).
     """
     from sklearn.model_selection import ParameterGrid, LeaveOneGroupOut
     from sklearn.metrics import (
@@ -2671,6 +2669,13 @@ def run_nested_cv_classical(
         except AttributeError:
             feature_names = list(feature_names)
 
+    if model_type in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
+        raise ValueError(
+            "run_nested_cv_classical only supports classical model types "
+            "('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn'). "
+            "Use run_loso_cv_dl for sequence/seq2vec models."
+        )
+
     selection_score_aggregation = (selection_score_aggregation or 'median').lower()
     if selection_score_aggregation not in {'median', 'mean'}:
         raise ValueError(
@@ -2688,9 +2693,6 @@ def run_nested_cv_classical(
                 continue
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
-
-    if channel_selection_method is None:
-        raise ValueError("channel_selection_method is not configured. Check global_settings.channel_selection.default_method.")
 
     result_metadata = {'model_type': model_type, 'data_source': data_source}
 
@@ -2816,19 +2818,9 @@ def run_nested_cv_classical(
                     )
 
                     try:
-                        callbacks, effective_monitor = _prepare_sequence_model_callbacks(
-                            model_type=model_type,
-                            params=params,
-                            experiment_dir=experiment_dir,
-                            outer_fold=outer_fold + 1,
-                            inner_fold=inner_fold + 1,
-                            outer_test_subject=test_subject_name,
-                            inner_validation_subject=val_subject_name,
-                            has_validation_data=True,
-                        )
                         inner_pipeline, _ = build_pipeline(
                             model_type=model_type,
-                            mask_values=SEQ2SEQ_MASK_VALUES,
+                            mask_values=None,
                             experiment_dir=experiment_dir,
                             outer_fold=outer_fold + 1,
                             inner_fold=inner_fold + 1,
@@ -2836,24 +2828,15 @@ def run_nested_cv_classical(
                             inner_validation_subject=val_subject_name,
                             params=params,
                             has_validation_data=True,
-                            callbacks=callbacks,
-                            effective_monitor=effective_monitor,
-                            n_channels=n_channels,
-                            threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
-                            n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
-                            threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
+                            callbacks=None,
+                            effective_monitor=None,
+                            n_channels=None,
+                            threshold_range=None,
+                            n_thresholds=None,
+                            threshold_metrics=None,
                         )
                         inner_pipeline.set_params(**params)
-                        if model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
-                            _fit_pipeline_with_validation(
-                                inner_pipeline,
-                                X_inner_train,
-                                y_inner_train,
-                                validation_data=(X_inner_val, y_inner_val),
-                                n_channels=n_channels,
-                            )
-                        else:
-                            inner_pipeline.fit(X_inner_train, y_inner_train)
+                        inner_pipeline.fit(X_inner_train, y_inner_train)
 
                         y_train_proba = inner_pipeline.predict_proba(X_inner_train)
                         if y_train_proba.ndim > 1 and y_train_proba.shape[1] >= 2:
@@ -2950,13 +2933,6 @@ def run_nested_cv_classical(
                             'class_dist': dict(zip(*np.unique(y_inner_val, return_counts=True))),
                         }
 
-                        hctsa_selected_features = None
-                        hctsa_selection_report = None
-                        if model_type == 'Seq2VecMLPLSTM':
-                            hctsa_classifier = inner_pipeline.steps[-1][1]
-                            hctsa_selected_features = getattr(hctsa_classifier, 'hctsa_selected_features_', None)
-                            hctsa_selection_report = getattr(hctsa_classifier, 'hctsa_selection_report_', None)
-
                         comprehensive_results = create_comprehensive_results_dict(
                             fold_scores=fold_scores,
                             optimal_thresholds=optimal_thresholds,
@@ -2971,10 +2947,6 @@ def run_nested_cv_classical(
                             restored_epoch=None,
                             learning_rate_history=None,
                             feature_selection_report=selection_report,
-                            hctsa_selected_features=hctsa_selected_features,
-                            hctsa_selection_report=hctsa_selection_report,
-                            hctsa_feature_names=hctsa_feature_names,
-                            raw_feature_dim=raw_feature_dim,
                         )
                         comprehensive_results.update(result_metadata)
                         comprehensive_results['selection_parameters'] = {
@@ -3093,20 +3065,9 @@ def run_nested_cv_classical(
             logging.info(f"[CV_SKLEARN] Best params: {best_params}")
             logging.info(f"[CV_SKLEARN] Best CV score: {best_score:.4f}")
 
-        callbacks, effective_monitor = _prepare_sequence_model_callbacks(
-            model_type=model_type,
-            params=best_params,
-            experiment_dir=experiment_dir,
-            outer_fold=outer_fold + 1,
-            inner_fold=None,
-            outer_test_subject=test_subject_name,
-            inner_validation_subject=None,
-            has_validation_data=False,
-        )
-
         final_pipeline, _ = build_pipeline(
             model_type=model_type,
-            mask_values=SEQ2SEQ_MASK_VALUES,
+            mask_values=None,
             experiment_dir=experiment_dir,
             outer_fold=outer_fold + 1,
             inner_fold=None,
@@ -3114,12 +3075,12 @@ def run_nested_cv_classical(
             inner_validation_subject=None,
             params=best_params,
             has_validation_data=False,
-            callbacks=callbacks,
-            effective_monitor=effective_monitor,
-            n_channels=n_channels,
-            threshold_range=SEQ2SEQ_THRESHOLD_RANGE,
-            n_thresholds=SEQ2SEQ_THRESHOLD_STEPS,
-            threshold_metrics=SEQ2SEQ_THRESHOLD_METRICS,
+            callbacks=None,
+            effective_monitor=None,
+            n_channels=None,
+            threshold_range=None,
+            n_thresholds=None,
+            threshold_metrics=None,
         )
         final_pipeline.set_params(**best_params)
 
@@ -3133,61 +3094,7 @@ def run_nested_cv_classical(
             'balanced_accuracy': 0.5,
         }
 
-        # For seq2vec models, add test evaluation callback before training
-        if model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
-            classifier = final_pipeline.steps[-1][1]
-            
-            # Add test evaluation callbacks (CSV + TensorBoard) BEFORE CSVLogger
-            existing_callbacks = getattr(classifier, 'callbacks', [])
-            
-            # Find CSVLogger and TensorBoard positions
-            csv_logger_idx = None
-            tensorboard_dir = None
-            for idx, cb in enumerate(existing_callbacks):
-                if isinstance(cb, CSVLogger):
-                    csv_logger_idx = idx
-                # Get tensorboard directory from HyperparameterTensorBoardCallback
-                if isinstance(cb, HyperparameterTensorBoardCallback):
-                    tensorboard_dir = cb.log_dir
-            
-            if csv_logger_idx is not None:
-                # Add CSV logger for test metrics
-                test_eval_callback = TestEvaluationCSVLogger(
-                    X_test=X_outer_test,
-                    y_test=y_outer_test,
-                    mask_value=None,  # Classical models don't use masking
-                    log_frequency=1,
-                    predict_proba_fn=classifier.predict_proba,
-                )
-                # Insert BEFORE CSVLogger so test metrics are added to logs before CSV write
-                if not hasattr(classifier, 'callbacks'):
-                    classifier.callbacks = []
-                classifier.callbacks.insert(csv_logger_idx, test_eval_callback)
-                if verbose >= 1:
-                    logging.info(f"[CV_SKLEARN] Added test evaluation CSV callback (monitoring only, no data leakage)")
-                
-                # Add TensorBoard logger for test metrics
-                if tensorboard_dir:
-                    test_tensorboard_callback = TestTensorBoardLogger(
-                        X_test=X_outer_test,
-                        y_test=y_outer_test,
-                        tensorboard_dir=tensorboard_dir,
-                        mask_value=None,  # Classical models don't use masking
-                        log_frequency=1,
-                        predict_proba_fn=classifier.predict_proba,
-                    )
-                    classifier.callbacks.append(test_tensorboard_callback)
-                    if verbose >= 1:
-                        logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
-            
-            _fit_pipeline_with_validation(
-                final_pipeline,
-                X_outer_train,
-                y_outer_train,
-                n_channels=n_channels,
-            )
-        else:
-            final_pipeline.fit(X_outer_train, y_outer_train)
+        final_pipeline.fit(X_outer_train, y_outer_train)
 
         # Train-set metrics (for completeness)
         y_train_proba = final_pipeline.predict_proba(X_outer_train)
@@ -3316,16 +3223,6 @@ def run_nested_cv_classical(
                     'refit_scoring_metric': refit_scoring_metric,
                 },
             }
-            if model_type == 'Seq2VecMLPLSTM':
-                hctsa_classifier = final_pipeline.steps[-1][1]
-                hctsa_payload = build_hctsa_selection_payload(
-                    getattr(hctsa_classifier, 'hctsa_selected_features_', None),
-                    raw_feature_dim=raw_feature_dim,
-                    hctsa_feature_names=hctsa_feature_names,
-                    selection_report=getattr(hctsa_classifier, 'hctsa_selection_report_', None),
-                )
-                if hctsa_payload:
-                    comprehensive_refit_results['feature_selection']['hctsa'] = hctsa_payload
             comprehensive_refit_results.update(result_metadata)
             json_path = save_evaluation_results(
                 results_dict=comprehensive_refit_results,
@@ -3400,7 +3297,11 @@ def run_nested_cv_classical(
     return outer_results, all_best_params, experiment_dir
 
 
-def run_loso_cv_lstm(X, y, groups, mask_values=None,
+def run_loso_cv_dl(
+    X,
+    y,
+    groups,
+    mask_values=None,
                           subject_names=None,
                           model_type='Seq2SeqLSTM',
                           refit_scoring_metric='f1',
@@ -3416,6 +3317,8 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                           data_source=None,
                           n_channels: Optional[int] = None,
                           raw_feature_dim: Optional[int] = None,
+                          preferred_channel_map: Optional[Dict[str, str]] = None,
+                          channels_order: Optional[List[str]] = None,
                           fixed_params: Optional[Dict[str, Any]] = None,
                           fixed_params_source: Optional[str] = None,
                           fixed_thresholds: Optional[Dict[int, Dict[str, float]]] = None):
@@ -3494,7 +3397,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
 
     if model_type not in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         raise ValueError(
-            "run_loso_cv_lstm only supports model_type='Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or "
+            "run_loso_cv_dl only supports model_type='Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or "
             "'Seq2VecMLPLSTM', "
             f"got '{model_type}'."
         )
@@ -3514,6 +3417,27 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             raise ValueError(f"{model_type} expects a 2D input array, got {X.ndim}D.")
 
     result_metadata = {'model_type': model_type, 'data_source': data_source}
+
+    def _resolve_preferred_channel_indices(group_ids: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Map each sample's group/subject to a preferred channel index in channels_order.
+        Returns None when required metadata is missing.
+        """
+        if preferred_channel_map is None or not channels_order:
+            return None
+        if subject_names is None:
+            return None
+
+        channel_to_index = {str(ch): idx for idx, ch in enumerate(channels_order)}
+        indices = np.zeros(len(group_ids), dtype=np.int64)
+        for i, gid in enumerate(group_ids):
+            try:
+                subject = subject_names[int(gid)]
+            except Exception:
+                subject = None
+            preferred = preferred_channel_map.get(subject) if subject is not None else None
+            indices[i] = channel_to_index.get(preferred, 0)
+        return indices
 
     def _extract_selection_score(score_dict):
         """Safely fetch the configured selection metric from a fold score dict."""
@@ -3742,8 +3666,26 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                     X_train_transformed = X_inner_train
                     for step_name, transformer in preprocessing_steps:
                         if verbose >= 2:
-                            logging.info(f"[CV_SKLEARN]       Fitting {step_name} on training data: {X_train_transformed.shape}")
-                        transformer.fit(X_train_transformed, y_inner_train)
+                            logging.info(
+                                f"[CV_SKLEARN]       Fitting {step_name} on training data: {X_train_transformed.shape}"
+                            )
+                        fit_kwargs = {}
+                        if (
+                            step_name == 'feature_selector'
+                            and model_type in ('Seq2VecLSTM', 'Seq2VecCNN')
+                            and n_channels is not None
+                            and int(n_channels) > 1
+                        ):
+                            preferred_idx = _resolve_preferred_channel_indices(
+                                groups_outer_train[inner_train_idx]
+                            )
+                            if preferred_idx is not None:
+                                fit_kwargs = {
+                                    'channel_grouping': True,
+                                    'n_channels': int(n_channels),
+                                    'preferred_channel_indices': preferred_idx,
+                                }
+                        transformer.fit(X_train_transformed, y_inner_train, **fit_kwargs)
                         X_train_transformed = transformer.transform(X_train_transformed)
                     train_shape_for_logging = X_train_transformed.shape
 
@@ -3772,24 +3714,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
 
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
-                        if getattr(lstm_classifier, 'callbacks', None):
-                            tensorboard_dir = None
-                            for cb in lstm_classifier.callbacks:
-                                if isinstance(cb, HyperparameterTensorBoardCallback):
-                                    tensorboard_dir = cb.log_dir
-                                    break
-                            if tensorboard_dir:
-                                lstm_classifier.callbacks.append(
-                                    TestTensorBoardLogger(
-                                        X_test=X_val_transformed,
-                                        y_test=y_inner_val_reshaped,
-                                        tensorboard_dir=tensorboard_dir,
-                                        mask_value=None,
-                                        log_frequency=1,
-                                        log_subdir='final_val',
-                                        predict_proba_fn=lstm_classifier.predict_proba,
-                                    )
-                                )
+                        # Keep the additional "final_val" TensorBoard stream only for Seq2VecMLPLSTM.
                         if verbose >= 2:
                             logging.info(f"[CV_SKLEARN]       Training Seq2Vec LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
                         lstm_classifier.fit(X_train_transformed, y_inner_train_reshaped)
@@ -3799,7 +3724,7 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
                         y_inner_val_reshaped = y_inner_val.reshape(-1, 1) if y_inner_val.ndim == 1 else y_inner_val
 
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val_reshaped)
-                        if getattr(lstm_classifier, 'callbacks', None):
+                        if model_type == 'Seq2VecMLPLSTM' and getattr(lstm_classifier, 'callbacks', None):
                             tensorboard_dir = None
                             for cb in lstm_classifier.callbacks:
                                 if isinstance(cb, HyperparameterTensorBoardCallback):
@@ -4494,10 +4419,10 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             refit_learning_rate_history = None
             if model_type == 'Seq2SeqLSTM':
                 if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
-                    raise ValueError('run_loso_cv_lstm with Seq2SeqLSTM requires 3D padded inputs for final retraining.')
+                    raise ValueError('run_loso_cv_dl with Seq2SeqLSTM requires 3D padded inputs for final retraining.')
             elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
                 if X_outer_train.ndim != 2 or X_outer_test.ndim != 2:
-                    raise ValueError(f"run_loso_cv_lstm with {model_type} requires 2D inputs for final retraining.")
+                    raise ValueError(f"run_loso_cv_dl with {model_type} requires 2D inputs for final retraining.")
 
             preprocessing_steps = final_pipeline.steps[:-1]
             lstm_classifier = final_pipeline.steps[-1][1]
@@ -4547,7 +4472,21 @@ def run_loso_cv_lstm(X, y, groups, mask_values=None,
             # Fit preprocessing steps on full training data
             X_train_final = X_outer_train
             for step_name, transformer in preprocessing_steps:
-                transformer.fit(X_train_final, y_outer_train)
+                fit_kwargs = {}
+                if (
+                    step_name == 'feature_selector'
+                    and model_type in ('Seq2VecLSTM', 'Seq2VecCNN')
+                    and n_channels is not None
+                    and int(n_channels) > 1
+                ):
+                    preferred_idx = _resolve_preferred_channel_indices(groups_outer_train)
+                    if preferred_idx is not None:
+                        fit_kwargs = {
+                            'channel_grouping': True,
+                            'n_channels': int(n_channels),
+                            'preferred_channel_indices': preferred_idx,
+                        }
+                transformer.fit(X_train_final, y_outer_train, **fit_kwargs)
                 X_train_final = transformer.transform(X_train_final)
             train_shape_for_logging = X_train_final.shape
             
@@ -5656,7 +5595,7 @@ def main(argv=None):
 
         X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
             X_padded, y_padded, groups,
             subject_names=subject_names,
             mask_values=mask_values,
@@ -5680,7 +5619,7 @@ def main(argv=None):
         logging.info(f"[MAIN] Starting seq2vec LSTM nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
             TS_DataMat,
             labels,
             epoch_groups,
@@ -5698,6 +5637,8 @@ def main(argv=None):
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
             n_channels=n_channels,
+            preferred_channel_map=SUBJECT_CHANNEL_PRIOR,
+            channels_order=channels_override,
             fixed_params=fixed_params,
             fixed_params_source=fixed_params_source,
             fixed_thresholds=fixed_thresholds,
@@ -5706,7 +5647,7 @@ def main(argv=None):
         logging.info(f"[MAIN] Starting seq2vec MLP nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
             TS_DataMat,
             labels,
             epoch_groups,
@@ -5732,7 +5673,7 @@ def main(argv=None):
         logging.info(f"[MAIN] Starting seq2vec CNN nested CV on raw segments (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
             TS_DataMat,
             labels,
             epoch_groups,
@@ -5750,6 +5691,8 @@ def main(argv=None):
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
             n_channels=n_channels,
+            preferred_channel_map=SUBJECT_CHANNEL_PRIOR,
+            channels_order=channels_override,
             fixed_params=fixed_params,
             fixed_params_source=fixed_params_source,
             fixed_thresholds=fixed_thresholds,
@@ -5758,7 +5701,7 @@ def main(argv=None):
         logging.info("[MAIN] Starting seq2vec mlp-lstm nested CV (no padding)")
         epoch_groups = epoch_mapping['patient_group_idx'].to_numpy()
         log_memory_usage()
-        outer_results, all_best_params, experiment_dir = run_loso_cv_lstm(
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
             TS_DataMat,
             labels,
             epoch_groups,
