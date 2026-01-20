@@ -180,11 +180,14 @@ def process_and_save_for_hctsa_mat(X_grouped_list, y_grouped_list, groups_per_tr
 
 def main():
     patient_epochs_path = os.path.join("results", "pickles", "4646epochs_patients_epochs.pickle")
-    subjects_event_idx_dict_path = os.path.join("results", "pickles", "subjects_event_idx_dict.pickle")
+    subjects_event_idx_dict_path = os.path.join("results", "pickles", "4646epochs_subjects_event_idx_dict.pickle")
 
     patient_epochs, subjects_event_idx_dict, patient_names = load_data(patient_epochs_path, subjects_event_idx_dict_path)
 
-    channel_to_process = 5
+    ch_idx_to_process = 5
+    
+    # pick any arbitrary subject to get channel name
+    ch_name_to_process = patient_epochs['PW_HK59'].info['ch_names'][ch_idx_to_process]
     
     # base_output_dir = '/Users/orabe/Library/Mobile Documents/com~apple~CloudDocs/0_TU/Master/master_thesis/HCTSA_processed/hctsa/data/hctsa_input_data'
     base_output_dir = '../../../home/orabem/hctsa/'
@@ -202,13 +205,13 @@ def main():
     )
 
     # Process and save for MAT locally
-    filename = f'INP_gait_hctsa_filtered_chs{channel_to_process}_all_patients'
+    filename = f'INP_gait_hctsa_filtered_chs{ch_idx_to_process}_{ch_name_to_process}_all_patients_4646epochs'
     process_and_save_for_hctsa_mat(
         X_grouped_list, 
         y_grouped_list, 
         groups_per_trial, 
         trial_ids_per_trial,
-        channel_to_use=channel_to_process,
+        channel_to_use=ch_idx_to_process,
         filename=filename,
         base_output_dir=base_output_dir
     )
