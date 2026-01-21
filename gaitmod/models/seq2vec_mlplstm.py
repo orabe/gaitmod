@@ -414,9 +414,10 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
             metrics=metrics,
         )
 
-        logging.debug("[BUILD_MODEL] Model summary:")
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            train_model.summary()
+        if not getattr(self, "_summary_printed", False):
+            logging.info("[BUILD_MODEL] Model summary:")
+            train_model.summary(print_fn=logging.info)
+            self._summary_printed = True
 
         self.lstm_train_model = train_model
         return inference_model

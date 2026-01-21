@@ -502,38 +502,17 @@ if __name__ == "__main__":
     # label11 = "xgb_beta"
     # label12 = "xgb_hctsa"
     
-    label0 = "dummy"
-    
-    label1 = "seq2vec_LSTM_raw_24configs"
-    label2 = "seq2vec_LSTM_hctsa_24configs"
-    
-    label3 = "seq2seq_LSTM_raw_24configs"
-    label4 = "seq2seq_LSTM_hctsa_24configs"
-    label5 = "seq2seq_LSTM_hctsa_24configs_corrScr"
+    label0 = "Seq2SeqLSTM_raw_allChs"
+    label1 = "Seq2VecLSTM_raw_betaChs"
     
     args = Namespace(
         csv=[
-            f"{base_path}/hparams_{label0}/summary/nested_cv_results.csv",
-            f"{base_path}/hparams_{label1}/summary/nested_cv_results.csv",
-            f"{base_path}/hparams_{label2}/summary/nested_cv_results.csv",
-            f"{base_path}/hparams_{label3}/summary/nested_cv_results.csv",
-            f"{base_path}/hparams_{label4}/summary/nested_cv_results.csv",
-            f"{base_path}/hparams_{label5}/summary/nested_cv_results.csv",
+            f"{base_path}/{label0}/summary/nested_cv_results.csv",
+            f"{base_path}/{label1}/summary/nested_cv_results.csv",
         ],
         labels=[
-            "dummy",
-            
-            "seq2vec_LSTM_raw_24configs",
-            "seq2vec_LSTM_hctsa_24configs",
-            
-            "seq2seq_LSTM_raw_24configs",
-            "seq2seq_LSTM_hctsa_24configs",
-            "seq2seq_LSTM_hctsa_24configs_corrScr",
-            
-            # "lstm_beta_1config",
-            # "lstm_hctsa_1config",
-            # "LSTM",
-            # "lstm_hctsa_48configs_TunedF1Agg",
+            "Seq2SeqLSTM_raw_allChs",
+            "Seq2VecLSTM_raw_betaChs",
         ],
         output_dir="logs/results/comparison_figures/test",
         metrics=[

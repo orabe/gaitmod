@@ -89,7 +89,7 @@
       0.7
     ]
   },
-  "seq2seq_lstm": {
+  "Seq2SeqLSTM": {
     "feature_params": {
       "scaler__scaler_type": [
         "standard"

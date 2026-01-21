@@ -280,11 +280,7 @@ if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
     
-    experiment_name = "hparams_dummy"
-    experiment_name = "hparams_seq2seq_LSTM_raw_24configs"
-    experiment_name = "hparams_seq2seq_LSTM_hctsa_24configs_corrScr"
-    
-    experiment_name = "hparams_seq2seq_LSTM_hctsa_24configs"
+    experiment_name = "Seq2VecLSTM_raw_betaChs"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
@@ -299,7 +295,7 @@ if __name__ == "__main__":
     refit_suffix = Path("refit") / "*" / "refit_results.json"
     refit_files = []
     for subject, fold_dir in subject_fold_map.items():
-        refit_glob = Path("logs") / subject / experiment_name / fold_dir / refit_suffix
+        refit_glob = Path("logs") / experiment_name / subject / fold_dir / refit_suffix
         matches = sorted(Path().glob(str(refit_glob)))
         if not matches:
             print(f"[WARN] No refit_results.json found for {subject} ({refit_glob})")

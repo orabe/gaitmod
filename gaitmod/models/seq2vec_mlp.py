@@ -125,9 +125,10 @@ class Seq2VecMLP(BaseEstimator, ClassifierMixin):
             ],
         )
 
-        logging.debug(f"[BUILD_MODEL] Model summary:")
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            model.summary()
+        if not getattr(self, "_summary_printed", False):
+            logging.info("[BUILD_MODEL] Model summary:")
+            model.summary(print_fn=logging.info)
+            self._summary_printed = True
 
         return model
 

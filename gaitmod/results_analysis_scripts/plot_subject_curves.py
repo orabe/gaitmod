@@ -49,11 +49,8 @@ def _grid(n: int) -> tuple[int, int]:
     return nrows, ncols
 
 
-def plot_roc_pr(grouped: dict[str, tuple[np.ndarray, np.ndarray]], out_path: Path) -> None:
+def plot_roc_pr(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ax_roc, ax_pr) -> None:
     subjects = sorted(grouped.keys())
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6), squeeze=False)
-    ax_roc = axes[0][0]
-    ax_pr = axes[0][1]
 
     for subject in subjects:
         y_true, y_score = grouped[subject]
@@ -87,16 +84,13 @@ def plot_roc_pr(grouped: dict[str, tuple[np.ndarray, np.ndarray]], out_path: Pat
 
     ax_roc.legend(loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
     ax_pr.legend(loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
 
-def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], out_path: Path) -> None:
+def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], axes) -> None:
     subjects = sorted(grouped.keys())
     metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall"]
-    nrows, ncols = _grid(len(metrics))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows), squeeze=False)
+    nrows = axes.shape[0]
+    ncols = axes.shape[1]
     thresholds = np.linspace(0.0, 1.0, 101)
 
     for metric_idx, metric_name in enumerate(metrics):
@@ -124,14 +118,11 @@ def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ou
         ax.set_xlabel("Threshold")
         ax.set_ylabel("Score")
         ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
 
     for idx in range(len(metrics), nrows * ncols):
         axes[idx // ncols][idx % ncols].axis("off")
 
-    axes[0][0].legend(loc="lower left", bbox_to_anchor=(1.02, 0.0), borderaxespad=0.0)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
 
 
 def main() -> None:
@@ -145,7 +136,7 @@ def main() -> None:
     #     "PW_US66": [Path(pattern + "inner_fold_06_val_PW_SN66" + "/evaluation_results_scores.npz")],        
     # }
     
-    model_type = "hparams_seq2seq_LSTM_hctsa_24configs_corrScr"
+    model_type = "Seq2SeqLSTM_raw_allChs"
     pattern = (
         f"logs/{model_type}/*/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
     )
@@ -153,12 +144,17 @@ def main() -> None:
     
     subject_paths: dict[str, list[Path]] = {}
     for score_path in Path(".").glob(pattern):
-        subject = score_path.parts[2]
-        if subject not in subject_paths:
-            subject_paths[subject] = []
-        subject_paths[subject].append(score_path)
+        parts = score_path.parts
+        subject = None
+        if model_type in parts:
+            model_idx = parts.index(model_type)
+            if model_idx + 1 < len(parts):
+                subject = parts[model_idx + 1]
+        if subject is None:
+            raise SystemExit(f"Could not infer subject from path: {score_path}")
+        subject_paths.setdefault(subject, []).append(score_path)
         
-    out_dir = Path("results/figures/score_plots")
+    out_dir = Path(f"logs/results/scores_thresholds/{model_type}")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,8 +162,25 @@ def main() -> None:
     if not grouped:
         raise SystemExit("No score files provided in subject_paths.")
 
-    plot_roc_pr(grouped, out_dir / f"{model_type}_roc_pr_by_subject.png")
-    plot_threshold_metrics(grouped, out_dir / f"{model_type}_threshold_metrics_by_subject.png")
+    metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall"]
+    nrows, ncols = _grid(len(metrics))
+    fig = plt.figure(figsize=(5 * ncols, 5 * (nrows + 1)))
+    gs = fig.add_gridspec(nrows + 1, ncols)
+
+    ax_roc = fig.add_subplot(gs[0, 0])
+    ax_pr = fig.add_subplot(gs[0, 1]) if ncols > 1 else fig.add_subplot(gs[0, 0])
+    plot_roc_pr(grouped, ax_roc, ax_pr)
+
+    axes = np.array([
+        [fig.add_subplot(gs[row + 1, col]) for col in range(ncols)]
+        for row in range(nrows)
+    ])
+    plot_threshold_metrics(grouped, axes)
+
+    fig.suptitle(model_type, fontsize=14, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_dir / f"{model_type}_all_metrics_by_subject.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
     print(f"Plots saved to {out_dir}")
 
