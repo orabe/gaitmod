@@ -57,7 +57,6 @@
       "channels": "all"
     },
     "selection_metrics": {
-      "refit_scoring_metric": "f1",
       "selection_score_metric": "val_tuned_f1",
       "selection_score_aggregation": "median"
     },

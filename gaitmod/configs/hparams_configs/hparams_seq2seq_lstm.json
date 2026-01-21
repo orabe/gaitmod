@@ -1,10 +1,10 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_seq2seq_LSTM_hctsa",
+    "experiment_name": "Seq2SeqLSTM_raw_allChs",
     "model_type": "Seq2SeqLSTM",
     "feature_data": {
-      "source": "hctsa",
-      "segment_cache_dir": "data/hctsa_segments"
+      "source": "raw",
+      "segment_cache_dir": "data/raw_segments"
     },
     "callbacks": {
       "progress_frequency": 1,
@@ -19,13 +19,9 @@
         0.3,
         0.8
       ],
-      "num_sweep_thresholds": 41,
+      "num_sweep_thresholds": 1,
       "metrics": [
-        "f1",
-        "accuracy",
-        "balanced_accuracy",
-        "precision",
-        "recall"
+        "f1"
       ]
     },
     "masking": {
@@ -54,10 +50,9 @@
           "PW_US68": "channel_4-LFP_R1-3"
         }
       },
-      "channels": "all"
+      "channels": null
     },
     "selection_metrics": {
-      "refit_scoring_metric": "val_f1",
       "selection_score_metric": "val_f1",
       "selection_score_aggregation": "median"
     },
@@ -82,10 +77,10 @@
       0.01
     ],
     "feature_selector__enabled": [
-      true
+      false
     ],
     "feature_selector__n_features": [
-      400
+      40
     ],
     "feature_selector__selection_method": [
       "roc_auc"
@@ -103,18 +98,12 @@
     "architecture_configs": [
       {
         "classifier__hidden_dims": [
-          64,
-          96,
           64
         ],
         "classifier__activations": [
-          "tanh",
-          "tanh",
           "tanh"
         ],
         "classifier__recurrent_activations": [
-          "sigmoid",
-          "sigmoid",
           "sigmoid"
         ]
       }
@@ -122,7 +111,6 @@
     "other_params": {
       "classifier__dropout": [
         0.2,
-        0.5,
         0.8
       ],
       "classifier__dense_units": [
@@ -135,20 +123,17 @@
         "adam"
       ],
       "classifier__lr": [
-        0.001,
-        0.0001,
-        1e-05,
+        1e-03,
         1e-06
       ],
       "classifier__patience": [
         10
       ],
       "classifier__epochs": [
-        100
+        10
       ],
       "classifier__batch_size": [
-        8,
-        16
+        120
       ],
       "classifier__threshold": [
         0.5

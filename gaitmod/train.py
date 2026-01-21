@@ -153,7 +153,6 @@ HYPERPARAM_RUN_DIRECTORY_MAP: Dict[Tuple[str, str], str] = {}
 HYPERPARAM_RUN_COUNTERS: Dict[str, int] = {}
 DEFAULT_CHANNEL_SELECTION_METHOD: Optional[str] = None
 SELECTION_SETTINGS: Optional[Dict[str, Any]] = None
-DEFAULT_REFIT_SCORING_METRIC: Optional[str] = None
 DEFAULT_SELECTION_SCORE_METRIC: Optional[str] = None
 DEFAULT_SELECTION_SCORE_AGGREGATION: Optional[str] = None
 DEFAULT_FEATURE_PARAMS: Optional[Dict[str, Any]] = None
@@ -214,7 +213,7 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     global DEFAULT_PROGRESS_FREQUENCY, DEFAULT_REDUCE_LR_FACTOR, DEFAULT_REDUCE_LR_MIN_LR
     global DEFAULT_REDUCE_LR_PATIENCE_RATIO, DEFAULT_CALLBACK_MONITOR, DEFAULT_CALLBACK_PATIENCE
     global SEQ2SEQ_MASK_VALUES
-    global SELECTION_SETTINGS, DEFAULT_REFIT_SCORING_METRIC
+    global SELECTION_SETTINGS
     global DEFAULT_SELECTION_SCORE_METRIC, DEFAULT_SELECTION_SCORE_AGGREGATION
     global FEATURE_DATA_SETTINGS, DEFAULT_FEATURE_SOURCE
     global DEFAULT_FEATURE_PARAMS
@@ -298,7 +297,6 @@ def configure_hyperparameter_settings(config_path: str) -> None:
     DEFAULT_CALLBACK_PATIENCE = _require_key(CALLBACK_SETTINGS, 'patience', 'global_settings.callbacks')
 
     SEQ2SEQ_MASK_VALUES = {}
-    DEFAULT_REFIT_SCORING_METRIC = _require_key(SELECTION_SETTINGS, 'refit_scoring_metric', 'global_settings.selection_metrics')
     DEFAULT_SELECTION_SCORE_METRIC = _require_key(SELECTION_SETTINGS, 'selection_score_metric', 'global_settings.selection_metrics')
     DEFAULT_SELECTION_SCORE_AGGREGATION = _require_key(SELECTION_SETTINGS, 'selection_score_aggregation', 'global_settings.selection_metrics')
     feature_params_cfg = GLOBAL_HPARAM_CONFIG.get('feature_params')
@@ -2631,7 +2629,6 @@ def run_nested_cv_classical(
     groups,
     subject_names=None,
     model_type='rf',
-    refit_scoring_metric='f1',
     selection_score_metric: str = 'val_tuned_f1',
     selection_score_aggregation: str = 'median',
     experiment_dir=None,
@@ -2952,7 +2949,6 @@ def run_nested_cv_classical(
                         comprehensive_results['selection_parameters'] = {
                             'selection_score_metric': selection_score_metric,
                             'selection_score_aggregation': selection_score_aggregation,
-                            'refit_scoring_metric': refit_scoring_metric,
                         }
 
                         save_evaluation_results(
@@ -3220,7 +3216,6 @@ def run_nested_cv_classical(
                 'selection_parameters': {
                     'selection_score_metric': selection_score_metric,
                     'selection_score_aggregation': selection_score_aggregation,
-                    'refit_scoring_metric': refit_scoring_metric,
                 },
             }
             comprehensive_refit_results.update(result_metadata)
@@ -3304,7 +3299,6 @@ def run_loso_cv_dl(
     mask_values=None,
                           subject_names=None,
                           model_type='Seq2SeqLSTM',
-                          refit_scoring_metric='f1',
                           selection_score_metric: str = 'val_tuned_f1',
                           selection_score_aggregation: str = 'median',
                           experiment_dir=None,
@@ -3344,7 +3338,6 @@ def run_loso_cv_dl(
         mask_values: Dictionary with padding mask values (X_mask, y_mask, max_length) - required for Seq2SeqLSTM
         subject_names: List of subject names
         model_type: Type of model ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or 'Seq2VecMLPLSTM')
-        refit_scoring_metric: Primary scoring metric
         selection_score_metric: Metric key from fold_scores used for hyperparameter selection
         experiment_dir: Directory for logging
         n_jobs: Number of parallel jobs
@@ -3460,7 +3453,6 @@ def run_loso_cv_dl(
     if verbose >= 1:
         logging.info(f"[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
         logging.info(f"[CV_SKLEARN] Model type: {model_type}")
-        logging.info(f"[CV_SKLEARN] Refit metric: {refit_scoring_metric}")
         logging.info(f"[CV_SKLEARN] Hyperparameter selection metric: {selection_score_metric}")
         logging.info(f"[CV_SKLEARN] Hyperparameter selection aggregation: {selection_score_aggregation}")
         if subject_name_filter:
@@ -4024,7 +4016,6 @@ def run_loso_cv_dl(
                         comprehensive_results['selection_parameters'] = {
                             'selection_score_metric': selection_score_metric,
                             'selection_score_aggregation': selection_score_aggregation,
-                            'refit_scoring_metric': refit_scoring_metric,
                         }
                         
                         # Save results immediately to prevent data loss
@@ -4895,7 +4886,6 @@ def run_loso_cv_dl(
                     'selection_parameters': {
                         'selection_score_metric': selection_score_metric,
                     'selection_score_aggregation': selection_score_aggregation,
-                    'refit_scoring_metric': refit_scoring_metric,
                 }
                 }
                 if model_type == 'Seq2VecMLPLSTM':
@@ -5632,7 +5622,6 @@ def main(argv=None):
             subject_names=subject_names,
             mask_values=mask_values,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
@@ -5660,7 +5649,6 @@ def main(argv=None):
             mask_values=None,
             subject_names=subject_names,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
@@ -5688,7 +5676,6 @@ def main(argv=None):
             mask_values=None,
             subject_names=subject_names,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
@@ -5714,7 +5701,6 @@ def main(argv=None):
             mask_values=None,
             subject_names=subject_names,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
@@ -5742,7 +5728,6 @@ def main(argv=None):
             mask_values=None,
             subject_names=subject_names,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
@@ -5768,7 +5753,6 @@ def main(argv=None):
             TS_DataMat, labels, epoch_groups,
             subject_names=subject_names,
             model_type=selected_model_type,
-            refit_scoring_metric=DEFAULT_REFIT_SCORING_METRIC,
             selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
             selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
             experiment_dir=experiment_dir,
