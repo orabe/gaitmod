@@ -3685,6 +3685,22 @@ def run_loso_cv_dl(
                                     'n_channels': int(n_channels),
                                     'preferred_channel_indices': preferred_idx,
                                 }
+                        elif (
+                            step_name == 'feature_selector'
+                            and model_type == 'Seq2SeqLSTM'
+                            and channels_order
+                            and len(channels_order) > 1
+                        ):
+                            preferred_idx = _resolve_preferred_channel_indices(
+                                groups_outer_train[inner_train_idx]
+                            )
+                            if preferred_idx is not None:
+                                fit_kwargs = {
+                                    'channel_grouping': True,
+                                    'n_channels': int(len(channels_order)),
+                                    'preferred_channel_indices': preferred_idx,
+                                    'channel_layout': 'concat',
+                                }
                         transformer.fit(X_train_transformed, y_inner_train, **fit_kwargs)
                         X_train_transformed = transformer.transform(X_train_transformed)
                     train_shape_for_logging = X_train_transformed.shape
@@ -4485,6 +4501,20 @@ def run_loso_cv_dl(
                             'channel_grouping': True,
                             'n_channels': int(n_channels),
                             'preferred_channel_indices': preferred_idx,
+                        }
+                elif (
+                    step_name == 'feature_selector'
+                    and model_type == 'Seq2SeqLSTM'
+                    and channels_order
+                    and len(channels_order) > 1
+                ):
+                    preferred_idx = _resolve_preferred_channel_indices(groups_outer_train)
+                    if preferred_idx is not None:
+                        fit_kwargs = {
+                            'channel_grouping': True,
+                            'n_channels': int(len(channels_order)),
+                            'preferred_channel_indices': preferred_idx,
+                            'channel_layout': 'concat',
                         }
                 transformer.fit(X_train_final, y_outer_train, **fit_kwargs)
                 X_train_final = transformer.transform(X_train_final)
@@ -5590,13 +5620,15 @@ def main(argv=None):
     
     if selected_model_type == 'Seq2SeqLSTM':
         # Sequence-to-sequence path (padding required)
-        logging.info(f"[MAIN] Starting nested CV with inner-fold specific padding (seq2seq LSTM)")
-        logging.info(f"[MAIN] Input: {len(X_list)} unpadded trials")
+        logging.info("[MAIN] Starting nested CV with inner-fold specific padding (seq2seq LSTM)")
+        logging.info("[MAIN] Input: %d unpadded trials", len(X_list))
 
-        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)  
+        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)
         log_memory_usage()
         outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
-            X_padded, y_padded, groups,
+            X_padded,
+            y_padded,
+            groups,
             subject_names=subject_names,
             mask_values=mask_values,
             model_type=selected_model_type,
@@ -5611,6 +5643,8 @@ def main(argv=None):
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
             n_channels=n_channels,
+            preferred_channel_map=SUBJECT_CHANNEL_PRIOR,
+            channels_order=channels_override,
             fixed_params=fixed_params,
             fixed_params_source=fixed_params_source,
             fixed_thresholds=fixed_thresholds,
