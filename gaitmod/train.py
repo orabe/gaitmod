@@ -1953,6 +1953,98 @@ def add_notuning_metrics(metrics_dict, stage):
     return metrics_dict
 
 
+def compute_seq2seq_single_timestep_metrics(
+    model,
+    X: np.ndarray,
+    y: np.ndarray,
+    mask_values: Dict[str, Any],
+    threshold: float = 0.5,
+) -> List[Dict[str, Any]]:
+    """Evaluate seq2seq performance using only one timestep at a time."""
+    X = np.asarray(X)
+    y = np.asarray(y)
+    if X.ndim != 3 or y.ndim != 2:
+        raise ValueError("Seq2Seq single-timestep metrics expect X (N,T,F) and y (N,T).")
+    n_samples, n_steps, _ = X.shape
+    x_mask = mask_values.get('X_mask')
+    y_mask = mask_values.get('y_mask')
+    if x_mask is None or y_mask is None:
+        raise ValueError("mask_values must include 'X_mask' and 'y_mask'.")
+
+    results: List[Dict[str, Any]] = []
+    for t in range(n_steps):
+        # Build right-padded sequences to keep cuDNN mask valid.
+        X_single = np.full_like(X, x_mask)
+        X_single[:, :t + 1, :] = X[:, :t + 1, :]
+        y_proba = model.predict_proba(X_single)
+        y_proba_pos = Seq2SeqLSTM._extract_positive_class_proba(y_proba)
+        if y_proba_pos.size == y.size:
+            y_proba_pos = y_proba_pos.reshape(y.shape)
+        elif y_proba_pos.size == n_samples * n_steps:
+            y_proba_pos = y_proba_pos.reshape((n_samples, n_steps))
+        else:
+            y_proba_pos = y_proba_pos.reshape((n_samples, -1))
+        y_score = y_proba_pos[:, t]
+        y_true = y[:, t]
+        valid_mask = y_true != y_mask
+        y_true_valid = y_true[valid_mask]
+        y_score_valid = y_score[valid_mask]
+
+        metrics = {
+            'timestep': int(t),
+            'n_valid': int(valid_mask.sum()),
+            'f1': np.nan,
+            'accuracy': np.nan,
+            'precision': np.nan,
+            'recall': np.nan,
+            'balanced_accuracy': np.nan,
+            'roc_auc': np.nan,
+            'pr_auc': np.nan,
+        }
+        if y_true_valid.size == 0:
+            results.append(metrics)
+            continue
+
+        y_pred = (y_score_valid > threshold).astype(int)
+        try:
+            metrics['f1'] = f1_score(y_true_valid, y_pred, zero_division=0)
+            metrics['accuracy'] = accuracy_score(y_true_valid, y_pred)
+            metrics['precision'] = precision_score(y_true_valid, y_pred, zero_division=0)
+            metrics['recall'] = recall_score(y_true_valid, y_pred, zero_division=0)
+            metrics['balanced_accuracy'] = balanced_accuracy_score(y_true_valid, y_pred)
+        except Exception:
+            pass
+
+        if len(np.unique(y_true_valid)) >= 2:
+            try:
+                metrics['roc_auc'] = roc_auc_score(y_true_valid, y_score_valid)
+            except Exception:
+                pass
+            try:
+                metrics['pr_auc'] = average_precision_score(y_true_valid, y_score_valid)
+            except Exception:
+                pass
+        results.append(metrics)
+    return results
+
+
+def aggregate_seq2seq_per_timestep_metrics(per_timestep_metrics: List[Dict[str, Any]]) -> Dict[str, float]:
+    """Aggregate per-timestep metrics by averaging over timesteps (ignoring NaNs)."""
+    if not per_timestep_metrics:
+        return {}
+    metric_keys = [
+        'f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy', 'roc_auc', 'pr_auc'
+    ]
+    aggregated: Dict[str, float] = {}
+    for key in metric_keys:
+        values = [
+            entry.get(key) for entry in per_timestep_metrics
+            if isinstance(entry.get(key), (int, float)) and np.isfinite(entry.get(key))
+        ]
+        aggregated[key] = float(np.mean(values)) if values else np.nan
+    return aggregated
+
+
 def _save_inner_fold_data(results_dict, output_dir, outer_fold, inner_fold, 
                          outer_test_subject, inner_validation_subject, hyperparams,
                          per_sample_scores=None):
@@ -3886,6 +3978,32 @@ def run_loso_cv_dl(
                         primary_threshold = optimal_thresholds.get('f1', 0.5)
                         logging.info(f"[CV_SKLEARN]       Optimal F1 threshold: {primary_threshold:.3f}, F1 score: {fold_scores.get('val_tuned_f1', 0.0):.4f}")
 
+                    per_timestep_metrics = None
+                    aggregated_metrics = None
+                    if model_type == 'Seq2SeqLSTM':
+                        try:
+                            f1_threshold = optimal_thresholds.get('f1', default_threshold)
+                            per_timestep_metrics = compute_seq2seq_single_timestep_metrics(
+                                lstm_classifier,
+                                X_val_transformed,
+                                y_inner_val,
+                                mask_values,
+                                threshold=f1_threshold,
+                            )
+                            aggregated_metrics = aggregate_seq2seq_per_timestep_metrics(per_timestep_metrics)
+                            if aggregated_metrics:
+                                fold_scores['val_tuned_f1'] = aggregated_metrics.get('f1', fold_scores.get('val_tuned_f1', np.nan))
+                                fold_scores['val_tuned_accuracy'] = aggregated_metrics.get('accuracy', fold_scores.get('val_tuned_accuracy', np.nan))
+                                fold_scores['val_tuned_precision'] = aggregated_metrics.get('precision', fold_scores.get('val_tuned_precision', np.nan))
+                                fold_scores['val_tuned_recall'] = aggregated_metrics.get('recall', fold_scores.get('val_tuned_recall', np.nan))
+                                fold_scores['val_tuned_balanced_accuracy'] = aggregated_metrics.get('balanced_accuracy', fold_scores.get('val_tuned_balanced_accuracy', np.nan))
+                                fold_scores['val_roc_auc'] = aggregated_metrics.get('roc_auc', fold_scores.get('val_roc_auc', np.nan))
+                                fold_scores['val_pr_auc'] = aggregated_metrics.get('pr_auc', fold_scores.get('val_pr_auc', np.nan))
+                        except Exception as timestep_error:
+                            logging.warning(
+                                f"[CV_SKLEARN]     Failed to compute per-timestep metrics: {timestep_error}"
+                            )
+
                     score = _extract_selection_score(fold_scores)
 
                     # Handle model-specific confusion matrix at tuned threshold
@@ -4011,6 +4129,11 @@ def run_loso_cv_dl(
                             raw_feature_dim=raw_feature_dim,
                         )
                         comprehensive_results.update(result_metadata)
+                        if per_timestep_metrics is not None:
+                            comprehensive_results['per_timestep_metrics'] = {
+                                'val': per_timestep_metrics,
+                                'val_aggregated': aggregated_metrics,
+                            }
                         comprehensive_results['selection_parameters'] = {
                             'selection_score_metric': selection_score_metric,
                             'selection_score_aggregation': selection_score_aggregation,
@@ -4831,6 +4954,32 @@ def run_loso_cv_dl(
             
             # === COMPREHENSIVE SKLEARN REFIT RESULT STORAGE ===
             try:
+                per_timestep_metrics = None
+                aggregated_metrics = None
+                if model_type == 'Seq2SeqLSTM':
+                    try:
+                        f1_threshold = optimal_thresholds.get('f1', default_threshold)
+                        per_timestep_metrics = compute_seq2seq_single_timestep_metrics(
+                            lstm_classifier,
+                            X_test_final_for_callbacks,
+                            y_outer_test_for_callbacks,
+                            mask_values,
+                            threshold=f1_threshold,
+                        )
+                        aggregated_metrics = aggregate_seq2seq_per_timestep_metrics(per_timestep_metrics)
+                        if aggregated_metrics:
+                            test_metrics['test_tuned_f1'] = aggregated_metrics.get('f1', test_metrics.get('test_tuned_f1', np.nan))
+                            test_metrics['test_tuned_accuracy'] = aggregated_metrics.get('accuracy', test_metrics.get('test_tuned_accuracy', np.nan))
+                            test_metrics['test_tuned_precision'] = aggregated_metrics.get('precision', test_metrics.get('test_tuned_precision', np.nan))
+                            test_metrics['test_tuned_recall'] = aggregated_metrics.get('recall', test_metrics.get('test_tuned_recall', np.nan))
+                            test_metrics['test_tuned_balanced_accuracy'] = aggregated_metrics.get('balanced_accuracy', test_metrics.get('test_tuned_balanced_accuracy', np.nan))
+                            test_metrics['test_roc_auc'] = aggregated_metrics.get('roc_auc', test_metrics.get('test_roc_auc', np.nan))
+                            test_metrics['test_pr_auc'] = aggregated_metrics.get('pr_auc', test_metrics.get('test_pr_auc', np.nan))
+                    except Exception as timestep_error:
+                        logging.warning(
+                            f"[CV_SKLEARN] Failed to compute per-timestep test metrics: {timestep_error}"
+                        )
+
                 # Gather comprehensive training and test information
                 train_info = {
                     'n_samples': len(y_outer_train),
@@ -4851,40 +5000,44 @@ def run_loso_cv_dl(
                     'test_scores': test_metrics.copy(),
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
                     'threshold_optimization': best_aggregated_threshold_results.get('tuning_results', {}) if best_aggregated_threshold_results else {},
-                'feature_selection': {
+                    'per_timestep_metrics': {
+                        'test': per_timestep_metrics,
+                        'test_aggregated': aggregated_metrics,
+                    } if per_timestep_metrics is not None else None,
+                    'feature_selection': {
+                        'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
+                        'n_selected_features': len(best_feature_index_map),
+                        'step_status': final_feature_selection_steps,
+                        'fallback_used': final_feature_selection_fallback,
+                        'initial_features': final_feature_selection_initial,
+                        'final_strategy': final_feature_selection_strategy,
+                        'final_strategy_details': final_feature_selection_strategy_details,
+                    },
+                    'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
+                    'configured_epochs': int(refit_configured_epochs) if refit_configured_epochs is not None else None,
+                    'restored_epoch': int(refit_restored_epoch) if refit_restored_epoch is not None else None,
+                    'learning_rate_history': refit_learning_rate_history if refit_learning_rate_history else None,
+
+                    # Model and feature information
+                    'best_hyperparameters': best_params.copy() if best_params else {},
                     'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
-                    'n_selected_features': len(best_feature_index_map),
-                    'step_status': final_feature_selection_steps,
-                    'fallback_used': final_feature_selection_fallback,
-                    'initial_features': final_feature_selection_initial,
-                    'final_strategy': final_feature_selection_strategy,
-                    'final_strategy_details': final_feature_selection_strategy_details,
-                },
-                'trained_epochs': int(refit_trained_epochs) if refit_trained_epochs is not None else None,
-                'configured_epochs': int(refit_configured_epochs) if refit_configured_epochs is not None else None,
-                'restored_epoch': int(refit_restored_epoch) if refit_restored_epoch is not None else None,
-                'learning_rate_history': refit_learning_rate_history if refit_learning_rate_history else None,
-                
-                # Model and feature information
-                'best_hyperparameters': best_params.copy() if best_params else {},
-                'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
-                'n_selected_features': len(best_features) if best_features else 0,
-                
-                # Data information
+                    'n_selected_features': len(best_features) if best_features else 0,
+
+                    # Data information
                     'n_train_samples': train_info['n_samples'],
                     'n_test_samples': test_info['n_samples'],
                     'max_sequence_length': mask_values.get('max_length', None) if isinstance(mask_values, dict) else None,
                     'train_class_distribution': train_info['class_dist'],
                     'test_class_distribution': test_info['class_dist'],
-                    
+
                     # Cross-validation information
                     'best_inner_cv_score': best_score,
                     'test_subject_id': test_subject_number,
                     'test_subject_name': test_subject_name,
                     'selection_parameters': {
                         'selection_score_metric': selection_score_metric,
-                    'selection_score_aggregation': selection_score_aggregation,
-                }
+                        'selection_score_aggregation': selection_score_aggregation,
+                    }
                 }
                 if model_type == 'Seq2VecMLPLSTM':
                     hctsa_classifier = final_pipeline.steps[-1][1]
@@ -4917,6 +5070,9 @@ def run_loso_cv_dl(
                 logging.warning(f"[CV_SKLEARN] Failed to save sklearn refit results: {save_error}")
             
             # Store results with all test metrics (for backward compatibility)
+            test_f1 = test_metrics.get('test_tuned_f1', test_f1)
+            test_auc = test_metrics.get('test_roc_auc', test_auc)
+            test_accuracy = test_metrics.get('test_tuned_accuracy', test_accuracy)
             result_dict = {
                 'fold': outer_fold + 1,
                 'test_subject': test_subject_number,
