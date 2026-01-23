@@ -449,14 +449,14 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             self.feature_scores_[high_variance_indices] = univariate_scores
             
             # Step 3: Select top features
-            top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features * 2, len(high_variance_indices))]
+            top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features, len(high_variance_indices))]
             self._update_step_report(
                 'top_k_selection',
                 'success',
                 input_features=univariate_input,
                 output_features=int(len(top_indices)),
                 selection_budget=int(self.n_features),
-                selection_multiplier=2
+                selection_multiplier=1
             )
             
             # Step 4: Remove correlated features (with error handling)
