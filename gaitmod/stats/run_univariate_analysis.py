@@ -48,8 +48,8 @@ DEFAULT_UNIVARIATE_RANDOM_STATE = 42
 DEFAULT_UNIVARIATE_TOP_K = 25
 DEFAULT_VIS_TOP_K = 10
 DEFAULT_VIS_WORST_K = 10
-DEFAULT_SEGMENT_CACHE_DIR = Path("data/beta_segments")
-DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/channel_selection_summary.json")
+DEFAULT_SEGMENT_CACHE_DIR = Path("6296_data/hctsa_segments")
+DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/univariate_analysis/channel_selection_summary.json")
 DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
 MAX_FEATURE_NAME_LENGTH = 48
 THRESHOLD_LINE_WIDTH = 2.0
@@ -582,9 +582,11 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         data=long_df,
         x='class',
         y='feature_mean',
+        hue='class',
         inner=None,
         palette='Pastel1',
-        ax=ax[0]
+        ax=ax[0],
+        legend=False
     )
     sns.boxplot(
         data=long_df,

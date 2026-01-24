@@ -3,7 +3,7 @@
 # Helper script to submit subject batches in sequence.
 
 set -euo pipefail
-CONFIG_NAME="hparams_seq2vec_cnn.json"
+CONFIG_NAME="hparams_seq2seq_lstm.json"
 RUN_ID=""
 GLOBAL_PARAMS=""
 RUN_ALL=false

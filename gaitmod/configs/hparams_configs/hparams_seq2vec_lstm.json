@@ -1,10 +1,10 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2VecLSTM_raw_betaChs",
+    "experiment_name": "Seq2VecLSTM_hctsa_betaChs",
     "model_type": "Seq2VecLSTM",
     "feature_data": {
-      "source": "raw",
-      "segment_cache_dir": "data/raw_segments"
+      "source": "hctsa",
+      "segment_cache_dir": "data/hctsa_segments"
     },
     "callbacks": {
       "progress_frequency": 1,
@@ -50,7 +50,7 @@
           "PW_US68": "channel_4-LFP_R1-3"
         }
       },
-      "channels": "all"
+      "channels": null
     },
     "selection_metrics": {
       "selection_score_metric": "val_f1",
@@ -77,16 +77,16 @@
       0.01
     ],
     "feature_selector__enabled": [
-      false
+      true
     ],
     "feature_selector__n_features": [
-      50
+      500
     ],
     "feature_selector__selection_method": [
-      "roc_auc"
+      "pr_auc"
     ],
     "feature_selector__correlation_threshold": [
-      0.7
+      0.3
     ]
   },
   "Seq2VecLSTM": {
@@ -110,7 +110,6 @@
     ],
     "other_params": {
       "classifier__dropout": [
-        0.2,
         0.3
       ],
       "classifier__dense_units": [

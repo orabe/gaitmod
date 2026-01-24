@@ -136,7 +136,7 @@ def main() -> None:
     #     "PW_US66": [Path(pattern + "inner_fold_06_val_PW_SN66" + "/evaluation_results_scores.npz")],        
     # }
     
-    model_type = "Seq2SeqLSTM_raw_allChs"
+    model_type = "Seq2SeqLSTM_raw_betaChs_shuffle"
     pattern = (
         f"logs/{model_type}/*/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
     )

@@ -1,5 +1,7 @@
 import os 
 import time
+import json
+import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,7 +12,74 @@ from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler, Qu
 from pathlib import Path
 from datetime import datetime
 
-from gaitmod.feat_preproc import load_hctsa_data, parse_epoch_metadata, group_epochs_by_trial
+from gaitmod.feat_preproc import parse_epoch_metadata, group_epochs_by_trial
+from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
+
+
+def _canonical_channel_label(channel_name: str) -> str:
+    if not channel_name:
+        return ''
+    match = re.search(r"(channel_\d+)", str(channel_name))
+    return match.group(1) if match else ''
+
+
+def _extract_canonical_channel(entry: dict) -> str:
+    best_channel = entry.get('best_channel')
+    canonical = _canonical_channel_label(best_channel)
+    if canonical:
+        return canonical
+
+    if 'best_channel_index' in entry and entry['best_channel_index'] is not None:
+        try:
+            return f"channel_{int(entry['best_channel_index'])}"
+        except (TypeError, ValueError):
+            pass
+
+    channel_name_map = entry.get('channel_name_map') or {}
+    best_name = entry.get('best_channel_name') or entry.get('best_channel')
+    if best_name and channel_name_map:
+        for ch_key, ch_name in channel_name_map.items():
+            if ch_name == best_name:
+                canonical = _canonical_channel_label(ch_key)
+                return canonical or ch_key
+
+    raise ValueError(f"Unable to determine canonical channel for entry: {entry}")
+
+
+def _resolve_selection_method(method: str) -> str:
+    key = (method or "").strip().lower()
+    mapping = {
+        'beta': 'beta_channel_selection',
+        'beta_peak': 'beta_channel_selection',
+        'beta_channel_selection': 'beta_channel_selection',
+        'logregf1': 'logreg_channel_selection',
+        'logreg': 'logreg_channel_selection',
+        'logreg_channel_selection': 'logreg_channel_selection',
+    }
+    return mapping.get(key, method)
+
+
+def load_subject_channel_map_from_summary(summary_path: Path, method: str) -> dict:
+    summary_path = Path(summary_path)
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Channel selection summary not found at {summary_path}")
+
+    with summary_path.open('r', encoding='utf-8') as fp:
+        summary = json.load(fp)
+
+    method_key = _resolve_selection_method(method)
+    method_data = summary.get(method_key)
+    if not method_data:
+        available = ", ".join(summary.keys())
+        raise ValueError(
+            f"Channel selection method '{method_key}' not found in summary file. "
+            f"Available sections: {available}"
+        )
+
+    subject_map = {}
+    for subject, entry in method_data.items():
+        subject_map[subject] = _extract_canonical_channel(entry)
+    return subject_map
 
 class HCTSAFeatureAnalyzer:
     """Analyze HCTSA features to determine optimal scaler."""
@@ -732,18 +801,46 @@ class HCTSAFeatureAnalyzer:
 
 
 # Main analysis code
-experiment_dir = f"figures/scaler_analysis"
+experiment_dir = f"results/figures/scaler_analysis"
 os.makedirs(experiment_dir, exist_ok=True)
 
 try:
-    # Load HCTSA data
-    channel_name = 'channel_0'
-    base_path = os.path.join("../hctsa", channel_name)
-    
-    # Load HCTSA data
-    TS_DataMat, timeseries, operations, labels = load_hctsa_data(
-        base_path=base_path,
-        normalized=False,
+    # Load HCTSA data using subject-specific preferred channels
+    segment_cache_dir = Path("6296_data/hctsa_segments")
+
+    channel_selection = {
+        "default_method": "beta",
+        "methods": {
+            "beta": {
+                "PW_EM59": "channel_2-LFP_L0-2",
+                "PW_FH57": "channel_2-LFP_L0-2",
+                "PW_HK59": "channel_2-LFP_L0-2",
+                "PW_HZ58": "channel_2-LFP_L0-2",
+                "PW_SN61": "channel_2-LFP_L0-2",
+                "PW_SN66": "channel_5-LFP_R0-2",
+                "PW_US68": "channel_1-LFP_L1-3",
+            },
+            "logRegF1": {
+                "PW_EM59": "channel_0-LFP_L0-3",
+                "PW_FH57": "channel_1-LFP_L1-3",
+                "PW_HK59": "channel_0-LFP_L0-3",
+                "PW_HZ58": "channel_1-LFP_L1-3",
+                "PW_SN61": "channel_2-LFP_L0-2",
+                "PW_SN66": "channel_0-LFP_L0-3",
+                "PW_US68": "channel_4-LFP_R1-3",
+            },
+        },
+    }
+    selection_method = channel_selection.get("default_method", "beta")
+    method_map = channel_selection.get("methods", {})
+    raw_subject_map = method_map.get(selection_method, {})
+    subject_channel_map = {
+        subject: _canonical_channel_label(channel_name)
+        for subject, channel_name in raw_subject_map.items()
+    }
+    cache = HCTSASegmentCache(segment_cache_dir)
+    TS_DataMat, timeseries, operations, labels = cache.load_subject_channel_data(
+        subject_channel_map
     )
     
     timeseries = timeseries[['ID', 'Name', 'Keywords', 'Length', 'Group']]
@@ -754,6 +851,8 @@ try:
     ) # X_list: List of (epochs, n_features) trial arrays - UNPADDED
     
     print(f"Loaded data successfully:")
+    print(f"   Channel selection: {selection_method} (hardcoded map)")
+    print(f"   Subjects: {len(subject_channel_map)}")
     print(f"   Features matrix: {TS_DataMat.shape}")
     print(f"   Number of trials: {len(X_list)}")
     print(f"   Feature names: {len(operations)} operations")
@@ -876,4 +975,3 @@ except Exception as e:
     print(f"Error during analysis: {e}")
     import traceback
     traceback.print_exc()
-

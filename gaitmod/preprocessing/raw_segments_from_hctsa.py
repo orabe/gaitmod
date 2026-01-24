@@ -230,19 +230,19 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--patient-epochs-path",
         type=Path,
-        default=Path("results/pickles/4646epochs_patients_epochs.pickle"),
+        default=Path("results/pickles/6296epochs_patients_epochs.pickle"),
         help="Path to pickle containing patient->mne.Epochs.",
     )
     parser.add_argument(
         "--hctsa-cache-dir",
         type=Path,
-        default=Path("data/hctsa_segments"),
+        default=Path("6296_data/hctsa_segments"),
         help="HCTSA segment cache directory (default: data/hctsa_segments).",
     )
     parser.add_argument(
         "--raw-cache-dir",
         type=Path,
-        default=Path("data/raw_segments"),
+        default=Path("6296_data/raw_segments"),
         help="Output raw segment cache directory (default: data/raw_segments).",
     )
     parser.add_argument(

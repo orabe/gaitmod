@@ -117,13 +117,13 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--raw-cache-dir",
         type=Path,
-        default=Path("data/raw_segments"),
+        default=Path("6296_data/raw_segments"),
         help="Raw segment cache directory (default: data/raw_segments).",
     )
     parser.add_argument(
         "--hctsa-cache-dir",
         type=Path,
-        default=Path("data/hctsa_segments"),
+        default=Path("6296_data/hctsa_segments"),
         help="HCTSA segment cache directory (default: data/hctsa_segments).",
     )
     parser.add_argument(

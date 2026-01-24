@@ -502,17 +502,24 @@ if __name__ == "__main__":
     # label11 = "xgb_beta"
     # label12 = "xgb_hctsa"
     
-    label0 = "Seq2SeqLSTM_raw_allChs"
-    label1 = "Seq2VecLSTM_raw_betaChs"
+    label0 = "Seq2SeqLSTM_raw_betaChs_init"
+    label1 = "Seq2VecLSTM_hctsa_betaChs"
+    label2 = "Seq2SeqLSTM_raw_betaChs"
+    label3 = "Seq2SeqLSTM_raw_betaChs_shuffle"
+    
     
     args = Namespace(
         csv=[
             f"{base_path}/{label0}/summary/nested_cv_results.csv",
             f"{base_path}/{label1}/summary/nested_cv_results.csv",
+            f"{base_path}/{label2}/summary/nested_cv_results.csv",
+            f"{base_path}/{label3}/summary/nested_cv_results.csv",
         ],
         labels=[
-            "Seq2SeqLSTM_raw_allChs",
-            "Seq2VecLSTM_raw_betaChs",
+            "Seq2SeqLSTM_raw_betaChs_init",
+            "Seq2VecLSTM_hctsa_betaChs",
+            "Seq2SeqLSTM_raw_betaChs",
+            "Seq2SeqLSTM_raw_betaChs_shuffle",
         ],
         output_dir="logs/results/comparison_figures/test",
         metrics=[
