@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import make_scorer, f1_score, roc_auc_score, accuracy_score, balanced_accuracy_score
 
-from gaitmod.models import Seq2SeqLSTM
+from gaitmod.models import Seq2SeqLSTM, Seq2SeqCNNLSTM
 from gaitmod.models import Seq2VecLSTM
 from gaitmod.models import Seq2VecMLP
 from gaitmod.models import Seq2VecCNN
@@ -62,13 +62,13 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     logging.info(f"[BUILD_PIPELINE] Building pipeline for model_type: {model_type}")
     
     # Normalize mask dict for downstream access
-    if model_type == 'Seq2SeqLSTM':
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
         if mask_values is None:
-            raise ValueError("Seq2SeqLSTM requires mask_values with 'X_mask' and 'y_mask'.")
+            raise ValueError(f"{model_type} requires mask_values with 'X_mask' and 'y_mask'.")
         if not isinstance(mask_values, dict):
-            raise ValueError("Seq2SeqLSTM mask_values must be a dict.")
+            raise ValueError(f"{model_type} mask_values must be a dict.")
         if 'X_mask' not in mask_values or 'y_mask' not in mask_values:
-            raise ValueError("Seq2SeqLSTM mask_values must include 'X_mask' and 'y_mask'.")
+            raise ValueError(f"{model_type} mask_values must include 'X_mask' and 'y_mask'.")
     else:
         mask_values = mask_values or {}
 
@@ -76,14 +76,14 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     steps = []
     
     # Feature selection step (always use advanced)
-    # Only Seq2SeqLSTM uses value-based masking; all other models should treat inputs as fully valid.
-    selector_mask_value = mask_values.get('X_mask') if model_type == 'Seq2SeqLSTM' else None
+    # Only Seq2SeqLSTM and Seq2SeqCNNLSTM use value-based masking; all other models should treat inputs as fully valid.
+    selector_mask_value = mask_values.get('X_mask') if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM') else None
     selector = FeatureSelector(x_mask_value=selector_mask_value)
     steps.append(('feature_selector', selector))
     
     # Scaling step (mask-aware for LSTM variants)
-    if model_type == 'Seq2SeqLSTM':
-        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for LSTM")
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+        logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for {model_type}")
         scaler = MaskAwareScaler(x_mask_value=mask_values['X_mask'], scaler_type='standard')
     elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         logging.info(f"[BUILD_PIPELINE] Adding MaskAwareScaler for seq2vec model (no masking applied)")
@@ -140,6 +140,31 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
         classifier._has_validation_data = has_validation_data
         
         logging.info(f"[BUILD_PIPELINE] Seq2SeqLSTM created with subject tracking - callbacks will be handled externally")
+        if outer_fold is not None:
+            logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
+            logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
+    elif model_type == 'Seq2SeqCNNLSTM':
+        # Create the CNN+LSTM classifier for raw data with stateful support
+        if threshold_range is None or n_thresholds is None or threshold_metrics is None:
+            raise ValueError("Seq2SeqCNNLSTM requires threshold_range, n_thresholds, and threshold_metrics.")
+        classifier = Seq2SeqCNNLSTM(
+            mask_values=mask_values,
+            experiment_dir=experiment_dir,
+            outer_fold=outer_fold,
+            inner_fold=inner_fold,
+            outer_test_subject=outer_test_subject,
+            inner_validation_subject=inner_validation_subject,
+            callbacks=callbacks or [],
+            threshold_range=threshold_range,
+            n_thresholds=n_thresholds,
+            threshold_metrics=threshold_metrics,
+        )
+        logging.info(f"[BUILD_PIPELINE] Created Seq2SeqCNNLSTM with mask_values: {mask_values}")
+        
+        classifier._effective_monitor = effective_monitor
+        classifier._has_validation_data = has_validation_data
+        
+        logging.info(f"[BUILD_PIPELINE] Seq2SeqCNNLSTM created with subject tracking - callbacks will be handled externally")
         if outer_fold is not None:
             logging.info(f"[BUILD_PIPELINE] Fold info: Outer fold: {outer_fold}, Inner fold: {inner_fold}")
             logging.info(f"[BUILD_PIPELINE] Test subject: {outer_test_subject}, Validation subject: {inner_validation_subject}")
@@ -209,9 +234,9 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
     
     # Scoring functions - use masked versions for LSTM, standard for others
     logging.info(f"[BUILD_PIPELINE] Setting up scoring functions for {model_type}")
-    if model_type == 'Seq2SeqLSTM':
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
         # Use masked scoring functions that match the training metrics
-        logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for LSTM")
+        logging.info(f"[BUILD_PIPELINE] Using masked scoring functions for {model_type}")
         scoring_functions = {
             'accuracy': make_scorer(
                 lambda y_true, y_pred, **kwargs: Seq2SeqLSTM.eval_masked_accuracy_score(

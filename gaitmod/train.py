@@ -30,7 +30,7 @@ os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
 os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 
 
-from gaitmod.models import Seq2SeqLSTM
+from gaitmod.models import Seq2SeqLSTM, Seq2SeqCNNLSTM
 from gaitmod.models import Seq2VecLSTM
 from gaitmod.models import Seq2VecMLP
 from gaitmod.models import Seq2VecCNN
@@ -159,6 +159,7 @@ DEFAULT_FEATURE_PARAMS: Optional[Dict[str, Any]] = None
 
 SUPPORTED_MODEL_TYPES: Tuple[str, ...] = (
     'Seq2SeqLSTM',
+    'Seq2SeqCNNLSTM',
     'Seq2VecLSTM',
     'Seq2VecMLP',
     'Seq2VecCNN',
@@ -1345,6 +1346,131 @@ class TestTensorBoardLogger(Callback):
             logging.info(f"[TEST_TENSORBOARD] Test TensorBoard logging complete. Logged {len(self.epoch_data)} epochs")
         
 
+class StatefulValidationCallback(Callback):
+    """
+    Custom callback for stateful validation during training.
+    
+    HYBRID TRAINING APPROACH (Option 3):
+    This callback enables efficient training with deployment-realistic validation:
+    - Training: Fast batch processing (stateless LSTM)
+    - Validation: Sequential epoch-by-epoch processing (stateful LSTM)
+    - Result: Model selection based on deployment conditions
+    
+    WHY STATEFUL VALIDATION?
+    When use_stateful_mode=true in config:
+    - Hyperparameter selection reflects deployment performance
+    - Early stopping uses realistic (stateful) metrics
+    - Learning rate scheduling responds to deployment conditions
+    - Final model is optimized for sequential inference
+    
+    WORKFLOW:
+    1. Training epoch completes (stateless, fast)
+    2. Callback converts model to stateful temporarily
+    3. Runs epoch-by-epoch prediction on validation set
+    4. Computes metrics: val_loss, val_roc_auc, etc. (same names as stateless)
+    5. Injects metrics into Keras logs
+    6. Early stopping / LR reduction monitor these metrics
+    7. Training continues with stateless model
+    
+    PERFORMANCE IMPACT:
+    - Training speed: Unchanged (still uses fast batch processing)
+    - Validation overhead: ~2-3x slower (once per epoch)
+    - Overall: Moderate slowdown, but ensures deployment-ready model
+    
+    METRIC INJECTION:
+    Adds to Keras logs with standard 'val_' prefix (same as stateless):
+    - val_loss (binary cross-entropy)
+    - val_roc_auc (threshold-independent)
+    - val_accuracy (threshold=0.5)
+    - val_f1, precision, recall, balanced_accuracy
+    
+    Early stopping monitors 'val_loss' (same metric name as stateless)
+    LR reduction monitors 'val_loss' (same metric name as stateless)
+    
+    Args:
+        lstm_classifier: The Seq2SeqLSTM or Seq2SeqCNNLSTM instance being trained
+        X_val: Validation features (transformed, shape: (n_trials, n_epochs, features))
+        y_val: Validation labels (shape: (n_trials, n_epochs))
+        mask_value: Mask value for labels (default: -1, used to skip padded epochs)
+        reset_between_trials: Whether to reset LSTM states between trials (default: True)
+        log_frequency: How often to compute stateful metrics (default: 1 = every epoch)
+    
+    Note:
+        Only applies to Seq2SeqLSTM and Seq2SeqCNNLSTM models.
+        Automatically disabled for Seq2Vec models (no epoch-by-epoch structure).
+        
+        Stateful validation is ~2-3x slower than stateless validation, but
+        this overhead occurs only once per epoch, not during training iterations.
+    """
+    
+    def __init__(self, lstm_classifier, X_val, y_val, mask_value=-1, 
+                 reset_between_trials=True, log_frequency=1):
+        super().__init__()
+        self.lstm_classifier = lstm_classifier
+        self.X_val = X_val
+        self.y_val = y_val
+        self.mask_value = mask_value
+        self.reset_between_trials = reset_between_trials
+        self.log_frequency = log_frequency
+        self.epoch_count = 0
+        
+    def on_epoch_end(self, epoch, logs=None):
+        """Run stateful validation and inject metrics into logs."""
+        if logs is None:
+            logs = {}
+        
+        # Skip if X_val not yet set
+        if self.X_val is None:
+            return
+        
+        self.epoch_count += 1
+        if self.epoch_count % self.log_frequency != 0:
+            return
+        
+        # Convert to stateful model (transfers weights from current stateless model)
+        self.lstm_classifier.convert_to_stateful()
+        
+        # Run epoch-by-epoch prediction (returns tuple: y_pred, y_pred_proba)
+        _, y_val_proba = self.lstm_classifier.predict_epoch_by_epoch(
+            self.X_val,
+            reset_between_trials=self.reset_between_trials
+        )
+        
+        # Compute metrics (y_val_proba is 2D: (n_trials, n_epochs) with positive class probabilities)
+        y_val_proba_pos = y_val_proba  # Already positive class probabilities, shape: (n_trials, n_epochs)
+        
+        # Apply masking
+        mask = (self.y_val != self.mask_value)
+        y_val_flat = self.y_val[mask]
+        y_val_proba_flat = y_val_proba_pos[mask]
+        
+        if len(y_val_flat) == 0:
+            raise ValueError(f"[STATEFUL_VAL] No valid samples after masking at epoch {epoch}")
+        
+        # Compute metrics
+        from sklearn.metrics import (
+            roc_auc_score, log_loss, accuracy_score, f1_score,
+            precision_score, recall_score, balanced_accuracy_score
+        )
+        
+        # Binary cross-entropy loss (main metric for early stopping)
+        stateful_loss = log_loss(y_val_flat, y_val_proba_flat)
+        logs['val_loss'] = float(stateful_loss)
+        
+        # ROC-AUC (threshold-independent)
+        stateful_auc = roc_auc_score(y_val_flat, y_val_proba_flat)
+        logs['val_roc_auc'] = float(stateful_auc)
+        
+        # Threshold-based metrics (using 0.5)
+        y_val_pred = (y_val_proba_flat > 0.5).astype(int)
+        
+        logs['val_accuracy'] = float(accuracy_score(y_val_flat, y_val_pred))
+        logs['val_f1'] = float(f1_score(y_val_flat, y_val_pred, zero_division=0))
+        logs['val_precision'] = float(precision_score(y_val_flat, y_val_pred, zero_division=0))
+        logs['val_recall'] = float(recall_score(y_val_flat, y_val_pred, zero_division=0))
+        logs['val_balanced_accuracy'] = float(balanced_accuracy_score(y_val_flat, y_val_pred))
+
+
 def _compose_outer_fold_dir(experiment_dir: Optional[str], outer_fold: Optional[int],
                             outer_test_subject: Optional[str]) -> str:
     """
@@ -1550,7 +1676,9 @@ def _setup_nested_cv_logging(experiment_dir=None, outer_fold=None,
 def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=None, 
                                outer_test_subject=None, hyperparameters=None, inner_validation_subject=None,
                                patience=None, monitor=None, save_models=False, progress_frequency=None,
-                               has_validation_data=False, is_refit=False):
+                               has_validation_data=False, is_refit=False,
+                               stateful_validation_config=None, lstm_classifier=None,
+                               X_val=None, y_val=None, mask_value=None):
     """
     Create callbacks for nested cross-validation training.
     
@@ -1566,6 +1694,11 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
         progress_frequency: How often to print progress (epochs)
         has_validation_data: Whether validation data is available
         is_refit: Whether this is refit training (affects directory naming)
+        stateful_validation_config: Config dict for stateful validation (if enabled)
+        lstm_classifier: Seq2SeqLSTM/Seq2SeqCNNLSTM instance (for stateful validation)
+        X_val: Validation features (for stateful validation)
+        y_val: Validation labels (for stateful validation)
+        mask_value: Mask value for labels (for stateful validation)
     
     Returns:
         List of Keras callbacks
@@ -1594,12 +1727,23 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     monitor = monitor if monitor is not None else DEFAULT_CALLBACK_MONITOR
     progress_frequency = progress_frequency if progress_frequency is not None else DEFAULT_PROGRESS_FREQUENCY
 
-    # Adaptive monitor selection based on validation data availability
-    effective_monitor = determine_effective_monitor_key(monitor, has_validation_data)
-    if has_validation_data:
-        logging.info(f"[CALLBACKS] Using validation monitor: {effective_monitor} (validation data available)")
+    # Check if stateful validation should be used
+    use_stateful_val = False
+    if stateful_validation_config and isinstance(stateful_validation_config, dict):
+        use_stateful_val = bool(stateful_validation_config.get('use_stateful_mode', False))
+    
+    # Adaptive monitor selection based on validation data availability and stateful mode
+    if use_stateful_val and has_validation_data:
+        # Use stateful validation metrics for monitoring (with standard val_ prefix)
+        effective_monitor = 'val_loss' if 'loss' in monitor else 'val_roc_auc'
+        logging.info(f"[CALLBACKS] Using STATEFUL validation monitor: {effective_monitor}")
     else:
-        logging.info(f"[CALLBACKS] Using training monitor: {effective_monitor} (no validation data)")
+        # Standard monitor selection
+        effective_monitor = determine_effective_monitor_key(monitor, has_validation_data)
+        if has_validation_data:
+            logging.info(f"[CALLBACKS] Using validation monitor: {effective_monitor} (validation data available)")
+        else:
+            logging.info(f"[CALLBACKS] Using training monitor: {effective_monitor} (no validation data)")
     
     callbacks = [
         # Progress training logger
@@ -1653,6 +1797,21 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
 
     ]
     
+    # Add stateful validation callback if configured
+    if use_stateful_val and lstm_classifier is not None and X_val is not None and y_val is not None:
+        reset_between_trials = stateful_validation_config.get('reset_between_trials', True)
+        stateful_callback = StatefulValidationCallback(
+            lstm_classifier=lstm_classifier,
+            X_val=X_val,
+            y_val=y_val,
+            mask_value=mask_value if mask_value is not None else -1,
+            reset_between_trials=reset_between_trials,
+            log_frequency=1
+        )
+        # Insert before TensorBoard so stateful metrics are available for TensorBoard logging
+        callbacks.insert(-1, stateful_callback)
+        logging.info(f"[CALLBACKS] Added stateful validation callback (reset_between_trials={reset_between_trials})")
+    
     # Optionally add model checkpointing (can be disabled for speed)
     if save_models:
         callbacks.insert(-1, ModelCheckpoint(  # Insert before TensorBoard
@@ -1686,7 +1845,7 @@ def _prepare_sequence_model_callbacks(
     """
     Helper to create callbacks only for sequence models that require them.
     """
-    if model_type not in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
+    if model_type not in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         return None, None
 
     patience_value = 10
@@ -2582,7 +2741,7 @@ def get_default_param_grid(model_type, mask_values=None):
     
     param_grid: Any = {}
     
-    if model_type in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         logging.info(f"[PARAM_GRID] Creating sequence-model parameter grid from config")
         feature_params = _merge_feature_params(model_config.get('feature_params'))
         architecture_configs = model_config.get('architecture_configs', [])
@@ -2664,7 +2823,7 @@ def run_nested_cv_classical(
         except AttributeError:
             feature_names = list(feature_names)
 
-    if model_type in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         raise ValueError(
             "run_nested_cv_classical only supports classical model types "
             "('dummy', 'rf', 'svm', 'xgb', 'logreg', 'lda', 'knn'). "
@@ -3386,9 +3545,9 @@ def run_loso_cv_dl(
             name_filter_tmp.add(subj_str.lower())
         subject_name_filter = name_filter_tmp or None
 
-    if model_type not in ('Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
+    if model_type not in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         raise ValueError(
-            "run_loso_cv_dl only supports model_type='Seq2SeqLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or "
+            "run_loso_cv_dl only supports model_type='Seq2SeqLSTM', 'Seq2SeqCNNLSTM', 'Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', or "
             "'Seq2VecMLPLSTM', "
             f"got '{model_type}'."
         )
@@ -3398,11 +3557,11 @@ def run_loso_cv_dl(
 
     
     # Validate input dimensions based on model type
-    if model_type == 'Seq2SeqLSTM':
-        if X.ndim != 3:
-            raise ValueError(f"Seq2SeqLSTM expects a 3D padded input array, got {X.ndim}D.")
+    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+        if X.ndim not in [3, 4]:
+            raise ValueError(f"{model_type} expects a 3D (single-channel) or 4D (multi-channel) padded input array, got {X.ndim}D.")
         if mask_values is None:
-            raise ValueError("Seq2SeqLSTM requires mask_values parameter.")
+            raise ValueError(f"{model_type} requires mask_values parameter.")
     elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
         if X.ndim != 2:
             raise ValueError(f"{model_type} expects a 2D input array, got {X.ndim}D.")
@@ -3703,6 +3862,25 @@ def run_loso_cv_dl(
                     lstm_classifier = inner_pipeline.steps[-1][1]
                     configured_epochs = getattr(lstm_classifier, 'epochs', None)
                     
+                    # Add stateful validation callback if configured (for Seq2Seq models)
+                    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+                        stateful_config = GLOBAL_SETTINGS.get('stateful_testing', {})
+                        use_stateful_val = bool(stateful_config.get('use_stateful_mode', True))
+                        if use_stateful_val and hasattr(lstm_classifier, 'callbacks') and lstm_classifier.callbacks:
+                            reset_between_trials = stateful_config.get('reset_between_trials', True)
+                            # Note: X_val will be updated after transformation (see Seq2Seq fit section)
+                            stateful_callback = StatefulValidationCallback(
+                                lstm_classifier=lstm_classifier,
+                                X_val=None,  # Will be set after transformation
+                                y_val=y_inner_val,
+                                mask_value=mask_values.get('y_mask', -1),
+                                reset_between_trials=reset_between_trials,
+                                log_frequency=1
+                            )
+                            lstm_classifier.callbacks.append(stateful_callback)
+                            logging.info(f"[CV_SKLEARN] Using STATEFUL VALIDATION for inner fold {inner_fold + 1} (epoch-by-epoch)")
+                            logging.info(f"[CV_SKLEARN]   Training: STATELESS (batch), Validation: STATEFUL (sequential)")
+                    
                     # Handle model-specific fitting
                     if model_type in ('Seq2VecLSTM', 'Seq2VecCNN'):
                         # Seq2Vec LSTM: reshape 2D data to 3D where columns become timesteps and features=1
@@ -3757,8 +3935,17 @@ def run_loso_cv_dl(
                     else:
                         # Seq2Seq: Set validation data and fit
                         lstm_classifier._validation_data = (X_val_transformed, y_inner_val)
+                        
+                        # Update stateful validation callback with transformed data (if present)
+                        if hasattr(lstm_classifier, 'callbacks') and lstm_classifier.callbacks:
+                            for cb in lstm_classifier.callbacks:
+                                if isinstance(cb, StatefulValidationCallback):
+                                    cb.X_val = X_val_transformed  # Use transformed data
+                                    logging.info(f"[CV_SKLEARN]       Updated stateful validation callback with transformed data: {X_val_transformed.shape}")
+                                    break
+                        
                         if verbose >= 2:
-                            logging.info(f"[CV_SKLEARN]       Training Seq2Seq LSTM: train={X_train_transformed.shape}, val={X_val_transformed.shape}")
+                            logging.info(f"[CV_SKLEARN]       Training {model_type} with STATELESS mode (batch): train={X_train_transformed.shape}, val={X_val_transformed.shape}")
                         lstm_classifier.fit(X_train_transformed, y_inner_train)
 
                     history_metrics = {}
@@ -3787,7 +3974,7 @@ def run_loso_cv_dl(
                     base_confusion_components = None
                     
                     # Handle model-specific metrics
-                    if model_type == 'Seq2SeqLSTM':
+                    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                         try:
                             y_mask_val = mask_values['y_mask']
                             y_val_proba_pos = lstm_classifier._extract_positive_class_proba(y_val_proba)
@@ -3822,13 +4009,13 @@ def run_loso_cv_dl(
                     threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS if model_type == 'Seq2SeqLSTM' else None
                     seq2vec_threshold_range = None
                     seq2vec_threshold_steps = None
-                    if model_type != 'Seq2SeqLSTM':
+                    if model_type not in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                         seq2vec_threshold_range, seq2vec_threshold_steps, threshold_metrics = (
                             _get_seq2vec_threshold_settings(model_type)
                         )
                     
                     # Handle model-specific threshold optimization
-                    if model_type == 'Seq2SeqLSTM':
+                    if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                         threshold_results = lstm_classifier.optimize_thresholds_with_model(
                             X_val=X_val_transformed,
                             y_val=y_inner_val,
@@ -4412,7 +4599,7 @@ def run_loso_cv_dl(
                 logging.info(f"[CV_SKLEARN] Pre-computed mask values: {mask_values}")
             
             # Train on full outer training set
-            if model_type == 'Seq2SeqLSTM':
+            if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                 threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS
             else:
                 _, _, threshold_metrics = _get_seq2vec_threshold_settings(model_type)
@@ -4422,9 +4609,9 @@ def run_loso_cv_dl(
             train_metrics = {}
             test_metrics = {}
             refit_learning_rate_history = None
-            if model_type == 'Seq2SeqLSTM':
-                if X_outer_train.ndim != 3 or X_outer_test.ndim != 3:
-                    raise ValueError('run_loso_cv_dl with Seq2SeqLSTM requires 3D padded inputs for final retraining.')
+            if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+                if X_outer_train.ndim not in [3, 4] or X_outer_test.ndim not in [3, 4]:
+                    raise ValueError(f'run_loso_cv_dl with {model_type} requires 3D (single-channel) or 4D (multi-channel) padded inputs for final retraining.')
             elif model_type in ('Seq2VecLSTM', 'Seq2VecMLP', 'Seq2VecCNN', 'Seq2VecMLPLSTM'):
                 if X_outer_train.ndim != 2 or X_outer_test.ndim != 2:
                     raise ValueError(f"run_loso_cv_dl with {model_type} requires 2D inputs for final retraining.")
@@ -4560,7 +4747,7 @@ def run_loso_cv_dl(
                 
                 if csv_logger_idx is not None:
                     # Determine mask value based on model type
-                    mask_value_for_test = mask_values['y_mask'] if model_type == 'Seq2SeqLSTM' else None
+                    mask_value_for_test = mask_values['y_mask'] if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM') else None
                     
                     # Add CSV logger for test metrics
                     test_eval_callback = TestEvaluationCSVLogger(
@@ -4589,7 +4776,9 @@ def run_loso_cv_dl(
                         if verbose >= 1:
                             logging.info(f"[CV_SKLEARN] Added test TensorBoard callback (monitoring only, no data leakage)")
 
-            # Fit the LSTM classifier with fixed epoch schedule
+            # Fit the LSTM classifier with fixed epoch schedule (STATELESS training)
+            if verbose >= 1:
+                logging.info(f"[CV_SKLEARN] Training with STATELESS mode (batch) for refit on full outer training set")
             lstm_classifier.fit(X_train_final_for_fit, y_outer_train_for_fit)
             lstm_histories = getattr(lstm_classifier, 'history_', [])
             history_metrics = {}
@@ -4650,13 +4839,38 @@ def run_loso_cv_dl(
                 logging.info(f"[CV_SKLEARN] Using stable thresholds: {stable_threshold_summary}")
 
             # Apply stable thresholds to test predictions
-            y_test_pred_proba = lstm_classifier.predict_proba(X_test_final_for_callbacks)
+            # Check if stateful mode should be used for test evaluation
+            use_stateful = False
+            if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+                stateful_config = GLOBAL_SETTINGS.get('stateful_testing', {})
+                use_stateful = bool(stateful_config.get('use_stateful_mode', True))
+            
+            if use_stateful:
+                reset_between_trials = stateful_config.get('reset_between_trials', True)
+                reset_msg = "with state reset" if reset_between_trials else "without state reset"
+                logging.info(f"[CV_TEST] Using STATEFUL mode for test evaluation (epoch-by-epoch, {reset_msg})")
+                logging.info(f"[CV_TEST]   Training: STATELESS (batch), Test: STATEFUL (sequential)")
+                # Build stateful model and convert weights
+                lstm_classifier.convert_to_stateful()
+                
+                # Run epoch-by-epoch prediction (returns tuple: y_pred, y_pred_proba)
+                _, y_test_pred_proba = lstm_classifier.predict_epoch_by_epoch(
+                    X_test_final_for_callbacks, 
+                    reset_between_trials=reset_between_trials
+                )
+            else:
+                logging.info(f"[CV_TEST] Using STATELESS mode for test evaluation (batch processing)")
+                logging.info(f"[CV_TEST]   Training: STATELESS (batch), Test: STATELESS (batch)")
+                # Standard stateless prediction (default)
+                y_test_pred_proba = lstm_classifier.predict_proba(X_test_final_for_callbacks)
 
             # Get positive class probabilities
+            # For stateful: y_test_pred_proba is already 2D (n_trials*n_epochs,) positive probabilities
+            # For stateless: y_test_pred_proba is 3D (n_trials, n_epochs, 2) or 2D (n_samples, 2)
             if y_test_pred_proba.ndim > 2:
                 y_test_pred_proba = y_test_pred_proba.reshape(-1, y_test_pred_proba.shape[-1])
             
-            if y_test_pred_proba.shape[1] == 2:
+            if y_test_pred_proba.ndim == 2 and y_test_pred_proba.shape[1] == 2:
                 y_test_proba_pos = y_test_pred_proba[:, 1]
             else:
                 y_test_proba_pos = y_test_pred_proba.ravel()
@@ -4778,7 +4992,7 @@ def run_loso_cv_dl(
                 confusion_threshold = optimal_thresholds.get('f1', 0.5)
                 y_test_pred_conf = (y_test_proba_pos > confusion_threshold).astype(int)
                 
-                if model_type == 'Seq2SeqLSTM':
+                if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                     if y_test_pred_conf.size == y_outer_test.size:
                         y_test_pred_conf = y_test_pred_conf.reshape(y_outer_test.shape)
                     y_mask_val = mask_values['y_mask']
@@ -4851,7 +5065,7 @@ def run_loso_cv_dl(
                     'test_scores': test_metrics.copy(),
                     'optimal_thresholds': optimal_thresholds.copy(),  # Stable thresholds from inner CV aggregation
                     'threshold_optimization': best_aggregated_threshold_results.get('tuning_results', {}) if best_aggregated_threshold_results else {},
-                'feature_selection': {
+                    'feature_selection': {
                     'selected_feature_index_map': best_feature_index_map.copy() if best_feature_index_map else {},
                     'n_selected_features': len(best_feature_index_map),
                     'step_status': final_feature_selection_steps,
@@ -4897,6 +5111,11 @@ def run_loso_cv_dl(
                     if hctsa_payload:
                         comprehensive_sklearn_refit_results['feature_selection']['hctsa'] = hctsa_payload
                 comprehensive_sklearn_refit_results.update(result_metadata)
+                
+                # Store test evaluation mode in results (BEFORE saving)
+                if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
+                    comprehensive_sklearn_refit_results['test_evaluation_mode'] = 'stateful' if use_stateful else 'stateless'
+                    comprehensive_sklearn_refit_results['test_reset_between_trials'] = stateful_config.get('reset_between_trials', True) if use_stateful else None
                 
                 # Save comprehensive sklearn refit results immediately
                 json_path = save_evaluation_results(
