@@ -1,10 +1,10 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2SeqLSTM_raw_betaChs_shuffle",
+    "experiment_name": "Seq2SeqLSTM_hctsa_betaChs_stateful",
     "model_type": "Seq2SeqLSTM",
     "feature_data": {
-      "source": "raw",
-      "segment_cache_dir": "data/raw_segments"
+      "source": "hctsa",
+      "segment_cache_dir": "data/hctsa_segments"
     },
     "callbacks": {
       "progress_frequency": 1,
@@ -23,6 +23,11 @@
       "metrics": [
         "f1"
       ]
+    },
+    "stateful_testing": {
+      "use_stateful_mode": true,
+      "reset_between_trials": true,
+      "description": "Stateful mode enables epoch-by-epoch processing for deployment simulation. When true: (1) Validation uses stateful LSTM during training (early stopping monitors stateful_val_loss), (2) Test evaluation uses epoch-by-epoch prediction, (3) Hyperparameters selected based on deployment conditions. When false (default): Standard batch processing for training, validation, and test. Use stateful_mode=true for DBS deployment validation, false for faster experimentation."
     },
     "masking": {
       "global_x_mask_value": 1000000.0,
@@ -77,16 +82,16 @@
       0.01
     ],
     "feature_selector__enabled": [
-      false
+      true
     ],
     "feature_selector__n_features": [
-      50
+      300
     ],
     "feature_selector__selection_method": [
       "roc_auc"
     ],
     "feature_selector__correlation_threshold": [
-      0.7
+      0.3
     ]
   },
   "Seq2SeqLSTM": {
@@ -98,15 +103,31 @@
         "classifier__hidden_dims": [32],
         "classifier__activations": ["tanh"],
         "classifier__recurrent_activations": ["sigmoid"],
-        "classifier__dropout": 0.6,
-        "classifier__lr": 5e-4,
+        "classifier__dropout": 0.5,
+        "classifier__lr": 0.001,
         "classifier__batch_size": 16,
         "classifier__epochs": 60,
-        "classifier__patience": 8,
+        "classifier__patience": 10,
         "classifier__dense_units": 1,
         "classifier__dense_activation": "sigmoid",
         "classifier__optimizer": "adam",
-        "classifier__threshold": 0.5
+        "classifier__threshold": 0.5,
+        "classifier__use_class_weights": true
+      },
+      {
+        "classifier__hidden_dims": [64],
+        "classifier__activations": ["tanh"],
+        "classifier__recurrent_activations": ["sigmoid"],
+        "classifier__dropout": 0.4,
+        "classifier__lr": 0.001,
+        "classifier__batch_size": 32,
+        "classifier__epochs": 60,
+        "classifier__patience": 10,
+        "classifier__dense_units": 1,
+        "classifier__dense_activation": "sigmoid",
+        "classifier__optimizer": "adam",
+        "classifier__threshold": 0.5,
+        "classifier__use_class_weights": true
       }
     ],
     "other_params": {
