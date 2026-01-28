@@ -1069,6 +1069,120 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
         y_pred_valid = y_pred_flat[mask]
         return confusion_matrix(y_true_valid, y_pred_valid, labels=[0, 1])
     
+    def optimize_thresholds_with_model(self, X_val, y_val, metrics=None, 
+                                      threshold_range=None, n_thresholds=None, verbose=False):
+        """
+        Threshold optimization for CNN-LSTM model (compatible with training pipeline).
+        
+        Args:
+            X_val: Validation features
+            y_val: Validation labels (with masking)
+            metrics: List of metrics to optimize thresholds for
+            threshold_range: Range of thresholds to search
+            n_thresholds: Number of thresholds to test
+            verbose: Whether to print optimization details
+            
+        Returns:
+            dict: Optimized thresholds and scores for each metric
+        """
+        from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
+        
+        metrics = metrics or self.threshold_metrics or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+        threshold_range = threshold_range or self.threshold_range or (0.3, 0.8)
+        n_thresholds = n_thresholds or self.n_thresholds or 51
+        
+        # Get predictions
+        y_pred_proba = self.predict_proba(X_val)
+        
+        # Handle masking
+        y_mask_val = self.mask_values.get('y_mask', -1) if isinstance(self.mask_values, dict) else -1
+        y_true_flat = y_val.ravel()
+        y_pred_proba_flat = y_pred_proba.ravel() if y_pred_proba.ndim > 1 else y_pred_proba
+        mask = y_true_flat != y_mask_val
+        
+        if np.sum(mask) == 0:
+            # No valid samples
+            return {
+                'optimized_scores': {m: 0.0 for m in metrics},
+                'optimal_thresholds': {m: 0.5 for m in metrics},
+                'tuning_results': {}
+            }
+        
+        y_true_valid = y_true_flat[mask]
+        y_pred_proba_valid = y_pred_proba_flat[mask]
+        
+        # Optimize each metric
+        optimal_thresholds = {}
+        optimized_scores = {}
+        tuning_results = {}
+        
+        thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
+        
+        for metric_name in metrics:
+            best_threshold = 0.5
+            best_score = 0.0
+            all_scores = []
+            
+            for threshold in thresholds:
+                y_pred = (y_pred_proba_valid > threshold).astype(int)
+                
+                try:
+                    if metric_name == 'f1':
+                        score = f1_score(y_true_valid, y_pred, pos_label=1, zero_division=0)
+                    elif metric_name == 'accuracy':
+                        score = accuracy_score(y_true_valid, y_pred)
+                    elif metric_name == 'precision':
+                        score = precision_score(y_true_valid, y_pred, pos_label=1, zero_division=0)
+                    elif metric_name == 'recall':
+                        score = recall_score(y_true_valid, y_pred, pos_label=1, zero_division=0)
+                    elif metric_name == 'balanced_accuracy':
+                        score = balanced_accuracy_score(y_true_valid, y_pred)
+                    else:
+                        score = 0.0
+                    
+                    all_scores.append(score)
+                    if score > best_score:
+                        best_score = score
+                        best_threshold = threshold
+                except Exception:
+                    all_scores.append(0.0)
+            
+            optimal_thresholds[metric_name] = best_threshold
+            optimized_scores[metric_name] = best_score
+            tuning_results[metric_name] = {
+                'optimal_threshold': best_threshold,
+                'optimal_score': best_score,
+                'all_scores': all_scores
+            }
+            
+            if verbose:
+                logging.info(f"  {metric_name.capitalize()}: threshold={best_threshold:.3f}, score={best_score:.4f}")
+        
+        # Add AUC scores (threshold-independent)
+        try:
+            from sklearn.metrics import roc_auc_score, average_precision_score
+            roc_auc = roc_auc_score(y_true_valid, y_pred_proba_valid)
+            pr_auc = average_precision_score(y_true_valid, y_pred_proba_valid)
+            
+            optimized_scores['roc_auc'] = roc_auc
+            optimized_scores['pr_auc'] = pr_auc
+            tuning_results['roc_auc'] = {'optimal_threshold': None, 'optimal_score': roc_auc, 'all_scores': []}
+            tuning_results['pr_auc'] = {'optimal_threshold': None, 'optimal_score': pr_auc, 'all_scores': []}
+            
+            if verbose:
+                logging.info(f"  ROC AUC: {roc_auc:.4f} (threshold-independent)")
+                logging.info(f"  PR AUC: {pr_auc:.4f} (threshold-independent)")
+        except Exception as e:
+            logging.warning(f"Failed to compute AUC scores: {e}")
+            optimized_scores['roc_auc'] = 0.5
+            optimized_scores['pr_auc'] = 0.0
+        
+        return {
+            'optimized_scores': optimized_scores,
+            'optimal_thresholds': optimal_thresholds,
+            'tuning_results': tuning_results
+        }
+    
     def get_params(self, deep=True):
         """Get parameters for sklearn compatibility."""
         return {

@@ -4006,7 +4006,7 @@ def run_loso_cv_dl(
                     if verbose >= 2:
                         logging.info(f"[CV_SKLEARN]       Optimizing thresholds for validation metrics")
 
-                    threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS if model_type == 'Seq2SeqLSTM' else None
+                    threshold_metrics = SEQ2SEQ_THRESHOLD_METRICS if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM') else None
                     seq2vec_threshold_range = None
                     seq2vec_threshold_steps = None
                     if model_type not in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
@@ -4882,7 +4882,7 @@ def run_loso_cv_dl(
                 getattr(lstm_classifier, 'threshold', 0.5),
             )
             
-            if model_type == 'Seq2SeqLSTM':
+            if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):
                 # Seq2Seq: Apply masking to test data
                 y_test_flat = y_outer_test.ravel()
                 y_test_proba_flat = y_test_proba_pos.ravel()
@@ -5903,6 +5903,36 @@ def main(argv=None):
             outer_test_subjects=outer_subject_filters,
             data_source=feature_source,
             n_channels=n_channels,
+            fixed_params=fixed_params,
+            fixed_params_source=fixed_params_source,
+            fixed_thresholds=fixed_thresholds,
+        )
+    elif selected_model_type == 'Seq2SeqCNNLSTM':
+        # Sequence-to-sequence CNN+LSTM path (padding required)
+        logging.info("[MAIN] Starting nested CV with inner-fold specific padding (seq2seq CNN-LSTM)")
+        logging.info("[MAIN] Input: %d unpadded trials", len(X_list))
+
+        X_padded, y_padded, mask_values = pad_trials(X_list, y_list, verbose=verbose)
+        log_memory_usage()
+        outer_results, all_best_params, experiment_dir = run_loso_cv_dl(
+            X_padded,
+            y_padded,
+            groups,
+            subject_names=subject_names,
+            mask_values=mask_values,
+            model_type=selected_model_type,
+            selection_score_metric=DEFAULT_SELECTION_SCORE_METRIC,
+            selection_score_aggregation=DEFAULT_SELECTION_SCORE_AGGREGATION,
+            experiment_dir=experiment_dir,
+            n_jobs=n_jobs,
+            verbose=verbose,
+            hparam_logger=hparam_logger,
+            feature_names=feature_names,
+            outer_test_subjects=outer_subject_filters,
+            data_source=feature_source,
+            n_channels=n_channels,
+            preferred_channel_map=SUBJECT_CHANNEL_PRIOR,
+            channels_order=channels_override,
             fixed_params=fixed_params,
             fixed_params_source=fixed_params_source,
             fixed_thresholds=fixed_thresholds,
