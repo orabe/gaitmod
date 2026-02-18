@@ -8,8 +8,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import List, Sequence
+from itertools import product
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,27 +24,80 @@ from gaitmod.stats.run_univariate_analysis import (
     compute_class_statistics,
     create_visualizations,
 )
+from scipy.stats import gaussian_kde
+
+
+def compute_mean_overlap_coefficient(X, y, n_points=1000):
+    """Compute mean overlap coefficient (intersection area) across all features using KDE.
+    
+    Lower values indicate better class separation (less overlap).
+    Returns mean overlap coefficient across all features.
+    """
+    class_0 = X[y == 0]
+    class_1 = X[y == 1]
+    
+    n_features = X.shape[1]
+    overlaps = []
+    
+    for i in range(n_features):
+        feat_0 = class_0[:, i]
+        feat_1 = class_1[:, i]
+        
+        # Remove NaN/inf
+        mask_0 = np.isfinite(feat_0)
+        mask_1 = np.isfinite(feat_1)
+        feat_0 = feat_0[mask_0]
+        feat_1 = feat_1[mask_1]
+        
+        if len(feat_0) < 3 or len(feat_1) < 3:
+            continue
+        
+        try:
+            # Estimate PDFs using KDE
+            kde_0 = gaussian_kde(feat_0)
+            kde_1 = gaussian_kde(feat_1)
+            
+            # Create evaluation grid
+            x_min = min(feat_0.min(), feat_1.min())
+            x_max = max(feat_0.max(), feat_1.max())
+            x_grid = np.linspace(x_min, x_max, n_points)
+            
+            # Evaluate PDFs
+            pdf_0 = kde_0(x_grid)
+            pdf_1 = kde_1(x_grid)
+            
+            # Compute overlap (minimum of the two PDFs at each point)
+            overlap = np.minimum(pdf_0, pdf_1)
+            
+            # Integrate using trapezoidal rule
+            overlap_area = np.trapezoid(overlap, x_grid)
+            overlaps.append(overlap_area)
+        except:
+            # KDE may fail for some features, skip them
+            continue
+    
+    return np.mean(overlaps) if overlaps else np.nan
 
 
 CHANNEL_METHODS = {
     "beta": {
-        "PW_EM59": "channel_2",
-        "PW_FH57": "channel_2",
-        "PW_HK59": "channel_2",
-        "PW_HZ58": "channel_2",
-        "PW_SN61": "channel_2",
-        "PW_SN66": "channel_5",
-        "PW_US68": "channel_1",
+        "PW_EM59": "channel_2-LFP_L0-2",
+        "PW_FH57": "channel_2-LFP_L0-2",
+        "PW_HK59": "channel_2-LFP_L0-2",
+        "PW_HZ58": "channel_2-LFP_L0-2",
+        "PW_SN61": "channel_2-LFP_L0-2",
+        "PW_SN66": "channel_5-LFP_R0-2",
+        "PW_US68": "channel_1-LFP_L1-3"
     },
     "logRegF1": {
-        "PW_EM59": "channel_0",
-        "PW_FH57": "channel_1",
-        "PW_HK59": "channel_0",
-        "PW_HZ58": "channel_1",
-        "PW_SN61": "channel_2",
-        "PW_SN66": "channel_0",
-        "PW_US68": "channel_4",
-    },
+        "PW_EM59": "channel_0-LFP_L0-3",
+        "PW_FH57": "channel_1-LFP_L1-3",
+        "PW_HK59": "channel_0-LFP_L0-3",
+        "PW_HZ58": "channel_1-LFP_L1-3",
+        "PW_SN61": "channel_2-LFP_L0-2",
+        "PW_SN66": "channel_0-LFP_L0-3",
+        "PW_US68": "channel_4-LFP_R1-3"
+    }
 }
 
 
@@ -142,14 +197,20 @@ def _load_preferred_channel_data(
 
 def main() -> None:
     # -------------------- config --------------------
-    features_file = Path(
-        "results/figures/selected_features/selected_features_after_correlation_var0p01_topk500_ct0p3.json"
-    )
-    data_root = Path("6296_data/hctsa")
+    
+    # Grid search parameters (match report_hctsa_correlation_filter.py)
+    # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"]
+    variance_thresholds = [0.0001]
+    selection_methods = ["roc_auc"]
+    correlation_thresholds = [0.01, 0.3, 0.5, 0.7, 0.9]
+    n_features_list = [10, 50, 100, 300, 500, 1000, 2000]
+    
+    data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     output_dir = Path("results/figures/selected_features")
-    base_name = "class_stats"
+    features_dir = Path("results/figures/selected_features")
+    
     clip_percentiles_raw = None  # e.g. "1,99"
     title_suffix = ""
     normalize = True
@@ -159,122 +220,172 @@ def main() -> None:
     preferred_map = CHANNEL_METHODS.get(channel_method, {})
     if not preferred_map:
         raise SystemExit(f"No subjects found for channel method '{channel_method}'.")
-
-    params_label = ""
-    if features_file.suffix.lower() == ".json" and features_file.exists():
-        with features_file.open("r", encoding="utf-8") as fp:
-            payload = json.load(fp)
-        var_thresh = payload.get("variance_threshold")
-        topk = payload.get("n_features_requested")
-        corr = payload.get("correlation_threshold")
-        if var_thresh is not None and topk is not None and corr is not None:
-            def _format_param(value):
-                if isinstance(value, float):
-                    text = f"{value:g}"
-                else:
-                    text = str(value)
-                return text.replace(".", "p")
-            params_label = (
-                f"var{_format_param(var_thresh)}_"
-                f"topk{_format_param(topk)}_"
-                f"ct{_format_param(corr)}"
-            )
-
-    selected_names = _load_feature_names(features_file)
-    if not selected_names:
-        raise SystemExit("No feature names loaded from the feature list.")
-
+    
+    # Load data once (shared across all plots)
+    logging.info("Loading HCTSA data...")
     X, y, operations = _load_preferred_channel_data(
         data_root,
         preferred_map,
         variant,
     )
-
     name_to_index = {name: idx for idx, name in enumerate(operations["Name"].tolist())}
-    missing = [name for name in selected_names if name not in name_to_index]
-    if missing:
-        logging.warning("Missing %d features from operations metadata.", len(missing))
-        selected_names = [name for name in selected_names if name in name_to_index]
-    if not selected_names:
-        raise SystemExit("None of the selected feature names exist in the operations metadata.")
-
-    selected_indices = [name_to_index[name] for name in selected_names]
-    X_selected = X[:, selected_indices]
-    if normalize:
-        mean = np.nanmean(X_selected, axis=0)
-        std = np.nanstd(X_selected, axis=0)
-        std[std == 0] = 1.0
-        X_selected = (X_selected - mean) / std
-    tick_labels = [f"{idx}: {name}" for idx, name in zip(selected_indices, selected_names)]
-
-    logging.info(
-        "Selected features: %d / %d (samples=%d)",
-        len(selected_indices),
-        len(operations),
-        X_selected.shape[0],
-    )
-
-    stats, summary_df = compute_class_statistics(
-        X_selected,
-        y,
-        feature_names=np.asarray(selected_names),
-    )
-
-    clip_percentiles = _parse_clip_percentiles(clip_percentiles_raw)
-    if params_label:
-        base_name = f"{base_name}_{params_label}"
-
-    title_suffix = title_suffix or f"channel method: {channel_method}"
-    if normalize:
-        title_suffix = f"{title_suffix} | normalized"
-    if params_label:
-        title_suffix = f"{title_suffix} | {params_label}"
-
-    combined_path = create_visualizations(
-        stats,
-        summary_df,
-        output_dir=output_dir,
-        base_name=base_name,
-        clip_percentiles=clip_percentiles,
-        top_k=None,
-        title_suffix=title_suffix,
-        total_features=len(operations),
-        top_metric="abs_mean_diff",
-    )
-
-    X_corr = np.nan_to_num(X_selected, nan=0.0, posinf=0.0, neginf=0.0)
-    corr_matrix = np.corrcoef(X_corr, rowvar=False)
-    combined_img = mpimg.imread(combined_path)
-    fig, axes = plt.subplots(
-        1,
-        2,
-        figsize=(18, 8),
-        gridspec_kw={"width_ratios": [1.8, 1.0]},
-    )
-    axes[0].imshow(combined_img)
-    axes[0].axis("off")
-    axes[0].set_title("Feature mean comparisons")
-
-    sns.heatmap(
-        corr_matrix,
-        cmap="coolwarm",
-        vmin=-1,
-        vmax=1,
-        center=0,
-        square=True,
-        xticklabels=tick_labels,
-        yticklabels=tick_labels,
-        cbar_kws={"label": "Correlation"},
-        ax=axes[1],
-    )
-    axes[1].set_title("Correlation matrix of selected features")
-    axes[1].tick_params(axis="x", labelrotation=90, labelsize=6)
-    axes[1].tick_params(axis="y", labelsize=6)
-    fig.tight_layout()
-    fig.savefig(combined_path, dpi=200)
-    plt.close(fig)
-
-    logging.info("Saved figure: %s", combined_path)
+    
+    # Generate all parameter combinations
+    param_combinations = list(product(
+        variance_thresholds,
+        selection_methods,
+        n_features_list,
+        correlation_thresholds
+    ))
+    
+    logging.info(f"\n{'='*80}")
+    logging.info(f"Generating plots for {len(param_combinations)} combinations")
+    logging.info(f"{'='*80}\n")
+    
+    # Process each combination
+    for idx, (variance_threshold, selection_method, n_features, ct) in enumerate(param_combinations, 1):
+        logging.info(f"\n[{idx}/{len(param_combinations)}] Plotting:")
+        logging.info(f"  variance_threshold={variance_threshold}, method={selection_method}, "
+                    f"n_features={n_features}, corr_threshold={ct}")
+        
+        # Construct feature file path
+        features_file = features_dir / f"{selection_method}_var{variance_threshold}_nfeat{n_features}_ct{ct}_selected_feat.json"
+        
+        if not features_file.exists():
+            logging.warning(f"  ✗ Feature file not found: {features_file.name}")
+            continue
+        
+        try:
+            # Load selected feature names
+            selected_names = _load_feature_names(features_file)
+            if not selected_names:
+                logging.warning("  ✗ No feature names in file")
+                continue
+            
+            # Map to indices
+            missing = [name for name in selected_names if name not in name_to_index]
+            if missing:
+                logging.warning(f"  Missing {len(missing)} features from operations metadata")
+                selected_names = [name for name in selected_names if name in name_to_index]
+            
+            if not selected_names:
+                logging.warning("  ✗ No valid features found")
+                continue
+            
+            selected_indices = [name_to_index[name] for name in selected_names]
+            X_selected = X[:, selected_indices]
+            
+            # Normalize if requested
+            if normalize:
+                mean = np.nanmean(X_selected, axis=0)
+                std = np.nanstd(X_selected, axis=0)
+                std[std == 0] = 1.0
+                X_selected = (X_selected - mean) / std
+            
+            tick_labels = [f"{idx}: {name}" for idx, name in zip(selected_indices, selected_names)]
+            
+            # Suppress expected warnings from statistical computations
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='invalid value encountered in scalar divide')
+                warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+                
+                # Compute statistics
+                stats, summary_df = compute_class_statistics(
+                    X_selected,
+                    y,
+                    feature_names=np.asarray(selected_names),
+                )
+                
+                # Compute quality metrics
+                mean_overlap = compute_mean_overlap_coefficient(X_selected, y)
+            
+            logging.info(f"  Per-feature KDE overlap: {mean_overlap:.4f}")
+            
+            # Create visualizations
+            clip_percentiles = _parse_clip_percentiles(clip_percentiles_raw)
+            base_name = features_file.stem
+            
+            title_suffix_full = title_suffix or f"channel method: {channel_method}"
+            if normalize:
+                title_suffix_full = f"{title_suffix_full} | normalized"
+            
+            combined_path = create_visualizations(
+                stats,
+                summary_df,
+                output_dir=output_dir,
+                base_name=base_name,
+                clip_percentiles=clip_percentiles,
+                top_k=None,
+                title_suffix=title_suffix_full,
+                total_features=len(operations),
+                top_metric="abs_mean_diff",
+                log_kde_overlap=True,
+            )
+            
+            # Create combined figure with correlation matrix
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+                
+                X_corr = np.nan_to_num(X_selected, nan=0.0, posinf=0.0, neginf=0.0)
+                corr_matrix = np.corrcoef(X_corr, rowvar=False)
+            
+            combined_img = mpimg.imread(combined_path)
+            
+            fig, axes = plt.subplots(
+                1,
+                2,
+                figsize=(18, 8),
+                gridspec_kw={"width_ratios": [1.8, 1.0]},
+            )
+            axes[0].imshow(combined_img)
+            axes[0].axis("off")
+            axes[0].set_title(f"Feature mean comparisons\nPer-feature KDE overlap: {mean_overlap:.4f} (lower=better)")
+            
+            sns.heatmap(
+                corr_matrix,
+                cmap="coolwarm",
+                vmin=-1,
+                vmax=1,
+                center=0,
+                square=True,
+                xticklabels=tick_labels,
+                yticklabels=tick_labels,
+                cbar_kws={"label": "Correlation"},
+                ax=axes[1],
+            )
+            axes[1].set_title("Correlation matrix of selected features")
+            axes[1].tick_params(axis="x", labelrotation=90, labelsize=6)
+            axes[1].tick_params(axis="y", labelsize=6)
+            
+            # Add parameters text box
+            params_text = (
+                f"Parameters:\n"
+                f"Method: {selection_method}\n"
+                f"Variance: {variance_threshold}\n"
+                f"Top-K: {n_features}\n"
+                f"Corr. threshold: {ct}\n"
+                f"Final features: {len(selected_names)}"
+            )
+            fig.text(0.01, 0.99, params_text, 
+                     fontsize=9, 
+                     verticalalignment='top', 
+                     horizontalalignment='left',
+                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black', linewidth=1))
+            
+            fig.tight_layout()
+            fig.savefig(combined_path, dpi=200)
+            plt.close(fig)
+            
+            logging.info(f"  Saved: {combined_path.name}")
+            
+        except Exception as e:
+            logging.error(f"  ✗ Failed: {e}")
+            continue
+    
+    logging.info(f"\n{'='*80}")
+    logging.info(f"Plotting complete! Processed {len(param_combinations)} combinations")
+    logging.info(f"Figures saved in: {output_dir}")
+    logging.info(f"{'='*80}\n")
 
 
 if __name__ == "__main__":

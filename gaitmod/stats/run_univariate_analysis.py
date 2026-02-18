@@ -545,7 +545,8 @@ def compute_brunner_munzel_scores(X, y):
 
 def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
                           clip_percentiles=None, top_k=None, title_suffix: str = "",
-                          total_features: int = None, top_metric='abs_mean_diff'):
+                          total_features: int = None, top_metric='abs_mean_diff',
+                          log_kde_overlap: bool = False):
     output_dir.mkdir(parents=True, exist_ok=True)
     classes = sorted(stats.keys())
     ascending = top_metric in ASCENDING_METRICS
@@ -563,6 +564,10 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
     class_label_map = {
         'mean_class0': 'Normal walking',
         'mean_class1': 'Gait modulation'
+    }
+    class_colors = {
+        'Normal walking': '#1f77b4',  # blue
+        'Gait modulation': '#d62728',  # red
     }
     long_df = summary_for_plots.melt(
         id_vars=['feature_index'],
@@ -584,7 +589,7 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         y='feature_mean',
         hue='class',
         inner=None,
-        palette='Pastel1',
+        palette=class_colors,
         ax=ax[0],
         legend=False
     )
@@ -609,26 +614,106 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         mean_val = class_mean_values.get(cls)
         if mean_val is None or not np.isfinite(mean_val):
             continue
-        ax[0].plot(
-            [idx - 0.2, idx + 0.2],
-            [mean_val, mean_val],
-            color='red',
-            linewidth=2,
-            solid_capstyle='butt'
+        ax[0].scatter(
+            idx,
+            mean_val,
+            s=60,
+            marker='o',
+            facecolor='white',
+            edgecolor='black',
+            linewidth=1.2,
+            zorder=5,
         )
-    ax[0].plot([], [], color='red', linewidth=2, label='Mean (μ)')
+    ax[0].scatter([], [], s=60, marker='o', facecolor='white', edgecolor='black', linewidth=1.2, label='Mean (μ)')
     ax[0].legend(loc='upper right', fontsize=9)
 
+    # Prepare data for KDE with overlap
+    series_dict = {}
     for cls in sorted(stats.keys()):
         series = summary_for_plots[f"mean_class{cls}"]
         if clip_percentiles:
             series = clip_series(series, clip_percentiles)
-        label = 'Gait modulation' if cls == 1 else 'Normal walking'
-        sns.kdeplot(series, label=label, linewidth=2, ax=ax[1])
+        series_dict[cls] = series.dropna().values
+    
+    # Plot KDE curves and compute overlap
+    if len(series_dict) == 2:
+        from scipy.stats import gaussian_kde
+        
+        data_0 = series_dict[0]
+        data_1 = series_dict[1]
+        
+        if len(data_0) >= 3 and len(data_1) >= 3:
+            # Create KDEs
+            kde_0 = gaussian_kde(data_0)
+            kde_1 = gaussian_kde(data_1)
+            
+            # Create evaluation grid
+            x_min = min(data_0.min(), data_1.min())
+            x_max = max(data_0.max(), data_1.max())
+            x_grid = np.linspace(x_min, x_max, 1000)
+            
+            # Evaluate PDFs
+            pdf_0 = kde_0(x_grid)
+            pdf_1 = kde_1(x_grid)
+            
+            # Compute overlap
+            overlap = np.minimum(pdf_0, pdf_1)
+            overlap_area = np.trapezoid(overlap, x_grid)
+            
+            # Plot KDE curves
+            ax[1].plot(
+                x_grid,
+                pdf_0,
+                label='Normal walking',
+                linewidth=2,
+                color=class_colors['Normal walking'],
+            )
+            ax[1].plot(
+                x_grid,
+                pdf_1,
+                label='Gait modulation',
+                linewidth=2,
+                color=class_colors['Gait modulation'],
+            )
+            
+            # Fill overlap region
+            ax[1].fill_between(x_grid, overlap, alpha=0.3, color='gray', label=f'Overlap: {overlap_area:.3f}')
+            
+            ax[1].legend()
+            if log_kde_overlap:
+                logging.info("  KDE overlap (mean-class density): %.4f", overlap_area)
+        else:
+            # Fallback to seaborn if not enough data
+            for cls in sorted(stats.keys()):
+                label = 'Gait modulation' if cls == 1 else 'Normal walking'
+                sns.kdeplot(
+                    series_dict[cls],
+                    label=label,
+                    linewidth=2,
+                    color=class_colors.get(label),
+                    ax=ax[1],
+                )
+            ax[1].legend()
+    else:
+        # Original code for non-binary classification
+        palette = sns.color_palette('tab10', len(sorted(stats.keys())))
+        for idx, cls in enumerate(sorted(stats.keys())):
+            series = summary_for_plots[f"mean_class{cls}"]
+            if clip_percentiles:
+                series = clip_series(series, clip_percentiles)
+            label = 'Gait modulation' if cls == 1 else 'Normal walking'
+            sns.kdeplot(
+                series,
+                label=label,
+                linewidth=2,
+                color=palette[idx],
+                ax=ax[1],
+            )
+        ax[1].legend()
+    
     ax[1].set_title(f"Feature Mean Density per Class\n({selection_text}; {count_label})", fontsize=11)
     ax[1].set_xlabel("Feature Mean")
     ax[1].set_ylabel("Density")
-    ax[1].legend()
 
     full_title = f"Feature Mean Comparisons\n({scope_label}; {selection_text}; {count_label})"
     if title_suffix:

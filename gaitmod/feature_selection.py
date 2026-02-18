@@ -45,8 +45,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             'steps': {
                 'variance_filter': {'status': 'pending'},
                 'univariate_scoring': {'status': 'pending'},
-                'top_k_selection': {'status': 'pending'},
-                'correlation_filter': {'status': 'pending'},
+                'greedy_selection': {'status': 'pending'},
                 'final_selection': {'status': 'pending'},
             }
         }
@@ -224,102 +223,78 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
 
         # Normalize to 0-1 so downstream selection uses consistent scale
         return (metric_scores - np.min(metric_scores)) / (np.ptp(metric_scores) + 1e-12)
-    
-    def _remove_correlated_features(self, X, selected_indices):
-        """Remove highly correlated features."""
-        if len(selected_indices) <= 1:
-            return selected_indices
-        
-        X_selected = X[:, selected_indices] if len(X.shape) == 2 else X[:, :, selected_indices]
-        
-        # Handle 3D data by flattening across samples and timesteps
-        if len(X_selected.shape) == 3:
-            # Reshape from (samples, timesteps, features) to (samples*timesteps, features)
-            n_samples, n_timesteps, n_features = X_selected.shape
-            X_flat = X_selected.reshape(-1, n_features)
 
-            # Remove masked values if x_mask_value is specified
-            if self.x_mask_value is not None:
-                # Create mask for valid (non-masked) entries
-                valid_mask = X_flat != self.x_mask_value
-                # Only calculate correlation on features that have enough valid samples
-                min_valid_samples = max(10, n_samples // 2)  # At least 10 or half the samples
-                feature_valid_counts = np.sum(valid_mask, axis=0)
-                valid_features_mask = feature_valid_counts >= min_valid_samples
-                
-                if np.sum(valid_features_mask) <= 1:
-                    # Not enough features with sufficient valid data
-                    return selected_indices
-                
-                # Filter to features with enough valid data
-                X_for_corr = X_flat[:, valid_features_mask]
-                valid_selected_indices = [idx for i, idx in enumerate(selected_indices) if valid_features_mask[i]]
-                
-                # Calculate correlation only on valid (non-masked) values
-                try:
-                    # For each pair of features, calculate correlation using only valid entries
-                    n_valid_features = X_for_corr.shape[1]
-                    corr_matrix = np.eye(n_valid_features)  # Initialize with identity
-                    
-                    for i in range(n_valid_features):
-                        for j in range(i + 1, n_valid_features):
-                            # Get valid entries for both features
-                            valid_i = X_for_corr[:, i] != self.x_mask_value
-                            valid_j = X_for_corr[:, j] != self.x_mask_value
-                            common_valid = valid_i & valid_j
-                            
-                            if np.sum(common_valid) >= 10:  # Need at least 10 common valid entries
-                                try:
-                                    corr_val = np.corrcoef(X_for_corr[common_valid, i], X_for_corr[common_valid, j])[0, 1]
-                                    corr_matrix[i, j] = corr_matrix[j, i] = corr_val if not np.isnan(corr_val) else 0.0
-                                except:
-                                    corr_matrix[i, j] = corr_matrix[j, i] = 0.0
-                except:
-                    # Fallback: return original indices if correlation calculation fails
-                    return selected_indices
+    def _flatten_features(self, X):
+        if X.ndim == 3:
+            return X.reshape(-1, X.shape[2])
+        return X
+
+    def _pairwise_correlation(self, X_flat, idx_a, idx_b):
+        col_a = X_flat[:, idx_a]
+        col_b = X_flat[:, idx_b]
+        valid = np.isfinite(col_a) & np.isfinite(col_b)
+        if self.x_mask_value is not None:
+            valid &= col_a != self.x_mask_value
+            valid &= col_b != self.x_mask_value
+        if valid.sum() < 10:
+            return 0.0
+        a = col_a[valid]
+        b = col_b[valid]
+        a_centered = a - np.mean(a)
+        b_centered = b - np.mean(b)
+        denom = np.sqrt(np.sum(a_centered * a_centered) * np.sum(b_centered * b_centered))
+        if denom == 0:
+            return 0.0
+        return float(np.sum(a_centered * b_centered) / denom)
+
+    def _passes_correlation_threshold(self, X_flat, candidate_idx, selected_indices):
+        if not selected_indices:
+            return True
+        threshold = self.correlation_threshold
+        if threshold is None:
+            return True
+        for chosen_idx in selected_indices:
+            corr_val = self._pairwise_correlation(X_flat, candidate_idx, chosen_idx)
+            if abs(corr_val) > threshold:
+                return False
+        return True
+
+    def _greedy_select_features(self, X_flat, candidate_indices):
+        if candidate_indices.size == 0:
+            return [], {
+                'candidates': 0,
+                'evaluated': 0,
+                'correlation_removed': 0,
+                'budget_skipped': 0,
+                'ct_passed': 0,
+            }
+        if self.n_features is None or int(self.n_features) <= 0:
+            total = int(candidate_indices.size)
+            return [], {
+                'candidates': total,
+                'evaluated': 0,
+                'correlation_removed': 0,
+                'budget_skipped': total,
+                'ct_passed': 0,
+            }
+        scores = self.feature_scores_
+        ordered = sorted(candidate_indices, key=lambda idx: scores[idx], reverse=True)
+        ct_passed = []
+        rejected_corr = 0
+        for idx in ordered:
+            if self._passes_correlation_threshold(X_flat, idx, ct_passed):
+                ct_passed.append(int(idx))
             else:
-                # No masking, standard correlation calculation
-                try:
-                    corr_matrix = np.corrcoef(X_flat.T)
-                    corr_matrix = np.nan_to_num(corr_matrix)
-                    valid_selected_indices = selected_indices
-                except:
-                    return selected_indices
-        else:
-            # 2D data - original logic
-            if self.x_mask_value is not None:
-                # Calculate correlation ignoring masked values
-                try:
-                    corr_matrix = np.corrcoef(X_selected.T)
-                    # Replace NaN with 0
-                    corr_matrix = np.nan_to_num(corr_matrix)
-                except:
-                    return selected_indices
-            else:
-                try:
-                    corr_matrix = np.corrcoef(X_selected.T)
-                except:
-                    return selected_indices
-            valid_selected_indices = selected_indices
-        
-        # Find highly correlated pairs
-        to_remove = set()
-        for i in range(len(corr_matrix)):
-            for j in range(i + 1, len(corr_matrix)):
-                if abs(corr_matrix[i, j]) > self.correlation_threshold:
-                    # Remove feature with lower score (use valid_selected_indices for indexing)
-                    idx_i = valid_selected_indices[i] if len(X_selected.shape) == 3 else selected_indices[i]
-                    idx_j = valid_selected_indices[j] if len(X_selected.shape) == 3 else selected_indices[j]
-                    
-                    if self.feature_scores_[idx_i] < self.feature_scores_[idx_j]:
-                        to_remove.add(idx_i)
-                    else:
-                        to_remove.add(idx_j)
-        
-        # Remove correlated features
-        final_indices = [idx for idx in selected_indices if idx not in to_remove]
-        
-        return final_indices
+                rejected_corr += 1
+        selected = ct_passed[:int(self.n_features)]
+        budget_skipped = max(len(ct_passed) - len(selected), 0)
+        return selected, {
+            'candidates': int(len(ordered)),
+            'evaluated': int(len(ordered)),
+            'correlation_removed': int(rejected_corr),
+            'budget_skipped': int(budget_skipped),
+            'ct_passed': int(len(ct_passed)),
+        }
     
     def fit(self, X, y, **kwargs):
         """Fit feature selector."""
@@ -407,6 +382,12 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                         removed=removed,
                         threshold=float(self.variance_threshold)
                     )
+                logging.info(
+                    "Variance filter removed %d features (kept %d / %d)",
+                    variance_input - int(len(high_variance_indices)),
+                    int(len(high_variance_indices)),
+                    variance_input,
+                )
             except Exception as variance_error:
                 self._update_step_report(
                     'variance_filter',
@@ -448,47 +429,45 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                 raise
             self.feature_scores_[high_variance_indices] = univariate_scores
             
-            # Step 3: Select top features
-            top_indices = np.argsort(self.feature_scores_)[::-1][:min(self.n_features, len(high_variance_indices))]
-            self._update_step_report(
-                'top_k_selection',
-                'success',
-                input_features=univariate_input,
-                output_features=int(len(top_indices)),
-                selection_budget=int(self.n_features),
-                selection_multiplier=1
-            )
-            
-            # Step 4: Remove correlated features (with error handling)
-            correlation_input = int(len(top_indices))
+            # Step 3: Greedy correlation-aware selection
+            greedy_input = int(len(high_variance_indices))
             try:
-                final_indices = self._remove_correlated_features(X, top_indices)
-                correlation_output = int(len(final_indices))
-                removed = max(correlation_input - correlation_output, 0)
+                X_flat = self._flatten_features(X)
+                greedy_indices, greedy_stats = self._greedy_select_features(X_flat, high_variance_indices)
+                greedy_removed = max(greedy_input - int(len(greedy_indices)), 0)
                 self._update_step_report(
-                    'correlation_filter',
+                    'greedy_selection',
                     'success',
-                    input_features=correlation_input,
-                    output_features=correlation_output,
-                    removed=int(removed),
+                    input_features=greedy_input,
+                    output_features=int(len(greedy_indices)),
+                    removed=int(greedy_removed),
+                    correlation_removed=int(greedy_stats.get('correlation_removed', 0)),
+                    budget_skipped=int(greedy_stats.get('budget_skipped', 0)),
+                    ct_passed=int(greedy_stats.get('ct_passed', 0)),
+                    evaluated=int(greedy_stats.get('evaluated', 0)),
+                    selection_budget=int(self.n_features),
                     threshold=float(self.correlation_threshold)
                 )
-            except Exception as e:
-                logging.info(f"Warning: Correlation filtering failed ({e}), using top features without correlation filtering")
-                final_indices = top_indices
-                self._mark_fallback()
-                self._update_step_report(
-                    'correlation_filter',
-                    'failed',
-                    input_features=correlation_input,
-                    output_features=correlation_input,
-                    error=str(e),
-                    action="Reverted to top-ranked features without correlation filtering"
+                logging.info(
+                    "Greedy selection passed %d features; removed %d by correlation (kept %d / %d)",
+                    int(greedy_stats.get('ct_passed', 0)),
+                    int(greedy_stats.get('correlation_removed', 0)),
+                    int(len(greedy_indices)),
+                    greedy_input,
                 )
-            
-            # Step 5: Final selection
-            final_input = int(len(final_indices))
-            final_indices = final_indices[:self.n_features]  # Ensure we don't exceed n_features
+            except Exception as greedy_error:
+                self._update_step_report(
+                    'greedy_selection',
+                    'failed',
+                    input_features=greedy_input,
+                    output_features=0,
+                    error=str(greedy_error)
+                )
+                raise
+
+            # Step 4: Final selection
+            final_input = int(len(greedy_indices))
+            final_indices = greedy_indices[:self.n_features]
             self.selected_features_ = sorted(final_indices)
             selected_count = int(len(self.selected_features_))
             removed = max(final_input - selected_count, 0)
@@ -500,11 +479,18 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                 requested_n_features=int(self.n_features),
                 removed=removed
             )
+            logging.info(
+                "Final selection removed %d features (kept %d / %d)",
+                int(removed),
+                int(selected_count),
+                int(final_input),
+            )
             self._set_final_strategy(
-                'correlation_pruned_top_k',
+                'greedy_correlation',
                 requested_n_features=int(self.n_features),
                 available_features=final_input,
-                selected_features=selected_count
+                selected_features=selected_count,
+                correlation_threshold=float(self.correlation_threshold)
             )
             
             logging.info(f"Feature selection: {len(self.selected_features_)} features selected from {n_features}")
@@ -603,7 +589,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             'selected_total_features': int(len(expanded_selected)),
         }
         self._set_final_strategy(
-            'channel_grouped_top_k',
+            'channel_grouped_greedy_corr',
             requested_total_features=int(requested_total),
             requested_base_features=int(requested_base),
             selected_base_features=int(len(base_selected)),
@@ -682,7 +668,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             'selected_total_features': int(len(expanded_selected)),
         }
         self._set_final_strategy(
-            'channel_grouped_top_k',
+            'channel_grouped_greedy_corr',
             requested_total_features=int(requested_total),
             requested_base_features=int(requested_base),
             selected_base_features=int(len(base_selected)),
@@ -762,7 +748,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
             'selected_total_features': int(len(expanded_selected)),
         }
         self._set_final_strategy(
-            'channel_grouped_top_k',
+            'channel_grouped_greedy_corr',
             requested_total_features=int(requested_total),
             requested_base_features=int(requested_base),
             selected_base_features=int(len(base_selected)),

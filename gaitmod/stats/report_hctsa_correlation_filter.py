@@ -7,7 +7,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import warnings
 from pathlib import Path
+from itertools import product
 
 import numpy as np
 
@@ -60,18 +62,23 @@ def _resolve_channel_dir(data_root: Path, channel_label: str) -> Path:
 
 def main() -> None:
     # -------------------- config --------------------
-    data_root = Path("6296_data/hctsa")
+    data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     
-    variance_threshold = 0.01
-    selection_method = "pr_auc"
-    n_features = 100
-    ct = 0.3
+    # Grid search parameters
+    # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"]
+    variance_thresholds = [0.0001]
+    selection_methods = ["roc_auc"]
+    correlation_thresholds = [0.01, 0.3, 0.5, 0.7, 0.9]
+    n_features_list = [10, 50, 100, 300, 500, 1000, 2000]
     
-    output_features = Path("results/figures/selected_features/selected_features_after_correlation.json")
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    output_dir = Path("results/figures/selected_features")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_file = output_dir / "feature_selection_grid_search.log"
+    logging.basicConfig(level=logging.INFO, format="%(message)s", 
+                       handlers=[logging.FileHandler(log_file, 'w'), logging.StreamHandler()])
 
     channel_methods = CHANNEL_METHODS
     preferred_map = channel_methods.get(channel_method, {})
@@ -83,6 +90,8 @@ def main() -> None:
     if not subjects:
         raise SystemExit(f"No subjects found for channel method '{channel_method}'.")
 
+    # Load data once (shared across all parameter combinations)
+    logging.info("Loading HCTSA data...")
     X_parts = []
     y_parts = []
     operations_ref = None
@@ -121,99 +130,111 @@ def main() -> None:
 
     X = np.vstack(X_parts)
     y = np.concatenate(y_parts)
-
-    selector = FeatureSelector(
-        n_features=int(n_features),
-        variance_threshold=float(variance_threshold),
-        correlation_threshold=float(ct),
-        selection_method=str(selection_method),
-        enabled=True,
-    )
-    selector.fit(X, y)
-    if operations_ref is None:
-        raise SystemExit("No operations metadata found; cannot export feature names.")
-
-    selected_indices = selector.selected_features_ or []
-    selected_names = operations_ref["Name"].iloc[selected_indices].tolist()
-
-    output_payload = {
-        "channel_method": channel_method,
-        "subject_channel_map": {
-            str(subject): _canonical_channel_label(channel)
-            for subject, channel in preferred_map.items()
-        },
-        "selection_method": selection_method,
-        "correlation_threshold": ct,
-        "variance_threshold": variance_threshold,
-        "n_features_requested": int(n_features),
-        "n_features_selected": int(len(selected_indices)),
-        "variant": variant,
-        "data_root": str(data_root),
-        "selected_feature_indices": [int(i) for i in selected_indices],
-        "selected_feature_names": selected_names,
-    }
-
-    def _format_param(value: float | int) -> str:
-        if isinstance(value, float):
-            text = f"{value:g}"
-        else:
-            text = str(value)
-        return text.replace(".", "p")
-
-    safe_suffix = (
-        f"var{_format_param(variance_threshold)}_"
-        f"topk{_format_param(n_features)}_"
-        f"ct{_format_param(ct)}"
-    )
-    output_path = output_features
-    if output_path.suffix.lower() == ".json":
-        output_path = output_path.with_name(f"{output_path.stem}_{safe_suffix}{output_path.suffix}")
-    else:
-        output_path = output_path.with_name(f"{output_path.name}_{safe_suffix}.json")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as fp:
-        json.dump(output_payload, fp, indent=2)
-    logging.info("Saved selected feature names to %s", output_path)
-
-    report = selector.selection_report_ or {}
-    steps = report.get("steps", {})
-    corr_details = steps.get("correlation_filter", {}).get("details", {})
-    top_k_details = steps.get("top_k_selection", {}).get("details", {})
-    final_details = steps.get("final_selection", {}).get("details", {})
-    variance_details = steps.get("variance_filter", {}).get("details", {})
-
-    def _removed(details):
-        if not details:
-            return None
+    logging.info(f"Loaded data: {X.shape[0]} samples, {X.shape[1]} features")
+    
+    # Generate all parameter combinations
+    param_combinations = list(product(
+        variance_thresholds,
+        selection_methods,
+        n_features_list,
+        correlation_thresholds
+    ))
+    
+    logging.info(f"\n{'='*80}")
+    logging.info(f"Running grid search: {len(param_combinations)} combinations")
+    logging.info(f"{'='*80}\n")
+    
+    # Run feature selection for each combination
+    for idx, (variance_threshold, selection_method, n_features, ct) in enumerate(param_combinations, 1):
+        logging.info(f"\n[{idx}/{len(param_combinations)}] Running combination:")
+        logging.info(f"  variance_threshold={variance_threshold}, method={selection_method}, "
+                    f"n_features={n_features}, corr_threshold={ct}")
+        
         try:
-            input_features = int(details.get("input_features", 0))
-            output_features = int(details.get("output_features", 0))
-        except (TypeError, ValueError):
-            return None
-        return max(input_features - output_features, 0)
+            # Suppress expected warnings from correlation computation with zero-variance features
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='invalid value encountered in divide')
+                
+                selector = FeatureSelector(
+                    n_features=int(n_features),
+                    variance_threshold=float(variance_threshold),
+                    correlation_threshold=float(ct),
+                    selection_method=str(selection_method),
+                    enabled=True,
+                )
+                selector.fit(X, y)
+            
+            if operations_ref is None:
+                raise SystemExit("No operations metadata found; cannot export feature names.")
 
-    print(f"Channel method: {channel_method}")
-    print(f"Samples: {X.shape[0]}  Features: {X.shape[1]}")
-    print(f"Correlation threshold: {ct}")
-    steps_in_order = [
-        ("Variance filter", variance_details),
-        ("Top-k selection (after univariate scoring)", top_k_details),
-        ("Correlation filter", corr_details),
-        ("Final selection", final_details),
-    ]
-    for label, details in steps_in_order:
-        if not details:
+            selected_indices = selector.selected_features_ or []
+            selected_names = operations_ref["Name"].iloc[selected_indices].tolist()
+
+            output_payload = {
+                "channel_method": channel_method,
+                "subject_channel_map": {
+                    str(subject): _canonical_channel_label(channel)
+                    for subject, channel in preferred_map.items()
+                },
+                "selection_method": selection_method,
+                "correlation_threshold": ct,
+                "variance_threshold": variance_threshold,
+                "n_features_requested": int(n_features),
+                "n_features_selected": int(len(selected_indices)),
+                "variant": variant,
+                "data_root": str(data_root),
+                "selected_feature_indices": [int(i) for i in selected_indices],
+                "selected_feature_names": selected_names,
+            }
+
+            # Create output filename
+            output_features = output_dir / f"{selection_method}_var{variance_threshold}_nfeat{n_features}_ct{ct}_selected_feat.json"
+            
+            with output_features.open("w", encoding="utf-8") as fp:
+                json.dump(output_payload, fp, indent=2)
+            logging.info(f"  Saved to {output_features.name}")
+            
+            # Print summary
+            report = selector.selection_report_ or {}
+            steps = report.get("steps", {})
+            variance_details = steps.get("variance_filter", {}).get("details", {})
+            greedy_details = steps.get("greedy_selection", {}).get("details", {})
+            final_details = steps.get("final_selection", {}).get("details", {})
+            
+            if variance_details:
+                logging.info(f"  Variance filter: {variance_details.get('input_features')} -> "
+                           f"{variance_details.get('output_features')}")
+                if "removed" in variance_details:
+                    logging.info(f"  Variance removed: {variance_details.get('removed')}")
+            if greedy_details:
+                greedy_in = greedy_details.get("input_features")
+                greedy_out = greedy_details.get("output_features")
+                logging.info(
+                    f"  Greedy selection: {greedy_in} -> {greedy_out}"
+                )
+                ct_passed = greedy_details.get("ct_passed")
+                corr_removed = greedy_details.get("correlation_removed")
+                if ct_passed is not None:
+                    logging.info(f"  CT passed: {ct_passed}")
+                if corr_removed is not None:
+                    logging.info(f"  CT reduction: {corr_removed}")
+                if ct_passed is None and corr_removed is None:
+                    if "removed" in greedy_details:
+                        logging.info(f"  CT reduction: {greedy_details.get('removed')}")
+                    elif greedy_in is not None and greedy_out is not None:
+                        logging.info(f"  CT reduction: {int(greedy_in) - int(greedy_out)}")
+            if final_details:
+                pass
+            logging.info(f"  Final features: {len(selected_indices)}")
+            
+        except Exception as e:
+            logging.error(f"  Failed: {e}")
             continue
-        print("-" * 40)
-        print(label)
-        if "input_features" in details:
-            print(f"  Input features: {details.get('input_features')}")
-        if "output_features" in details:
-            print(f"  Output features: {details.get('output_features')}")
-        removed = _removed(details)
-        if removed is not None:
-            print(f"  Removed features: {removed}")
+    
+    logging.info(f"\n{'='*80}")
+    logging.info(f"Grid search complete! Processed {len(param_combinations)} combinations")
+    logging.info(f"Results saved in: {output_dir}")
+    logging.info(f"{'='*80}\n")
 
 
 if __name__ == "__main__":
