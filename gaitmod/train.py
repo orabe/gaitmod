@@ -2291,10 +2291,12 @@ def _write_per_sample_scores(output_dir, json_filename, per_sample_scores=None):
     Save per-sample true labels and scores next to the JSON results file.
     """
     if not per_sample_scores:
+        logging.info("[RESULTS] No per-sample scores provided; skipping per-sample scores save.")
         return None
     y_true = per_sample_scores.get('y_true')
     y_score = per_sample_scores.get('y_score')
     if y_true is None or y_score is None:
+        logging.warning("[RESULTS] Missing y_true or y_score; skipping per-sample scores save.")
         return None
     y_true_arr = np.asarray(y_true).ravel()
     y_score_arr = np.asarray(y_score).ravel()
@@ -3108,6 +3110,27 @@ def run_nested_cv_classical(
                             'selection_score_aggregation': selection_score_aggregation,
                         }
 
+                        per_sample_scores = None
+                        try:
+                            y_true_flat = y_inner_val.ravel()
+                            y_score_flat = y_val_proba_pos.ravel()
+                            if y_true_flat.size and y_true_flat.size == y_score_flat.size:
+                                per_sample_scores = {'y_true': y_true_flat, 'y_score': y_score_flat}
+                            else:
+                                logging.info(
+                                    "[RESULTS] Per-sample scores not set (y_true=%s, y_score=%s, proba_shape=%s).",
+                                    getattr(y_true_flat, "shape", None),
+                                    getattr(y_score_flat, "shape", None),
+                                    getattr(y_val_proba, "shape", None),
+                                )
+                        except Exception as score_error:
+                            logging.warning(
+                                "[RESULTS] Failed to collect per-sample scores (y_true_shape=%s, proba_shape=%s): %s",
+                                getattr(y_inner_val, "shape", None),
+                                getattr(y_val_proba, "shape", None),
+                                score_error,
+                            )
+
                         save_evaluation_results(
                             results_dict=comprehensive_results,
                             result_type='inner_fold',
@@ -3118,6 +3141,7 @@ def run_nested_cv_classical(
                             outer_test_subject=test_subject_name,
                             inner_validation_subject=val_subject_name,
                             immediate_save=True,
+                            per_sample_scores=per_sample_scores,
                         )
 
                         inner_fold_details.append({})
@@ -4135,8 +4159,20 @@ def run_loso_cv_dl(
                             y_score_flat = y_score_flat[mask]
                         if y_true_flat.size and y_true_flat.size == y_score_flat.size:
                             per_sample_scores = {'y_true': y_true_flat, 'y_score': y_score_flat}
+                        else:
+                            logging.info(
+                                "[RESULTS] Per-sample scores not set (y_true=%s, y_score=%s, proba_shape=%s).",
+                                getattr(y_true_flat, "shape", None),
+                                getattr(y_score_flat, "shape", None),
+                                getattr(y_val_proba, "shape", None),
+                            )
                     except Exception as score_error:
-                        logging.debug(f"[CV_SKLEARN]     Failed to collect per-sample scores: {score_error}")
+                        logging.warning(
+                            "[RESULTS] Failed to collect per-sample scores (y_true_shape=%s, proba_shape=%s): %s",
+                            getattr(y_inner_val, "shape", None),
+                            getattr(y_val_proba, "shape", None),
+                            score_error,
+                        )
                     
                     # Store selected features and capture step status for this inner fold
                     feature_selector_step = inner_pipeline.named_steps.get('feature_selector')
