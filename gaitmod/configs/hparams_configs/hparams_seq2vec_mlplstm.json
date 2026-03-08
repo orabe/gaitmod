@@ -14,12 +14,12 @@
       "reduce_lr_factor": 0.5,
       "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
-      "monitor": "val_lstm_head_weighted_sum_f1_score",
+      "monitor": "val_loss",
       "patience": 10
     },
     "decision_threshold_search": {
       "range": [0.3, 0.8],
-      "num_sweep_thresholds": 3,
+      "num_sweep_thresholds": 5,
       "metrics": ["f1"]
     },
     "channel_selection": {
@@ -67,11 +67,11 @@
     }
   },
   "feature_params": {
-    "feature_selector__variance_threshold": [0.01],
+    "feature_selector__variance_threshold": [0.0001],
     "feature_selector__enabled": [false],
-    "feature_selector__n_features": [100],
+    "feature_selector__n_features": [50],
     "feature_selector__selection_method": ["roc_auc"],
-    "feature_selector__correlation_threshold": [0.7]
+    "feature_selector__correlation_threshold": [0.3]
   },
   "Seq2VecMLPLSTM": {
     "feature_params": {
@@ -79,55 +79,67 @@
     },
     "architecture_configs": [
       {
-        "classifier__mlp_hidden_units": [100],
+        "classifier__mlp_hidden_units": [16],
         "classifier__mlp_activation": "relu",
         "classifier__mlp_dense_activation": "sigmoid",
 
-        "classifier__lstm_hidden_dims": [128, 128],
+        "classifier__lstm_hidden_dims": [12, 6],
         "classifier__lstm_activations": ["tanh", "tanh"],
         "classifier__lstm_recurrent_activations": ["sigmoid", "sigmoid"],
         "classifier__lstm_dense_units": 1,
         "classifier__lstm_dense_activation": "sigmoid",
-        "classifier__lstm_head_weights": [0.5, 0.5]
+        "classifier__lstm_head_weights": [0.4, 0.6]
       },
-    {
-        "classifier__mlp_hidden_units": [100],
+      {
+        "classifier__mlp_hidden_units": [32],
         "classifier__mlp_activation": "relu",
         "classifier__mlp_dense_activation": "sigmoid",
 
-        "classifier__lstm_hidden_dims": [64, 64],
+        "classifier__lstm_hidden_dims": [12, 6],
         "classifier__lstm_activations": ["tanh", "tanh"],
         "classifier__lstm_recurrent_activations": ["sigmoid", "sigmoid"],
         "classifier__lstm_dense_units": 1,
         "classifier__lstm_dense_activation": "sigmoid",
-        "classifier__lstm_head_weights": [0.5, 0.5]
+        "classifier__lstm_head_weights": [0.4, 0.6]
+      },
+      {
+        "classifier__mlp_hidden_units": [32, 16],
+        "classifier__mlp_activation": "relu",
+        "classifier__mlp_dense_activation": "sigmoid",
+
+        "classifier__lstm_hidden_dims": [16, 8],
+        "classifier__lstm_activations": ["tanh", "tanh"],
+        "classifier__lstm_recurrent_activations": ["sigmoid", "sigmoid"],
+        "classifier__lstm_dense_units": 1,
+        "classifier__lstm_dense_activation": "sigmoid",
+        "classifier__lstm_head_weights": [0.4, 0.6]
       }
     ],
     "other_params": {
       "classifier__mlp_optimizer": ["adam"],
-      "classifier__mlp_lr": [0.001],
-      "classifier__mlp_epochs": [50],
+      "classifier__mlp_lr": [0.001, 0.0005],
+      "classifier__mlp_epochs": [120],
       "classifier__mlp_batch_size": [32],
       "classifier__mlp_use_class_weights": [true],
       "classifier__mlp_dropout": [0.5],
 
       "classifier__lstm_optimizer": ["adam"],
-      "classifier__lstm_lr": [0.001, 0.0001],
-      "classifier__lstm_epochs": [100],
-      "classifier__lstm_batch_size": [16],
-      "classifier__lstm_patience": [10],
+      "classifier__lstm_lr": [0.001, 0.0005],
+      "classifier__lstm_epochs": [120],
+      "classifier__lstm_batch_size": [32],
+      "classifier__lstm_patience": [15],
       "classifier__lstm_threshold": [0.5],
       "classifier__lstm_use_class_weights": [true],
-      "classifier__lstm_dropout": [0.2],
+      "classifier__lstm_dropout": [0.3, 0.5],
 
       "classifier__hctsa_fs_enabled": [true],
-      "classifier__hctsa_fs_n_features": [50],
-      "classifier__hctsa_fs_variance_threshold": [0.01],
-      "classifier__hctsa_fs_correlation_threshold": [0.7],
+      "classifier__hctsa_fs_n_features": [20, 50],
+      "classifier__hctsa_fs_variance_threshold": [0.0001],
+      "classifier__hctsa_fs_correlation_threshold": [0.3],
       "classifier__hctsa_fs_selection_method": ["roc_auc"],
       
-      "classifier__alpha": [0.5],
-      "classifier__fusion_weight": [0.5]
+      "classifier__alpha": [0.5, 0.65],
+      "classifier__fusion_weight": [0.35, 0.5]
     }
   }
 }

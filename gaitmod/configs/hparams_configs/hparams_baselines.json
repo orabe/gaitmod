@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "hparams_baselines_hctsa",
-    "model_type": "rf",
+    "experiment_name": "logreg_hctsa_betaChs",
+    "model_type": "logreg",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -54,7 +54,7 @@
           "PW_US68": "channel_4-LFP_R1-3"
         }
       },
-      "channels": "all"
+      "channels": null
     },
     "selection_metrics": {
       "selection_score_metric": "val_tuned_f1",
@@ -80,18 +80,35 @@
     "feature_selector__enabled": [
       true
     ],
-    "feature_selector__selection_method": [
-      "roc_auc"
-    ],
-    "feature_selector__n_features": [
-      400
-    ],
-    "feature_selector__variance_threshold": [
-      0.01
-    ],
-    "feature_selector__correlation_threshold": [
-      0.7
-    ]
+    "feature_selector__selection_method": ["roc_auc"],
+    "feature_selector__n_features": [20, 50, 100, 200],
+    "feature_selector__variance_threshold": [0.0001],
+    "feature_selector__correlation_threshold": [0.05, 0.3]
+  },
+
+  "dummy": {
+    "param_grid": {
+      "classifier__strategy": ["most_frequent"]
+    }
+  },  
+  "logreg": {
+    "param_grid": {
+      "classifier__solver": ["lbfgs"],
+      "classifier__penalty": ["l2"],
+      "classifier__C": [0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0],
+      "classifier__class_weight": [null, "balanced"],
+      "classifier__max_iter": [3000],
+      "classifier__tol": [0.0001, 0.001],
+      "classifier__fit_intercept": [true]
+    }
+  },
+  "svm": {
+    "param_grid": {
+      "classifier__C": [0.1, 1, 10],
+      "classifier__gamma": ["scale", "auto"],
+      "classifier__kernel": ["rbf", "linear"],
+      "classifier__class_weight": [null, "balanced"]
+    }
   },
   "rf": {
     "param_grid": {
@@ -101,54 +118,40 @@
       ],
       "classifier__max_depth": [
         10,
-        20,
-        null
+        20
       ],
       "classifier__min_samples_split": [
         2,
         5
-      ]
-    }
-  },
-  "svm": {
-    "param_grid": {
-      "classifier__C": [
-        0.1,
+      ],
+      "classifier__min_samples_leaf": [
         1,
-        10
+        2
       ],
-      "classifier__gamma": [
-        "scale",
-        "auto"
-      ],
-      "classifier__kernel": [
-        "rbf",
-        "linear"
+      "classifier__max_features": [
+        "sqrt",
+        "log2",
+        0.3,
+        0.5
       ]
     }
-  },
-  "logreg": {
+  }, 
+    "xgb": {
     "param_grid": {
-      "classifier__penalty": [
-        "l2"
+      "classifier__n_estimators": [
+        100,
+        200
       ],
-      "classifier__C": [
+      "classifier__max_depth": [
+        3,
+        6
+      ],
+      "classifier__learning_rate": [
         0.01,
-        0.1,
-        1.0
-      ],
-      "classifier__solver": [
-        "lbfgs"
-      ],
-      "classifier__class_weight": [
-        null,
-        "balanced"
-      ],
-      "classifier__max_iter": [
-        1000
+        0.1
       ]
     }
-  },
+  }, 
   "lda": {
     "param_grid": {
       "classifier__solver": [
@@ -175,30 +178,6 @@
       ],
       "classifier__metric": [
         "minkowski"
-      ]
-    }
-  },
-  "xgb": {
-    "param_grid": {
-      "classifier__n_estimators": [
-        100,
-        200
-      ],
-      "classifier__max_depth": [
-        3,
-        6
-      ],
-      "classifier__learning_rate": [
-        0.01,
-        0.1
-      ]
-    }
-  },
-  "dummy": {
-    "param_grid": {
-      "classifier__strategy": [
-        "most_frequent",
-        "constant"
       ]
     }
   }

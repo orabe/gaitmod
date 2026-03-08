@@ -1,17 +1,17 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2VecCNN_hctsa_betaChs",
+    "experiment_name": "Seq2VecCNN_raw_betaChs",
     "model_type": "Seq2VecCNN",
     "feature_data": {
-      "source": "hctsa",
-      "segment_cache_dir": "data/hctsa_segments"
+      "source": "raw",
+      "segment_cache_dir": "data/raw_segments"
     },
     "callbacks": {
       "progress_frequency": 1,
       "reduce_lr_factor": 0.5,
       "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
-      "monitor": "val_f1_score",
+      "monitor": "val_loss",
       "patience": 10
     },
     "decision_threshold_search": {
@@ -74,13 +74,13 @@
   },
   "feature_params": {
     "feature_selector__enabled": [
-      true
+      false
     ],
     "feature_selector__selection_method": [
       "roc_auc"
     ],
     "feature_selector__n_features": [
-      400
+      100
     ],
     "feature_selector__variance_threshold": [
       0.01
@@ -97,18 +97,46 @@
     },
     "architecture_configs": [
       {
-        "classifier__conv_filters": 64,
-        "classifier__kernel_size": 5,
-        "classifier__conv_layers": 4,
+        "classifier__conv_filters": 4,
+        "classifier__kernel_size": 3,
+        "classifier__conv_layers": 1,
         "classifier__conv_activation": "relu",
-        "classifier__dense_units": 128,
-        "classifier__dense_layers": 2,
+        "classifier__dense_units": 4,
+        "classifier__dense_layers": 1,
+        "classifier__dense_activation": "relu"
+      },
+      {
+        "classifier__conv_filters": 8,
+        "classifier__kernel_size": 3,
+        "classifier__conv_layers": 1,
+        "classifier__conv_activation": "relu",
+        "classifier__dense_units": 8,
+        "classifier__dense_layers": 1,
+        "classifier__dense_activation": "relu"
+      },
+      {
+        "classifier__conv_filters": 8,
+        "classifier__kernel_size": 5,
+        "classifier__conv_layers": 2,
+        "classifier__conv_activation": "relu",
+        "classifier__dense_units": 8,
+        "classifier__dense_layers": 1,
+        "classifier__dense_activation": "relu"
+      },
+      {
+        "classifier__conv_filters": 16,
+        "classifier__kernel_size": 3,
+        "classifier__conv_layers": 1,
+        "classifier__conv_activation": "relu",
+        "classifier__dense_units": 8,
+        "classifier__dense_layers": 1,
         "classifier__dense_activation": "relu"
       }
     ],
     "other_params": {
       "classifier__dropout": [
-        0.5
+        0.4,
+        0.6
       ],
       "classifier__output_units": [
         1
@@ -121,16 +149,17 @@
       ],
       "classifier__lr": [
         0.001,
-        0.0001
+        0.0005
       ],
       "classifier__patience": [
-        10
+        15
       ],
       "classifier__epochs": [
-        100
+        120
       ],
       "classifier__batch_size": [
-        16
+        16,
+        32
       ],
       "classifier__threshold": [
         0.5
