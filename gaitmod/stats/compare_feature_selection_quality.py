@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import os
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
@@ -100,35 +101,42 @@ def main():
     
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     
-    # Load data (simplified - adapt from your existing script)
     preferred_map = CHANNEL_METHODS.get(channel_method, {})
     
-    # [Add data loading code here - same as report_hctsa_correlation_filter.py]
-    # For brevity, assuming X and y are loaded
+    # Load data
+    # This assumes load_hctsa_data returns (X, y, meta)
+    # If your function signature is different, adjust accordingly.
+    TS_DataMat, timeseries, operations, labels = load_hctsa_data(
+        base_path=data_root,
+        data_variant='',  # or '', 'F' as needed
+        verbose=True,
+    )
+    X = TS_DataMat
+    y = labels
     
     print("Comparing feature selection configurations...")
     print("=" * 60)
     
     # Configuration sets to compare
     configs = [
+        # {
+        #     'name': 'Restrictive',
+        #     'variance_threshold': 0.0001,
+        #     'n_features': 20,
+        #     'ct': 0.3
+        # },
         {
-            'name': 'Restrictive',
-            'variance_threshold': 0.01,
+            'name': 'Permissive',
+            'variance_threshold': 0.0001,
             'n_features': 100,
             'ct': 0.3
         },
-        {
-            'name': 'Permissive',
-            'variance_threshold': 1e-8,
-            'n_features': 300,
-            'ct': 0.8
-        },
-        {
-            'name': 'Balanced',
-            'variance_threshold': 1e-4,
-            'n_features': 200,
-            'ct': 0.6
-        },
+        # {
+        #     'name': 'Balanced',
+        #     'variance_threshold': 0.0001,
+        #     'n_features': 200,
+        #     'ct': 0.3
+        # },
     ]
     
     results = []

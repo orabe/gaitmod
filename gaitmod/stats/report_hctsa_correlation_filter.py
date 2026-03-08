@@ -67,11 +67,11 @@ def main() -> None:
     channel_method = "beta"  # "beta" or "logRegF1"
     
     # Grid search parameters
-    # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"]
+    # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"] ++++++ "brunner_munzel"
     variance_thresholds = [0.0001]
-    selection_methods = ["roc_auc"]
-    correlation_thresholds = [0.01, 0.3, 0.5, 0.7, 0.9]
-    n_features_list = [10, 50, 100, 300, 500, 1000, 2000]
+    selection_methods = ["mann_whitney"] #["roc_auc"]
+    correlation_thresholds = [0.7] # [0.01, 0.3, 0.5, 0.7, 0.9]
+    n_features_list = [100] #[10, 50, 100, 300, 500, 1000, 2000]
     
     output_dir = Path("results/figures/selected_features")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -132,6 +132,13 @@ def main() -> None:
     y = np.concatenate(y_parts)
     logging.info(f"Loaded data: {X.shape[0]} samples, {X.shape[1]} features")
     
+    # Discard all invalid features (NaN/Inf in any sample)
+    nan_inf_mask = np.isnan(X) | np.isinf(X)
+    valid_mask = nan_inf_mask.sum(axis=0) == 0
+    X = X[:, valid_mask]
+    if operations_ref is not None:
+        operations_ref = operations_ref.iloc[valid_mask].reset_index(drop=True)
+
     # Generate all parameter combinations
     param_combinations = list(product(
         variance_thresholds,

@@ -37,19 +37,19 @@ from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 DEFAULT_OUTPUT_DIR = Path("results") / "class_stats"
 DEFAULT_FEATURE_NORMALIZATION = True
 DEFAULT_CLIP_PERCENTILES = (1, 99)
-DEFAULT_TOP_FEATURES_FOR_PLOTS = 10
+DEFAULT_TOP_FEATURES_FOR_PLOTS = 100
 DEFAULT_VERBOSE = 1
 DEFAULT_NORMALITY_ALPHA = 0.05
 DEFAULT_VARIANCE_ALPHA = 0.05
 DEFAULT_MEAN_DIFF_THRESHOLD = 0.5
-DEFAULT_UNIVARIATE_VARIANCE_THRESHOLD = 1e-8
+DEFAULT_UNIVARIATE_VARIANCE_THRESHOLD = 0.0001
 DEFAULT_UNIVARIATE_MISSING_THRESHOLD = 0.0
 DEFAULT_UNIVARIATE_RANDOM_STATE = 42
-DEFAULT_UNIVARIATE_TOP_K = 25
-DEFAULT_VIS_TOP_K = 10
-DEFAULT_VIS_WORST_K = 10
-DEFAULT_SEGMENT_CACHE_DIR = Path("6296_data/hctsa_segments")
-DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/univariate_analysis/channel_selection_summary.json")
+DEFAULT_UNIVARIATE_TOP_K = 100
+DEFAULT_VIS_TOP_K = 100
+DEFAULT_VIS_WORST_K = 100
+DEFAULT_SEGMENT_CACHE_DIR = Path("data/hctsa_segments")
+DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/channel_selection_summary.json")
 DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
 MAX_FEATURE_NAME_LENGTH = 48
 THRESHOLD_LINE_WIDTH = 2.0
@@ -851,9 +851,9 @@ def decide_univariate_method(summary_stats):
         rationale = ("Normality fails for many features (~{:.1f}% fail) but variances remain comparable "
                      "(~{:.1f}% fail); evaluated ANOVA vs Mann–Whitney and chose the latter for robustness.").format(normal_fail, variance_fail)
     else:
-        decision = 'mann_whitney'
+        decision = 'brunner_munzel'
         rationale = ("Both normality (~{:.1f}% fail) and variance equality (~{:.1f}% fail) are often violated; "
-                     "between ANOVA and Mann–Whitney, the non-parametric Mann–Whitney U offers the safest ranking.").format(normal_fail, variance_fail)
+                     "Brunner–Munzel test is more robust than Mann–Whitney when both assumptions fail.").format(normal_fail, variance_fail)
 
     return decision, rationale
 
@@ -1161,13 +1161,17 @@ def create_correlation_matrix(X, df, rank_column, top_k, output_path, title_suff
 
     corr_data = pd.DataFrame(X[:, feature_indices], columns=feature_names)
     corr_matrix = corr_data.corr(method='pearson')
-    order = corr_matrix.abs().sum(axis=0).sort_values(ascending=False).index
-    corr_matrix = corr_matrix.loc[order, order]
-    ordered_display = [display_map.get(col, col) for col in order]
+    # Cluster the correlation matrix
+    import scipy.cluster.hierarchy as sch
+    distance_matrix = 1 - np.abs(corr_matrix.values)
+    linkage = sch.linkage(distance_matrix, method='average')
+    order = sch.leaves_list(linkage)
+    corr_matrix_sorted = corr_matrix.values[order][:, order]
+    ordered_display = [display_map.get(col, col) for col in np.array(feature_names)[order]]
 
     fig, ax = plt.subplots(figsize=(10, 8))
     sns.heatmap(
-        corr_matrix,
+        corr_matrix_sorted,
         annot=False,
         cmap='coolwarm',
         center=0,
@@ -1179,6 +1183,9 @@ def create_correlation_matrix(X, df, rank_column, top_k, output_path, title_suff
     if title_suffix:
         title = f"{title} – {title_suffix}"
         ax.set_title(title, fontsize=12)
+    n_labels = len(ordered_display)
+    ax.set_xticks(np.arange(n_labels))
+    ax.set_yticks(np.arange(n_labels))
     ax.set_xticklabels(ordered_display, rotation=45, ha='right')
     ax.set_yticklabels(ordered_display, rotation=0)
     fig.tight_layout()
@@ -1225,6 +1232,12 @@ def main():
         subject_channel_map,
         verbose=args.verbose
     )
+    # Discard all invalid features (NaN/Inf in any sample)
+    nan_inf_mask = np.isnan(X) | np.isinf(X)
+    valid_mask = nan_inf_mask.sum(axis=0) == 0
+    X = X[:, valid_mask]
+    if operations is not None:
+        operations = operations.iloc[valid_mask].reset_index(drop=True)
     positive_prevalence = float(np.mean(labels))
     logging.info(f"[STATS] Positive class prevalence: {positive_prevalence:.4f}")
 
@@ -1282,6 +1295,11 @@ def main():
 
     logging.info("[STEP] Deciding univariate method")
     decision, rationale = decide_univariate_method(summary_stats)
+
+    # Save rationale to JSON file
+    rationale_json_path = run_output_dir / "univariate_decision_rationale.json"
+    with open(rationale_json_path, 'w') as f:
+        json.dump({"method": decision, "rationale": rationale}, f, indent=2)
 
     if args.verbose >= 1:
         logging.info(f"[UNIVARIATE] Selected method: {decision}")

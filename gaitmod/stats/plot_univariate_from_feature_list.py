@@ -17,6 +17,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import seaborn as sns
+import scipy.cluster.hierarchy as sch
 
 from gaitmod.preprocessing.hctsa_segments import parse_segment_identifier
 from gaitmod.utils.utils import load_hctsa_data
@@ -201,9 +202,9 @@ def main() -> None:
     # Grid search parameters (match report_hctsa_correlation_filter.py)
     # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"]
     variance_thresholds = [0.0001]
-    selection_methods = ["roc_auc"]
-    correlation_thresholds = [0.01, 0.3, 0.5, 0.7, 0.9]
-    n_features_list = [10, 50, 100, 300, 500, 1000, 2000]
+    selection_methods = ["mann_whitney"] # roc_auc
+    correlation_thresholds = [0.7] #[0.01, 0.3, 0.5, 0.7, 0.9]
+    n_features_list = [100]#[10, 50, 100, 300, 500, 1000, 2000]
     
     data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"
@@ -228,6 +229,11 @@ def main() -> None:
         preferred_map,
         variant,
     )
+    # Discard all invalid features (NaN/Inf in any sample)
+    nan_inf_mask = np.isnan(X) | np.isinf(X)
+    valid_mask = nan_inf_mask.sum(axis=0) == 0
+    X = X[:, valid_mask]
+    operations = operations.iloc[valid_mask].reset_index(drop=True)
     name_to_index = {name: idx for idx, name in enumerate(operations["Name"].tolist())}
     
     # Generate all parameter combinations
@@ -252,14 +258,14 @@ def main() -> None:
         features_file = features_dir / f"{selection_method}_var{variance_threshold}_nfeat{n_features}_ct{ct}_selected_feat.json"
         
         if not features_file.exists():
-            logging.warning(f"  ✗ Feature file not found: {features_file.name}")
+            logging.warning(f"  Feature file not found: {features_file.name}")
             continue
         
         try:
             # Load selected feature names
             selected_names = _load_feature_names(features_file)
             if not selected_names:
-                logging.warning("  ✗ No feature names in file")
+                logging.warning("  No feature names in file")
                 continue
             
             # Map to indices
@@ -269,7 +275,7 @@ def main() -> None:
                 selected_names = [name for name in selected_names if name in name_to_index]
             
             if not selected_names:
-                logging.warning("  ✗ No valid features found")
+                logging.warning("  No valid features found")
                 continue
             
             selected_indices = [name_to_index[name] for name in selected_names]
@@ -329,6 +335,13 @@ def main() -> None:
                 X_corr = np.nan_to_num(X_selected, nan=0.0, posinf=0.0, neginf=0.0)
                 corr_matrix = np.corrcoef(X_corr, rowvar=False)
             
+            # Cluster the correlation matrix
+            distance_matrix = 1 - np.abs(corr_matrix)
+            linkage = sch.linkage(distance_matrix, method='average')
+            order = sch.leaves_list(linkage)
+            corr_matrix_sorted = corr_matrix[order][:, order]
+            tick_labels_sorted = [tick_labels[i] for i in order]
+
             combined_img = mpimg.imread(combined_path)
             
             fig, axes = plt.subplots(
@@ -342,14 +355,14 @@ def main() -> None:
             axes[0].set_title(f"Feature mean comparisons\nPer-feature KDE overlap: {mean_overlap:.4f} (lower=better)")
             
             sns.heatmap(
-                corr_matrix,
+                corr_matrix_sorted,
                 cmap="coolwarm",
                 vmin=-1,
                 vmax=1,
                 center=0,
                 square=True,
-                xticklabels=tick_labels,
-                yticklabels=tick_labels,
+                xticklabels=tick_labels_sorted,
+                yticklabels=tick_labels_sorted,
                 cbar_kws={"label": "Correlation"},
                 ax=axes[1],
             )
@@ -379,7 +392,7 @@ def main() -> None:
             logging.info(f"  Saved: {combined_path.name}")
             
         except Exception as e:
-            logging.error(f"  ✗ Failed: {e}")
+            logging.error(f"  Failed: {e}")
             continue
     
     logging.info(f"\n{'='*80}")

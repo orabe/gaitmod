@@ -1243,7 +1243,7 @@ def main():
         # Load HCTSA data
         TS_DataMat, timeseries, operations, labels = load_hctsa_data(
             base_path=base_path,
-            data_variant='F', # filtered data only
+            data_variant='', # filtered data only
             verbose=True
         )
         
@@ -1262,8 +1262,8 @@ def main():
         
     except Exception as e:
         print(f"Error loading HCTSA data: {e}")
-        print("Falling back to synthetic data...")
-        X, y, feature_names, metadata = _create_synthetic_data()
+        # print("Falling back to synthetic data...")
+        # X, y, feature_names, metadata = _create_synthetic_data()
     
     # Initialize analyzer
     analyzer = HCTSAFeatureAnalyzer(random_state=42)
