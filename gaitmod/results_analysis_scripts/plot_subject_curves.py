@@ -13,6 +13,7 @@ from sklearn.metrics import (
     roc_curve,
     precision_recall_curve,
     auc,
+    confusion_matrix,
     accuracy_score,
     balanced_accuracy_score,
     f1_score,
@@ -88,7 +89,7 @@ def plot_roc_pr(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ax_roc, ax_pr
 
 def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], axes) -> None:
     subjects = sorted(grouped.keys())
-    metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall"]
+    metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall", "specificity"]
     nrows = axes.shape[0]
     ncols = axes.shape[1]
     thresholds = np.linspace(0.0, 1.0, 101)
@@ -108,6 +109,13 @@ def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ax
                     values.append(precision_score(y_true, y_pred, zero_division=0))
                 elif metric_name == "recall":
                     values.append(recall_score(y_true, y_pred, zero_division=0))
+                elif metric_name == "specificity":
+                    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+                    if cm.shape == (2, 2):
+                        tn, fp, _, _ = cm.ravel()
+                        values.append((tn / (tn + fp)) if (tn + fp) > 0 else 0.0)
+                    else:
+                        values.append(0.0)
                 else:
                     values.append(f1_score(y_true, y_pred, zero_division=0))
             ax.plot(thresholds, values, label=subject)
@@ -136,7 +144,7 @@ def main() -> None:
     #     "PW_US66": [Path(pattern + "inner_fold_06_val_PW_SN66" + "/evaluation_results_scores.npz")],        
     # }
     
-    model_type = "Seq2SeqLSTM_raw_betaChs_shuffle"
+    model_type = "Seq2SeqCNNLSTM_raw_betaChs_stateful_6296"
     pattern = (
         f"logs/{model_type}/*/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
     )
@@ -162,7 +170,7 @@ def main() -> None:
     if not grouped:
         raise SystemExit("No score files provided in subject_paths.")
 
-    metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall"]
+    metrics = ["f1", "accuracy", "balanced_accuracy", "precision", "recall", "specificity"]
     nrows, ncols = _grid(len(metrics))
     fig = plt.figure(figsize=(5 * ncols, 5 * (nrows + 1)))
     gs = fig.add_gridspec(nrows + 1, ncols)

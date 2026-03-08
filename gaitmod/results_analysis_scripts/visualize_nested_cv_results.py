@@ -304,6 +304,8 @@ if __name__ == "__main__":
             "test_tuned_precision",
             "test_recall",
             "test_tuned_recall",
+            "test_specificity",
+            "test_tuned_specificity",
             "test_roc_auc",
             "test_pr_auc",
         ],

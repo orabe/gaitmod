@@ -114,6 +114,7 @@ def generate_report(df, output_file):
             ('test_balanced_accuracy', 'Balanced Accuracy'),
             ('test_precision', 'Precision'),
             ('test_recall', 'Recall'),
+            ('test_specificity', 'Specificity'),
             ('test_roc_auc', 'ROC AUC'),
             ('test_pr_auc', 'PR AUC'),
             ('test_notuning_roc_auc', 'No-Tuning ROC AUC'),
@@ -124,6 +125,7 @@ def generate_report(df, output_file):
             ('test_tuned_accuracy', 'Tuned Accuracy'),
             ('test_tuned_precision', 'Tuned Precision'),
             ('test_tuned_recall', 'Tuned Recall'),
+            ('test_tuned_specificity', 'Tuned Specificity'),
             ('test_tuned_balanced_accuracy', 'Tuned Balanced Accuracy'),
         ]
         write_metric_section(f, "ALL TEST PERFORMANCE METRICS (OUTER FOLD EVALUATION):", base_metrics)
@@ -172,6 +174,7 @@ def generate_report(df, output_file):
             ('test_tuned_accuracy', 'Tuned Acc'),
             ('test_tuned_precision', 'Tuned Prec'),
             ('test_tuned_recall', 'Tuned Rec'),
+            ('test_tuned_specificity', 'Tuned Spec'),
             ('test_tuned_balanced_accuracy', 'Tuned Bal Acc'),
         ]
         base_subject_metrics = [
@@ -179,6 +182,7 @@ def generate_report(df, output_file):
             ('test_accuracy', 'Base Acc'),
             ('test_precision', 'Base Prec'),
             ('test_recall', 'Base Rec'),
+            ('test_specificity', 'Base Spec'),
             ('test_balanced_accuracy', 'Base Bal Acc'),
             ('test_roc_auc', 'ROC AUC'),
             ('test_pr_auc', 'PR AUC'),

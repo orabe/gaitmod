@@ -1087,7 +1087,7 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
         """
         from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
         
-        metrics = metrics or self.threshold_metrics or ['f1', 'accuracy', 'precision', 'recall', 'balanced_accuracy']
+        metrics = metrics or self.threshold_metrics or ['f1', 'accuracy', 'precision', 'recall', 'specificity', 'balanced_accuracy']
         threshold_range = threshold_range or self.threshold_range or (0.3, 0.8)
         n_thresholds = n_thresholds or self.n_thresholds or 51
         
@@ -1135,6 +1135,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                         score = precision_score(y_true_valid, y_pred, pos_label=1, zero_division=0)
                     elif metric_name == 'recall':
                         score = recall_score(y_true_valid, y_pred, pos_label=1, zero_division=0)
+                    elif metric_name == 'specificity':
+                        score = recall_score(y_true_valid, y_pred, pos_label=0, zero_division=0)
                     elif metric_name == 'balanced_accuracy':
                         score = balanced_accuracy_score(y_true_valid, y_pred)
                     else:

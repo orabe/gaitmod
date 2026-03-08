@@ -651,6 +651,8 @@ class HyperparameterTuningLogger:
                 hp.Metric('val_precision', display_name='Validation Precision'),
                 hp.Metric('train_recall', display_name='Training Recall'),
                 hp.Metric('val_recall', display_name='Validation Recall'),
+                hp.Metric('train_specificity', display_name='Training Specificity'),
+                hp.Metric('val_specificity', display_name='Validation Specificity'),
                 hp.Metric('train_balanced_accuracy', display_name='Training Balanced Accuracy'),
                 hp.Metric('val_balanced_accuracy', display_name='Validation Balanced Accuracy'),
                 hp.Metric('train_pr_auc', display_name='Training PR AUC'),
@@ -661,6 +663,7 @@ class HyperparameterTuningLogger:
                 hp.Metric('val_tuned_accuracy', display_name='Validation Tuned Accuracy'),
                 hp.Metric('val_tuned_precision', display_name='Validation Tuned Precision'),
                 hp.Metric('val_tuned_recall', display_name='Validation Tuned Recall'),
+                hp.Metric('val_tuned_specificity', display_name='Validation Tuned Specificity'),
                 hp.Metric('val_tuned_balanced_accuracy', display_name='Validation Tuned Balanced Accuracy'),
                 hp.Metric('val_tuned_f1', display_name='Validation Tuned F1'),
             ]
@@ -833,6 +836,7 @@ PROGRESS_METRIC_ALIASES = {
     'accuracy': 'train_accuracy',
     'precision': 'train_precision',
     'recall': 'train_recall',
+    'specificity': 'train_specificity',
     'f1_score': 'train_f1',
     'balanced_accuracy': 'train_balanced_accuracy',
     'pr_auc': 'train_pr_auc',
@@ -843,6 +847,7 @@ PROGRESS_METRIC_ALIASES = {
     'MASKED_f1_score': 'train_f1',
     'MASKED_precision': 'train_precision',
     'MASKED_recall': 'train_recall',
+    'MASKED_specificity': 'train_specificity',
     'MASKED_balanced_accuracy': 'train_balanced_accuracy',
     'MASKED_pr_auc': 'train_pr_auc',
     'MASKED_roc_auc': 'train_roc_auc',
@@ -852,6 +857,7 @@ PROGRESS_METRIC_ALIASES = {
     'val_accuracy': 'val_accuracy',
     'val_precision': 'val_precision',
     'val_recall': 'val_recall',
+    'val_specificity': 'val_specificity',
     'val_f1_score': 'val_f1',
     'val_balanced_accuracy': 'val_balanced_accuracy',
     'val_pr_auc': 'val_pr_auc',
@@ -862,6 +868,7 @@ PROGRESS_METRIC_ALIASES = {
     'val_MASKED_f1_score': 'val_f1',
     'val_MASKED_precision': 'val_precision',
     'val_MASKED_recall': 'val_recall',
+    'val_MASKED_specificity': 'val_specificity',
     'val_MASKED_balanced_accuracy': 'val_balanced_accuracy',
     'val_MASKED_pr_auc': 'val_pr_auc',
     'val_MASKED_roc_auc': 'val_roc_auc',
@@ -1096,7 +1103,7 @@ class TestEvaluationCSVLogger(Callback):
         self.log_frequency = log_frequency
         self.predict_proba_fn = predict_proba_fn
         self.metrics_to_log = metrics_to_log or [
-            'loss', 'accuracy', 'f1_score', 'precision', 'recall', 
+            'loss', 'accuracy', 'f1_score', 'precision', 'recall', 'specificity',
             'balanced_accuracy', 'roc_auc', 'pr_auc'
         ]
         self.epoch_data = []
@@ -1149,7 +1156,7 @@ class TestEvaluationCSVLogger(Callback):
             from sklearn.metrics import (
                 accuracy_score, f1_score, precision_score, recall_score,
                 balanced_accuracy_score, roc_auc_score, average_precision_score,
-                log_loss
+                confusion_matrix, log_loss
             )
             
             test_metrics = {}
@@ -1167,6 +1174,10 @@ class TestEvaluationCSVLogger(Callback):
                         value = precision_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
                     elif metric_name == 'recall':
                         value = recall_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'specificity':
+                        cm = confusion_matrix(y_true, y_pred_flat, labels=[0, 1])
+                        tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+                        value = tn / (tn + fp) if (tn + fp) > 0 else 0.0
                     elif metric_name == 'balanced_accuracy':
                         value = balanced_accuracy_score(y_true, y_pred_flat)
                     elif metric_name == 'roc_auc':
@@ -1228,7 +1239,7 @@ class TestTensorBoardLogger(Callback):
         self.log_subdir = log_subdir
         self.predict_proba_fn = predict_proba_fn
         self.metrics_to_log = metrics_to_log or [
-            'loss', 'accuracy', 'f1_score', 'precision', 'recall',
+            'loss', 'accuracy', 'f1_score', 'precision', 'recall', 'specificity',
             'balanced_accuracy', 'roc_auc', 'pr_auc'
         ]
         
@@ -1292,7 +1303,7 @@ class TestTensorBoardLogger(Callback):
             from sklearn.metrics import (
                 accuracy_score, f1_score, precision_score, recall_score,
                 balanced_accuracy_score, roc_auc_score, average_precision_score,
-                log_loss
+                confusion_matrix, log_loss
             )
             
             test_metrics = {}
@@ -1309,6 +1320,10 @@ class TestTensorBoardLogger(Callback):
                         value = precision_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
                     elif metric_name == 'recall':
                         value = recall_score(y_true, y_pred_flat, pos_label=1, zero_division=0)
+                    elif metric_name == 'specificity':
+                        cm = confusion_matrix(y_true, y_pred_flat, labels=[0, 1])
+                        tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+                        value = tn / (tn + fp) if (tn + fp) > 0 else 0.0
                     elif metric_name == 'balanced_accuracy':
                         value = balanced_accuracy_score(y_true, y_pred_flat)
                     elif metric_name == 'roc_auc':
@@ -1450,7 +1465,7 @@ class StatefulValidationCallback(Callback):
         # Compute metrics
         from sklearn.metrics import (
             roc_auc_score, log_loss, accuracy_score, f1_score,
-            precision_score, recall_score, balanced_accuracy_score
+            precision_score, recall_score, balanced_accuracy_score, confusion_matrix
         )
         
         # Binary cross-entropy loss (main metric for early stopping)
@@ -1468,6 +1483,9 @@ class StatefulValidationCallback(Callback):
         logs['val_f1'] = float(f1_score(y_val_flat, y_val_pred, zero_division=0))
         logs['val_precision'] = float(precision_score(y_val_flat, y_val_pred, zero_division=0))
         logs['val_recall'] = float(recall_score(y_val_flat, y_val_pred, zero_division=0))
+        cm = confusion_matrix(y_val_flat, y_val_pred, labels=[0, 1])
+        tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
+        logs['val_specificity'] = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
         logs['val_balanced_accuracy'] = float(balanced_accuracy_score(y_val_flat, y_val_pred))
 
 
@@ -2053,6 +2071,7 @@ BASE_METRIC_KEYS = {
     'accuracy': 'accuracy',
     'precision': 'precision',
     'recall': 'recall',
+    'specificity': 'specificity',
     'balanced_accuracy': 'balanced_accuracy',
     'f1': 'f1',
     'roc_auc': 'roc_auc',
@@ -3022,6 +3041,7 @@ def run_nested_cv_classical(
                             'accuracy': accuracy_score(y_inner_val, y_val_pred),
                             'precision': precision_score(y_inner_val, y_val_pred, average='weighted', zero_division=0),
                             'recall': recall_score(y_inner_val, y_val_pred, average='weighted'),
+                            'specificity': recall_score(y_inner_val, y_val_pred, pos_label=0, zero_division=0),
                             'balanced_accuracy': balanced_accuracy_score(y_inner_val, y_val_pred),
                             'roc_auc': roc_val,
                             'pr_auc': pr_val,
@@ -3032,6 +3052,7 @@ def run_nested_cv_classical(
                             'accuracy': 0.5,
                             'precision': 0.5,
                             'recall': 0.5,
+                            'specificity': 0.5,
                             'balanced_accuracy': 0.5,
                         }
 
@@ -3044,6 +3065,7 @@ def run_nested_cv_classical(
                                 'accuracy': accuracy_score(y_inner_train, y_train_pred),
                                 'precision': precision_score(y_inner_train, y_train_pred, average='weighted', zero_division=0),
                                 'recall': recall_score(y_inner_train, y_train_pred, average='weighted'),
+                                'specificity': recall_score(y_inner_train, y_train_pred, pos_label=0, zero_division=0),
                                 'balanced_accuracy': balanced_accuracy_score(y_inner_train, y_train_pred),
                                 'roc_auc': roc_auc_score(y_inner_train, y_train_proba_pos),
                                 'pr_auc': average_precision_score(y_inner_train, y_train_proba_pos),
@@ -3268,6 +3290,7 @@ def run_nested_cv_classical(
             'accuracy': 0.5,
             'precision': 0.5,
             'recall': 0.5,
+            'specificity': 0.5,
             'balanced_accuracy': 0.5,
         }
 
@@ -3283,6 +3306,7 @@ def run_nested_cv_classical(
                 'train_accuracy': accuracy_score(y_outer_train, y_train_pred),
                 'train_precision': precision_score(y_outer_train, y_train_pred, average='weighted', zero_division=0),
                 'train_recall': recall_score(y_outer_train, y_train_pred, average='weighted'),
+                'train_specificity': recall_score(y_outer_train, y_train_pred, pos_label=0, zero_division=0),
                 'train_balanced_accuracy': balanced_accuracy_score(y_outer_train, y_train_pred),
                 'train_roc_auc': roc_auc_score(y_outer_train, y_train_proba_pos),
                 'train_pr_auc': average_precision_score(y_outer_train, y_train_proba_pos),
@@ -3299,6 +3323,7 @@ def run_nested_cv_classical(
             'accuracy': np.nan,
             'precision': np.nan,
             'recall': np.nan,
+            'specificity': np.nan,
             'balanced_accuracy': np.nan,
             'roc_auc': np.nan,
             'pr_auc': np.nan,
@@ -3310,6 +3335,7 @@ def run_nested_cv_classical(
                 'accuracy': accuracy_score(y_outer_test, y_test_pred),
                 'precision': precision_score(y_outer_test, y_test_pred, average='weighted', zero_division=0),
                 'recall': recall_score(y_outer_test, y_test_pred, average='weighted'),
+                'specificity': recall_score(y_outer_test, y_test_pred, pos_label=0, zero_division=0),
                 'balanced_accuracy': balanced_accuracy_score(y_outer_test, y_test_pred),
                 'roc_auc': roc_auc_score(y_outer_test, y_test_proba_pos),
                 'pr_auc': average_precision_score(y_outer_test, y_test_proba_pos),
@@ -4050,7 +4076,13 @@ def run_loso_cv_dl(
                         optimal_thresholds = threshold_results['optimal_thresholds']
                     else:
                         # Seq2Vec: Use standard threshold optimization without masking
-                        from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
+                        from sklearn.metrics import (
+                            f1_score,
+                            accuracy_score,
+                            precision_score,
+                            recall_score,
+                            balanced_accuracy_score,
+                        )
                         y_val_proba_pos = y_val_proba[:, 1] if y_val_proba.ndim > 1 and y_val_proba.shape[1] >= 2 else y_val_proba.ravel()
                         
                         # Simple threshold search
@@ -4073,6 +4105,8 @@ def run_loso_cv_dl(
                                     score = precision_score(y_inner_val, y_pred, zero_division=0)
                                 elif metric_name == 'recall':
                                     score = recall_score(y_inner_val, y_pred, zero_division=0)
+                                elif metric_name == 'specificity':
+                                    score = recall_score(y_inner_val, y_pred, pos_label=0, zero_division=0)
                                 elif metric_name == 'balanced_accuracy':
                                     score = balanced_accuracy_score(y_inner_val, y_pred)
                                 else:
@@ -4422,7 +4456,13 @@ def run_loso_cv_dl(
                             aggregated_optimal_thresholds[metric] = best_threshold
                             aggregated_optimized_scores[metric] = best_score
                     else:
-                        from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
+                        from sklearn.metrics import (
+                            f1_score,
+                            accuracy_score,
+                            precision_score,
+                            recall_score,
+                            balanced_accuracy_score,
+                        )
 
                         seq2vec_threshold_range, seq2vec_threshold_steps, threshold_metrics = (
                             _get_seq2vec_threshold_settings(model_type)
@@ -4450,6 +4490,8 @@ def run_loso_cv_dl(
                                     score = precision_score(all_val_labels, y_pred_binary, zero_division=0)
                                 elif metric == 'recall':
                                     score = recall_score(all_val_labels, y_pred_binary, zero_division=0)
+                                elif metric == 'specificity':
+                                    score = recall_score(all_val_labels, y_pred_binary, pos_label=0, zero_division=0)
                                 else:
                                     score = 0.0
 
@@ -4951,6 +4993,7 @@ def run_loso_cv_dl(
                     test_metrics['test_accuracy'] = accuracy_score(y_test_valid, y_test_pred_default)
                     test_metrics['test_precision'] = precision_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
                     test_metrics['test_recall'] = recall_score(y_test_valid, y_test_pred_default, pos_label=1, zero_division=0)
+                    test_metrics['test_specificity'] = recall_score(y_test_valid, y_test_pred_default, pos_label=0, zero_division=0)
                     test_metrics['test_balanced_accuracy'] = balanced_accuracy_score(y_test_valid, y_test_pred_default)
                 except Exception as metric_error:
                     logging.warning(f"[CV_SKLEARN] Could not calculate base test metrics: {metric_error}")
@@ -4958,6 +5001,7 @@ def run_loso_cv_dl(
                     test_metrics.setdefault('test_accuracy', np.nan)
                     test_metrics.setdefault('test_precision', np.nan)
                     test_metrics.setdefault('test_recall', np.nan)
+                    test_metrics.setdefault('test_specificity', np.nan)
                     test_metrics.setdefault('test_balanced_accuracy', np.nan)
                 
                 # Base confusion matrix components
@@ -5005,6 +5049,9 @@ def run_loso_cv_dl(
                         elif metric_name == 'recall':
                             from sklearn.metrics import recall_score
                             test_metrics[metric_key] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=1, zero_division=0)
+                        elif metric_name == 'specificity':
+                            from sklearn.metrics import recall_score
+                            test_metrics[metric_key] = recall_score(y_test_valid, y_test_pred_thresh, pos_label=0, zero_division=0)
                         elif metric_name == 'balanced_accuracy':
                             from sklearn.metrics import balanced_accuracy_score
                             test_metrics[metric_key] = balanced_accuracy_score(y_test_valid, y_test_pred_thresh)
@@ -5235,6 +5282,7 @@ def run_loso_cv_dl(
                 'test_tuned_accuracy': 0.0,
                 'test_tuned_precision': 0.0,
                 'test_tuned_recall': 0.0,
+                'test_tuned_specificity': 0.0,
                 'test_tuned_balanced_accuracy': 0.0,
                 'test_roc_auc': 0.0,
                 'test_pr_auc': 0.0

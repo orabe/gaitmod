@@ -142,6 +142,8 @@ def generate_text_report(df: pd.DataFrame, output_file: str) -> None:
         ('test_tuned_precision', 'Tuned Precision'),
         ('test_recall', 'Recall'),
         ('test_tuned_recall', 'Tuned Recall'),
+        ('test_specificity', 'Specificity'),
+        ('test_tuned_specificity', 'Tuned Specificity'),
         ('test_roc_auc', 'ROC AUC'),
         ('test_pr_auc', 'PR AUC'),
     ]
@@ -280,7 +282,7 @@ if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
     
-    experiment_name = "Seq2SeqLSTM_raw_betaChs_shuffle"
+    experiment_name = "Seq2SeqCNNLSTM_raw_betaChs_stateful_6296"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
