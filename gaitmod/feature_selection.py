@@ -121,6 +121,7 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
         return np.array(variances)
     
     def _compute_metric_scores(self, X_flat, y_flat, metric):
+        metric = str(metric).strip().lower()
         if metric == 'anova':
             try:
                 selector = SelectKBest(score_func=f_classif, k='all')
@@ -145,6 +146,26 @@ class FeatureSelector(BaseEstimator, TransformerMixin):
                 try:
                     score, _ = stats.mannwhitneyu(g0[mask0], g1[mask1], alternative='two-sided')
                     scores[i] = score
+                except Exception:
+                    scores[i] = 0.0
+            return scores
+        if metric == 'brunner_munzel':
+            scores = np.zeros(X_flat.shape[1])
+            for i in range(X_flat.shape[1]):
+                g0 = X_flat[y_flat == 0, i]
+                g1 = X_flat[y_flat == 1, i]
+                mask0 = np.isfinite(g0)
+                mask1 = np.isfinite(g1)
+                if mask0.sum() < 2 or mask1.sum() < 2:
+                    continue
+                try:
+                    _, p_value = stats.brunnermunzel(
+                        g0[mask0],
+                        g1[mask1],
+                        alternative='two-sided'
+                    )
+                    if np.isfinite(p_value):
+                        scores[i] = 1.0 - np.clip(float(p_value), 0.0, 1.0)
                 except Exception:
                     scores[i] = 0.0
             return scores
