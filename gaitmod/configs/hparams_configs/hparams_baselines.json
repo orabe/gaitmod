@@ -20,13 +20,7 @@
         0.8
       ],
       "num_sweep_thresholds": 41,
-      "metrics": [
-        "f1",
-        "accuracy",
-        "balanced_accuracy",
-        "precision",
-        "recall"
-      ]
+      "metrics": ["f1"]
     },
     "masking": {
       "global_x_mask_value": 1000000.0,
