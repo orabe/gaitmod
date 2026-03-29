@@ -38,7 +38,7 @@ from gaitmod.models import Seq2VecMLPLSTM
 from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 from gaitmod.feat_preproc import filter_features, parse_epoch_metadata, pad_trials, group_epochs_by_trial
 
-from gaitmod.pipelines import build_pipeline
+from gaitmod.pipelines import build_pipeline, XGBOOST_AVAILABLE, get_xgboost_unavailable_error
 
 # Initialize TensorFlow
 import tensorflow as tf
@@ -1177,7 +1177,7 @@ class TestEvaluationCSVLogger(Callback):
                     elif metric_name == 'specificity':
                         cm = confusion_matrix(y_true, y_pred_flat, labels=[0, 1])
                         tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-                        value = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                        value = tn / (tn + fp) if (tn + fp) > 0 else np.nan
                     elif metric_name == 'balanced_accuracy':
                         value = balanced_accuracy_score(y_true, y_pred_flat)
                     elif metric_name == 'roc_auc':
@@ -1323,7 +1323,7 @@ class TestTensorBoardLogger(Callback):
                     elif metric_name == 'specificity':
                         cm = confusion_matrix(y_true, y_pred_flat, labels=[0, 1])
                         tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-                        value = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                        value = tn / (tn + fp) if (tn + fp) > 0 else np.nan
                     elif metric_name == 'balanced_accuracy':
                         value = balanced_accuracy_score(y_true, y_pred_flat)
                     elif metric_name == 'roc_auc':
@@ -1485,7 +1485,7 @@ class StatefulValidationCallback(Callback):
         logs['val_recall'] = float(recall_score(y_val_flat, y_val_pred, zero_division=0))
         cm = confusion_matrix(y_val_flat, y_val_pred, labels=[0, 1])
         tn, fp, _, _ = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-        logs['val_specificity'] = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+        logs['val_specificity'] = float(tn / (tn + fp)) if (tn + fp) > 0 else np.nan
         logs['val_balanced_accuracy'] = float(balanced_accuracy_score(y_val_flat, y_val_pred))
 
 
@@ -2489,7 +2489,8 @@ def _create_hyperparameter_string(hyperparams):
         'batch_size': 'bs', 'epochs': 'ep', 'learning_rate': 'lr', 'dropout': 'do',
         'hidden_dims': 'hd', 'dense_units': 'du', 'dense_activation': 'da',
         'patience': 'pat',
-        'optimizer': 'opt', 'n_features': 'nf', 'variance_threshold': 'vt',
+        'C': 'C', 'gamma': 'gm', 'kernel': 'ker', 'class_weight': 'cw', 'tol': 'tol',
+        'optimizer': 'opt', 'n_estimators': 'ne', 'max_depth': 'md', 'min_samples_split': 'mss', 'min_samples_leaf': 'msl', 'max_features': 'mf', 'n_features': 'nf', 'variance_threshold': 'vt',
         'correlation_threshold': 'ct', 'recurrent_activations': 'ra', 'activations': 'act',
         'selection_method': 'fs',
         'lstm_batch_size': 'bs', 'lstm_epochs': 'ep', 'lstm_lr': 'lr', 'lstm_dropout': 'do',
@@ -2533,9 +2534,15 @@ def _create_hyperparameter_string(hyperparams):
     param_str = "_".join(param_parts)
     # Ensure the path isn't too long
     if len(param_str) > 100:
-        priority_keys = ['fs', 'bs', 'ep', 'lr', 'do', 'hd', 'nf']
-        priority_parts = [p for p in param_parts if any(p.startswith(pk) for pk in priority_keys)]
-        param_str = "_".join(priority_parts[:6])
+        priority_keys = ['fs', 'nf', 'C', 'gm', 'ker', 'cw', 'tol', 'ne', 'md', 'mss', 'msl', 'mf', 'bs', 'ep', 'lr', 'do', 'hd']
+        priority_parts = []
+        for pk in priority_keys:
+            match = next((p for p in param_parts if p.startswith(pk)), None)
+            if match and match not in priority_parts:
+                priority_parts.append(match)
+        if not priority_parts:
+            priority_parts = param_parts[:6]
+        param_str = "_".join(priority_parts[:10])
     
     return param_str
 
@@ -2851,6 +2858,8 @@ def run_nested_cv_classical(
             "Use run_loso_cv_dl for sequence/seq2vec models."
         )
 
+    _validate_model_type_dependencies(model_type)
+
     selection_score_aggregation = (selection_score_aggregation or 'median').lower()
     if selection_score_aggregation not in {'median', 'mean'}:
         raise ValueError(
@@ -2879,9 +2888,12 @@ def run_nested_cv_classical(
         if raw_score is None:
             return 0.0
         try:
-            return float(raw_score)
+            score = float(raw_score)
         except (TypeError, ValueError):
             return 0.0
+        if np.isnan(score):
+            return 0.0
+        return score
 
     def _calc_confusion_components(y_true_arr, y_pred_arr):
         cm = confusion_matrix(y_true_arr, y_pred_arr, labels=[0, 1])
@@ -3030,17 +3042,17 @@ def run_nested_cv_classical(
                         try:
                             roc_val = roc_auc_score(y_inner_val, y_val_proba_pos)
                         except Exception:
-                            roc_val = 0.5
+                            roc_val = np.nan
                         try:
                             pr_val = average_precision_score(y_inner_val, y_val_proba_pos)
                         except Exception:
-                            pr_val = 0.0
+                            pr_val = np.nan
 
                         baseline_scores = {
-                            'f1': f1_score(y_inner_val, y_val_pred, average='weighted'),
+                            'f1': f1_score(y_inner_val, y_val_pred, pos_label=1, zero_division=0),
                             'accuracy': accuracy_score(y_inner_val, y_val_pred),
-                            'precision': precision_score(y_inner_val, y_val_pred, average='weighted', zero_division=0),
-                            'recall': recall_score(y_inner_val, y_val_pred, average='weighted'),
+                            'precision': precision_score(y_inner_val, y_val_pred, pos_label=1, zero_division=0),
+                            'recall': recall_score(y_inner_val, y_val_pred, pos_label=1, zero_division=0),
                             'specificity': recall_score(y_inner_val, y_val_pred, pos_label=0, zero_division=0),
                             'balanced_accuracy': balanced_accuracy_score(y_inner_val, y_val_pred),
                             'roc_auc': roc_val,
@@ -3061,17 +3073,26 @@ def run_nested_cv_classical(
 
                         try:
                             baseline_train_scores = {
-                                'f1': f1_score(y_inner_train, y_train_pred, average='weighted'),
+                                'f1': f1_score(y_inner_train, y_train_pred, pos_label=1, zero_division=0),
                                 'accuracy': accuracy_score(y_inner_train, y_train_pred),
-                                'precision': precision_score(y_inner_train, y_train_pred, average='weighted', zero_division=0),
-                                'recall': recall_score(y_inner_train, y_train_pred, average='weighted'),
+                                'precision': precision_score(y_inner_train, y_train_pred, pos_label=1, zero_division=0),
+                                'recall': recall_score(y_inner_train, y_train_pred, pos_label=1, zero_division=0),
                                 'specificity': recall_score(y_inner_train, y_train_pred, pos_label=0, zero_division=0),
                                 'balanced_accuracy': balanced_accuracy_score(y_inner_train, y_train_pred),
                                 'roc_auc': roc_auc_score(y_inner_train, y_train_proba_pos),
                                 'pr_auc': average_precision_score(y_inner_train, y_train_proba_pos),
                             }
                         except Exception:
-                            baseline_train_scores = {}
+                            baseline_train_scores = {
+                                'f1': np.nan,
+                                'accuracy': np.nan,
+                                'precision': np.nan,
+                                'recall': np.nan,
+                                'specificity': np.nan,
+                                'balanced_accuracy': np.nan,
+                                'roc_auc': np.nan,
+                                'pr_auc': np.nan,
+                            }
 
                         train_scores = standardize_metric_names(baseline_train_scores, stage='train', tuned=False)
                         train_scores['train_confusion_matrix_components'] = train_conf_components
@@ -3302,17 +3323,26 @@ def run_nested_cv_classical(
         y_train_pred = (y_train_proba_pos > 0.5).astype(int)
         try:
             train_metrics = {
-                'train_f1': f1_score(y_outer_train, y_train_pred, average='weighted'),
+                'train_f1': f1_score(y_outer_train, y_train_pred, pos_label=1, zero_division=0),
                 'train_accuracy': accuracy_score(y_outer_train, y_train_pred),
-                'train_precision': precision_score(y_outer_train, y_train_pred, average='weighted', zero_division=0),
-                'train_recall': recall_score(y_outer_train, y_train_pred, average='weighted'),
+                'train_precision': precision_score(y_outer_train, y_train_pred, pos_label=1, zero_division=0),
+                'train_recall': recall_score(y_outer_train, y_train_pred, pos_label=1, zero_division=0),
                 'train_specificity': recall_score(y_outer_train, y_train_pred, pos_label=0, zero_division=0),
                 'train_balanced_accuracy': balanced_accuracy_score(y_outer_train, y_train_pred),
                 'train_roc_auc': roc_auc_score(y_outer_train, y_train_proba_pos),
                 'train_pr_auc': average_precision_score(y_outer_train, y_train_proba_pos),
             }
         except Exception:
-            train_metrics = {}
+            train_metrics = {
+                'train_f1': np.nan,
+                'train_accuracy': np.nan,
+                'train_precision': np.nan,
+                'train_recall': np.nan,
+                'train_specificity': np.nan,
+                'train_balanced_accuracy': np.nan,
+                'train_roc_auc': np.nan,
+                'train_pr_auc': np.nan,
+            }
 
         y_test_proba = final_pipeline.predict_proba(X_outer_test)
         y_test_proba_pos = y_test_proba[:, 1] if y_test_proba.ndim > 1 and y_test_proba.shape[1] >= 2 else y_test_proba.ravel()
@@ -3331,10 +3361,10 @@ def run_nested_cv_classical(
         test_confusion_components = None
         try:
             baseline_test_scores = {
-                'f1': f1_score(y_outer_test, y_test_pred, average='weighted'),
+                'f1': f1_score(y_outer_test, y_test_pred, pos_label=1, zero_division=0),
                 'accuracy': accuracy_score(y_outer_test, y_test_pred),
-                'precision': precision_score(y_outer_test, y_test_pred, average='weighted', zero_division=0),
-                'recall': recall_score(y_outer_test, y_test_pred, average='weighted'),
+                'precision': precision_score(y_outer_test, y_test_pred, pos_label=1, zero_division=0),
+                'recall': recall_score(y_outer_test, y_test_pred, pos_label=1, zero_division=0),
                 'specificity': recall_score(y_outer_test, y_test_pred, pos_label=0, zero_division=0),
                 'balanced_accuracy': balanced_accuracy_score(y_outer_test, y_test_pred),
                 'roc_auc': roc_auc_score(y_outer_test, y_test_proba_pos),
@@ -3480,9 +3510,9 @@ def run_nested_cv_classical(
         logging.info(f"[CV_SKLEARN] NESTED CROSS-VALIDATION COMPLETED")
         logging.info(f"[CV_SKLEARN] {'='*80}")
         if outer_results:
-            avg_f1 = np.mean([r.get('test_tuned_f1', 0.0) for r in outer_results])
-            avg_auc = np.mean([r.get('test_roc_auc', 0.0) for r in outer_results])
-            avg_accuracy = np.mean([r.get('test_tuned_accuracy', 0.0) for r in outer_results])
+            avg_f1 = np.nanmean([r.get('test_tuned_f1', np.nan) for r in outer_results])
+            avg_auc = np.nanmean([r.get('test_roc_auc', np.nan) for r in outer_results])
+            avg_accuracy = np.nanmean([r.get('test_tuned_accuracy', np.nan) for r in outer_results])
             logging.info(f"[CV_SKLEARN] Average F1: {avg_f1:.4f}")
             logging.info(f"[CV_SKLEARN] Average AUC: {avg_auc:.4f}")
             logging.info(f"[CV_SKLEARN] Average Accuracy: {avg_accuracy:.4f}")
@@ -3651,11 +3681,16 @@ def run_loso_cv_dl(
                 logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' missing; using 0.0")
             return 0.0
         try:
-            return float(raw_score)
+            score = float(raw_score)
         except (TypeError, ValueError):
             if verbose >= 2:
                 logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' non-numeric ({raw_score}); using 0.0")
             return 0.0
+        if np.isnan(score):
+            if verbose >= 2:
+                logging.warning(f"[CV_SKLEARN] Selection metric '{selection_score_metric}' is NaN; using 0.0")
+            return 0.0
+        return score
     
     if verbose >= 1:
         logging.info(f"[CV_SKLEARN] Starting nested cross-validation with feature aggregation")
@@ -4089,8 +4124,8 @@ def run_loso_cv_dl(
                         optimal_thresholds = {}
                         optimized_scores = {}
                         for metric_name in threshold_metrics:
-                            best_threshold = 0.5
-                            best_score = 0.0
+                            best_threshold = np.nan
+                            best_score = np.nan
                             for threshold in np.linspace(
                                 seq2vec_threshold_range[0],
                                 seq2vec_threshold_range[1],
@@ -4111,7 +4146,7 @@ def run_loso_cv_dl(
                                     score = balanced_accuracy_score(y_inner_val, y_pred)
                                 else:
                                     continue
-                                if score > best_score:
+                                if not np.isnan(score) and (np.isnan(best_score) or score > best_score):
                                     best_score = score
                                     best_threshold = threshold
                             optimal_thresholds[metric_name] = best_threshold
@@ -4422,8 +4457,8 @@ def run_loso_cv_dl(
                         )
 
                         for metric in threshold_metrics:
-                            best_score = 0.0
-                            best_threshold = 0.5
+                            best_score = np.nan
+                            best_threshold = np.nan
 
                             for threshold in thresholds:
                                 y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
@@ -4447,9 +4482,9 @@ def run_loso_cv_dl(
                                 elif metric == 'specificity':
                                     score = Seq2SeqLSTM.eval_masked_specificity_score(all_val_labels, y_pred_binary, y_mask_val)
                                 else:
-                                    score = 0.0
+                                    score = np.nan
 
-                                if score > best_score:
+                                if not np.isnan(score) and (np.isnan(best_score) or score > best_score):
                                     best_score = score
                                     best_threshold = threshold
 
@@ -4474,8 +4509,8 @@ def run_loso_cv_dl(
                         )
 
                         for metric in threshold_metrics:
-                            best_score = 0.0
-                            best_threshold = 0.5
+                            best_score = np.nan
+                            best_threshold = np.nan
 
                             for threshold in thresholds:
                                 y_pred_binary = (y_pred_proba_pos >= threshold).astype(int)
@@ -4493,9 +4528,9 @@ def run_loso_cv_dl(
                                 elif metric == 'specificity':
                                     score = recall_score(all_val_labels, y_pred_binary, pos_label=0, zero_division=0)
                                 else:
-                                    score = 0.0
+                                    score = np.nan
 
-                                if score > best_score:
+                                if not np.isnan(score) and (np.isnan(best_score) or score > best_score):
                                     best_score = score
                                     best_threshold = threshold
 
@@ -5278,14 +5313,14 @@ def run_loso_cv_dl(
                 'feature_selection_initial_features': final_feature_selection_initial,
                 'feature_selection_final_strategy': final_feature_selection_strategy,
                 'feature_selection_final_strategy_details': final_feature_selection_strategy_details,
-                'test_tuned_f1': 0.0,
-                'test_tuned_accuracy': 0.0,
-                'test_tuned_precision': 0.0,
-                'test_tuned_recall': 0.0,
-                'test_tuned_specificity': 0.0,
-                'test_tuned_balanced_accuracy': 0.0,
-                'test_roc_auc': 0.0,
-                'test_pr_auc': 0.0
+                'test_tuned_f1': np.nan,
+                'test_tuned_accuracy': np.nan,
+                'test_tuned_precision': np.nan,
+                'test_tuned_recall': np.nan,
+                'test_tuned_specificity': np.nan,
+                'test_tuned_balanced_accuracy': np.nan,
+                'test_roc_auc': np.nan,
+                'test_pr_auc': np.nan
             })
             
             all_best_params.append(best_params)
@@ -5298,9 +5333,9 @@ def run_loso_cv_dl(
         
         if outer_results:
             # Calculate averages for primary metrics
-            avg_f1 = np.mean([r['test_tuned_f1'] for r in outer_results])
-            avg_auc = np.mean([r['test_roc_auc'] for r in outer_results])
-            avg_accuracy = np.mean([r['test_tuned_accuracy'] for r in outer_results])
+            avg_f1 = np.nanmean([r.get('test_tuned_f1', np.nan) for r in outer_results])
+            avg_auc = np.nanmean([r.get('test_roc_auc', np.nan) for r in outer_results])
+            avg_accuracy = np.nanmean([r.get('test_tuned_accuracy', np.nan) for r in outer_results])
             balanced_accuracy_values = [
                 r['test_tuned_balanced_accuracy'] for r in outer_results
                 if isinstance(r.get('test_tuned_balanced_accuracy'), (int, float, np.number))
@@ -5450,7 +5485,13 @@ def sanitize_path_component(component: Optional[str]) -> Optional[str]:
     sanitized = re.sub(r"_{2,}", "_", sanitized).strip("_")
     return sanitized or None
 
-def main(argv=None):            
+def _validate_model_type_dependencies(model_type: str) -> None:
+    """Fail fast when optional dependencies for a model type are missing."""
+    if model_type == "xgb" and not XGBOOST_AVAILABLE:
+        raise ImportError(get_xgboost_unavailable_error())
+
+
+def main(argv=None):
     script_start_time = time.time()
     
     parser = argparse.ArgumentParser(description="HCTSA nested cross-validation training")
@@ -5494,6 +5535,7 @@ def main(argv=None):
     selected_model_type = str(args.model_type or DEFAULT_MODEL_TYPE).strip()
     if selected_model_type not in SUPPORTED_MODEL_TYPES:
         raise ValueError(f"Unsupported model_type '{selected_model_type}'. Expected one of {SUPPORTED_MODEL_TYPES}.")
+    _validate_model_type_dependencies(selected_model_type)
 
     
     verbose = 3
