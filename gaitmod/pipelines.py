@@ -24,6 +24,19 @@ except ImportError:
     XGBClassifier = None
     XGBOOST_AVAILABLE = False
 
+XGBOOST_UNAVAILABLE_MESSAGE = (
+    "Model type 'xgb' requested, but 'xgboost' could not be imported in this Python "
+    "environment. This usually means xgboost is missing or has incompatible binary dependencies "
+    "(for example a NumPy/SciPy mismatch). Install or reinstall compatible builds in the same "
+    "environment (for example: pip install --upgrade xgboost scipy \"numpy<2\" or conda install -c conda-forge xgboost scipy numpy) "
+    "or choose a different --model-type."
+)
+
+
+def get_xgboost_unavailable_error() -> str:
+    """Shared actionable error text for missing optional xgboost dependency."""
+    return XGBOOST_UNAVAILABLE_MESSAGE
+
 def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
                    experiment_dir=None, outer_fold=None, inner_fold=None,
                    outer_test_subject=None, inner_validation_subject=None,
@@ -115,7 +128,7 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
         logging.info(f"[BUILD_PIPELINE] Created KNeighborsClassifier")
     elif model_type == 'xgb':
         if not XGBOOST_AVAILABLE:
-            raise ImportError("XGBoost requested but not importable in this environment")
+            raise ImportError(get_xgboost_unavailable_error())
         classifier = XGBClassifier(random_state=42)
         logging.info(f"[BUILD_PIPELINE] Created XGBClassifier")
     elif model_type == 'Seq2SeqLSTM':
@@ -303,9 +316,9 @@ def build_pipeline(model_type='Seq2SeqLSTM', mask_values=None,
         scoring_functions = {
             'accuracy': make_scorer(accuracy_score),
             'balanced_accuracy': make_scorer(balanced_accuracy_score),
-            'f1': make_scorer(f1_score, average='weighted'),
-            'precision': make_scorer(precision_score, average='weighted'),
-            'recall': make_scorer(recall_score, average='weighted'),
+            'f1': make_scorer(f1_score, pos_label=1, zero_division=0),
+            'precision': make_scorer(precision_score, pos_label=1, zero_division=0),
+            'recall': make_scorer(recall_score, pos_label=1, zero_division=0),
             'roc_auc': make_scorer(roc_auc_score, needs_proba=True, average='weighted', multi_class='ovr'),
             'pr_auc': make_scorer(average_precision_score, needs_proba=True, average='weighted'),
         }
