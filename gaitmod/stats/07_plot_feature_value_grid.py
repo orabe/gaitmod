@@ -354,6 +354,7 @@ def _plot_joyplots_by_depth(
         sharex=True,
     )
     y_positions = np.arange(n_depth)
+    ridge_height_scale = 0.82  # normalized KDE density scale: 0 -> baseline, 1 -> ridge crest
     outline_colors = {0: "#1d6767", 1: "#b77a1c"}
 
     for row_idx, group_val in enumerate(groups):
@@ -416,7 +417,7 @@ def _plot_joyplots_by_depth(
                     density = _ridge_density(values, x_grid)
                     if np.max(density) > 0:
                         density = density / np.max(density)
-                    ridge = baseline + 0.82 * density
+                    ridge = baseline + ridge_height_scale * density
 
                     ax.fill_between(
                         x_grid,
@@ -439,8 +440,10 @@ def _plot_joyplots_by_depth(
                 ax.set_title(f"Top-K features={n_feat}", fontsize=13, fontweight="bold")
             if row_idx == n_rows - 1:
                 ax.set_xlabel("Feature mean", fontsize=13)
-            ax.set_yticks(y_positions)
+            ax.set_ylim(-0.15, y_positions[-1] + ridge_height_scale + 0.15)
             if col_idx == 0:
+                # Left axis: only depth labels.
+                ax.set_yticks(y_positions)
                 ax.set_yticklabels(depth_values_display, fontsize=10)
                 if group_label == "Correlation threshold":
                     ct_label = group_display_map.get(group_val, group_val)
@@ -454,15 +457,38 @@ def _plot_joyplots_by_depth(
                         fontsize=12,
                     )
             else:
+                ax.set_yticks([])
                 ax.set_yticklabels([])
                 ax.set_ylabel("")
                 ax.tick_params(axis="y", left=False, labelleft=False)
+
+            # Right axis: normalized KDE scale (0 to 1), shown on the rightmost column.
+            if col_idx == n_cols - 1:
+                ax_right = ax.twinx()
+                ax_right.set_ylim(ax.get_ylim())
+                y_ticks_right = []
+                y_labels_right = []
+                for baseline in y_positions:
+                    y_ticks_right.extend([baseline, baseline + ridge_height_scale])
+                    y_labels_right.extend(["0", "1"])
+                ax_right.set_yticks(y_ticks_right)
+                ax_right.set_yticklabels(y_labels_right, fontsize=8)
+                ax_right.grid(False)
+                ax_right.spines["top"].set_visible(False)
+                ax_right.spines["left"].set_visible(False)
+                ax_right.spines["bottom"].set_visible(False)
+                ax_right.spines["right"].set_visible(True)
+                if row_idx == n_rows // 2:
+                    ax_right.set_ylabel("Normalized KDE density", fontsize=11)
+                else:
+                    ax_right.set_ylabel("")
+                ax_right.tick_params(axis="y", right=True, labelright=True, length=2.8, width=0.8)
             ax.grid(axis="x", linestyle="--", linewidth=1.0, alpha=0.35)
             ax.tick_params(axis="x", labelsize=11)
             _remove_spines(ax)
 
     fig.suptitle(
-        f"Joyplots of Feature-Mean Density per Class (overlay; depth: {depth_label})",
+        f"Joyplots of Feature-Mean Density per Class (normalized KDE; overlay; depth: {depth_label})",
         fontsize=16,
         fontweight="bold",
         y=1.01,
