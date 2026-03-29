@@ -1,13 +1,26 @@
 #!/usr/bin/env python3
 """
-Analyze and visualize HCTSA class distributions, feature means, and variances.
+Run univariate feature-space analysis on HCTSA segments and generate reports.
 
-How to run:
-1. Ensure the HCTSA segment cache (default: data/hctsa_segments) and channel
-   selection summary (default: results/channel_selection_summary.json) exist.
-2. Adjust the defaults near the top of this file if you need different paths or
-   selection method names.
-3. Run `python examples/LFP/classification_experiments/run_univariate_analysis.py`.
+What this script does:
+- Loads subject-specific HCTSA segment features using the channel selection summary.
+- Computes class statistics and univariate metrics (ANOVA, Mann-Whitney,
+  Brunner-Munzel, ROC-AUC, PR-AUC, mutual information, Cliff's delta).
+- Produces diagnostic figures and selects a recommended univariate method based
+  on distribution assumptions.
+
+Required input:
+- HCTSA segment cache directory (default: `data/hctsa_segments`).
+- Channel selection summary JSON (default: `results/channel_selection_summary.json`).
+- Optional configuration via constants in this file (normalization, thresholds,
+  top-k, output directory, selection method labels).
+
+Generated output:
+- `analysis_results.csv` with per-feature statistics/metrics.
+- `analysis_summary.json` with run metadata and aggregate summary.
+- `univariate_decision_rationale.json` with selected method + rationale.
+- Visualization files under `.../univariate_analysis/` (combined stats, top-k,
+  distributions, metric intersections, ROC/PR curves, correlation matrix).
 """
 
 import json
@@ -45,7 +58,7 @@ DEFAULT_MEAN_DIFF_THRESHOLD = 0.5
 DEFAULT_UNIVARIATE_VARIANCE_THRESHOLD = 0.0001
 DEFAULT_UNIVARIATE_MISSING_THRESHOLD = 0.0
 DEFAULT_UNIVARIATE_RANDOM_STATE = 42
-DEFAULT_UNIVARIATE_TOP_K = 100
+DEFAULT_UNIVARIATE_TOP_K = 20
 DEFAULT_VIS_TOP_K = 100
 DEFAULT_VIS_WORST_K = 100
 DEFAULT_SEGMENT_CACHE_DIR = Path("data/hctsa_segments")
@@ -547,6 +560,15 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
                           clip_percentiles=None, top_k=None, title_suffix: str = "",
                           total_features: int = None, top_metric='abs_mean_diff',
                           log_kde_overlap: bool = False):
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+
+    def remove_spines(ax_):
+        ax_.spines['top'].set_visible(False)
+        ax_.spines['right'].set_visible(False)
+        ax_.spines['left'].set_visible(False)
+        ax_.spines['bottom'].set_visible(False)
+
     output_dir.mkdir(parents=True, exist_ok=True)
     classes = sorted(stats.keys())
     ascending = top_metric in ASCENDING_METRICS
@@ -562,13 +584,14 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
     ax = axes.flatten()
 
     class_label_map = {
-        'mean_class0': 'Normal walking',
+        'mean_class0': 'Steady-State Walking',
         'mean_class1': 'Gait modulation'
     }
     class_colors = {
-        'Normal walking': '#1f77b4',  # blue
-        'Gait modulation': '#d62728',  # red
+        'Steady-State Walking': '#298c8c',
+        'Gait modulation': '#f1a226',
     }
+    alpha_val = 0.8
     long_df = summary_for_plots.melt(
         id_vars=['feature_index'],
         value_vars=list(class_label_map.keys()),
@@ -591,24 +614,32 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         inner=None,
         palette=class_colors,
         ax=ax[0],
-        legend=False
+        legend=False,
+        linewidth=1.5,
+        saturation=1.0,
     )
     sns.boxplot(
         data=long_df,
         x='class',
         y='feature_mean',
         width=0.1,
-        boxprops=dict(facecolor='none', edgecolor='black', linewidth=1.2),
-        whiskerprops=dict(color='black', linewidth=1.0),
-        capprops=dict(color='black', linewidth=1.0),
-        medianprops=dict(color='black', linewidth=1.2),
+        boxprops=dict(facecolor='none', edgecolor='black', linewidth=1.5),
+        whiskerprops=dict(color='black', linewidth=1.5),
+        capprops=dict(color='black', linewidth=1.5),
+        medianprops=dict(color='black', linewidth=2.0),
         showfliers=True,
         flierprops=dict(marker='o', markerfacecolor='black', markeredgecolor='black', markersize=4, alpha=0.6),
         ax=ax[0]
     )
-    ax[0].set_title(f"Feature Mean Distribution per Class\n({selection_text}; {count_label})", fontsize=11)
-    ax[0].set_xlabel("Class")
-    ax[0].set_ylabel("Feature Mean")
+    ax[0].set_title(
+        f"Feature Mean Distribution per Class\n({selection_text}; {count_label})",
+        fontsize=13,
+        fontweight='bold'
+    )
+    ax[0].set_xlabel("Class", fontsize=14)
+    ax[0].set_ylabel("Feature Mean", fontsize=14)
+    ax[0].grid(axis='y', linestyle='--', alpha=0.4)
+    ax[0].tick_params(labelsize=12)
     ordered_labels = [class_label_map['mean_class0'], class_label_map['mean_class1']]
     for idx, cls in enumerate(ordered_labels):
         mean_val = class_mean_values.get(cls)
@@ -625,7 +656,8 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             zorder=5,
         )
     ax[0].scatter([], [], s=60, marker='o', facecolor='white', edgecolor='black', linewidth=1.2, label='Mean (μ)')
-    ax[0].legend(loc='upper right', fontsize=9)
+    ax[0].legend(loc='upper right', fontsize=11, frameon=True)
+    remove_spines(ax[0])
 
     # Prepare data for KDE with overlap
     series_dict = {}
@@ -658,15 +690,15 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             
             # Compute overlap
             overlap = np.minimum(pdf_0, pdf_1)
-            overlap_area = np.trapezoid(overlap, x_grid)
+            overlap_area = np.trapz(overlap, x_grid)
             
             # Plot KDE curves
             ax[1].plot(
                 x_grid,
                 pdf_0,
-                label='Normal walking',
+                label='Steady-State Walking',
                 linewidth=2,
-                color=class_colors['Normal walking'],
+                color=class_colors['Steady-State Walking'],
             )
             ax[1].plot(
                 x_grid,
@@ -677,7 +709,7 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             )
             
             # Fill overlap region
-            ax[1].fill_between(x_grid, overlap, alpha=0.3, color='gray', label=f'Overlap: {overlap_area:.3f}')
+            ax[1].fill_between(x_grid, overlap, alpha=0.22, color='gray', label=f'Overlap: {overlap_area:.3f}')
             
             ax[1].legend()
             if log_kde_overlap:
@@ -686,6 +718,8 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             # Fallback to seaborn if not enough data
             for cls in sorted(stats.keys()):
                 label = 'Gait modulation' if cls == 1 else 'Normal walking'
+                if label == 'Normal walking':
+                    label = 'Steady-State Walking'
                 sns.kdeplot(
                     series_dict[cls],
                     label=label,
@@ -702,6 +736,8 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             if clip_percentiles:
                 series = clip_series(series, clip_percentiles)
             label = 'Gait modulation' if cls == 1 else 'Normal walking'
+            if label == 'Normal walking':
+                label = 'Steady-State Walking'
             sns.kdeplot(
                 series,
                 label=label,
@@ -711,14 +747,21 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             )
         ax[1].legend()
     
-    ax[1].set_title(f"Feature Mean Density per Class\n({selection_text}; {count_label})", fontsize=11)
-    ax[1].set_xlabel("Feature Mean")
-    ax[1].set_ylabel("Density")
+    ax[1].set_title(
+        f"Feature Mean Density per Class\n({selection_text}; {count_label})",
+        fontsize=13,
+        fontweight='bold'
+    )
+    ax[1].set_xlabel("Feature Mean", fontsize=14)
+    ax[1].set_ylabel("Density", fontsize=14)
+    ax[1].grid(axis='x', linestyle='--', alpha=0.4)
+    ax[1].tick_params(labelsize=12)
+    remove_spines(ax[1])
 
     full_title = f"Feature Mean Comparisons\n({scope_label}; {selection_text}; {count_label})"
     if title_suffix:
         full_title = f"{full_title}\n{title_suffix}"
-    fig.suptitle(full_title, fontsize=14)
+    fig.suptitle(full_title, fontsize=16, fontweight='bold')
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     combined_path = output_dir / f"{base_name}_combined.png"
     fig.savefig(combined_path, dpi=200)

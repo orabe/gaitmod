@@ -1,6 +1,25 @@
 #!/usr/bin/env python3
 """
-Compare feature selection quality by evaluating classification performance.
+Compare HCTSA feature-selection configurations using cross-validated classification.
+
+What this script does:
+- Loads HCTSA features and labels.
+- Applies `FeatureSelector` for configured selection settings.
+- Evaluates selected features with 5-fold stratified CV using:
+  Logistic Regression and Random Forest.
+- Reports classification quality (accuracy, F1, ROC-AUC) per configuration.
+
+Required input:
+- HCTSA data directory (default: `data/hctsa`).
+- Valid HCTSA feature matrix and binary labels from `load_hctsa_data`.
+- Feature-selection settings in `main()` (variance threshold, method,
+  correlation threshold, number of features).
+- Optional channel mapping/config constants used by the run setup.
+
+Generated output:
+- Console output with per-configuration model scores and selected feature count.
+- In-memory `results` list with all evaluated metrics
+  (JSON save code is present and can be enabled if needed).
 """
 from __future__ import annotations
 

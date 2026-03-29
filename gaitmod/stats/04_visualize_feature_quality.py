@@ -1,7 +1,27 @@
 #!/usr/bin/env python3
 """
-Quantify and visualize feature selection quality without classification.
-Uses visualization-based metrics to assess feature quality.
+Evaluate and visualize HCTSA feature-selection quality without training classifiers.
+
+What this script does:
+- Loads HCTSA data using preferred subject-channel mappings.
+- Applies `FeatureSelector` for multiple selection configurations.
+- Scores each configuration using visualization/separability metrics
+  (silhouette, Davies-Bouldin, Calinski-Harabasz), effect-size metrics, and
+  redundancy (average pairwise correlation).
+- Saves comparison results and generates summary comparison plots.
+
+Required input:
+- HCTSA data root directory (default: `data/hctsa`).
+- Subject-to-channel mapping (`CHANNEL_METHODS` in this file).
+- Feature-selection parameters defined in `main()` (variance threshold,
+  selection method, correlation threshold, number of features).
+
+Generated output:
+- `results/figures/selected_features/quality_comparison_visual.json` with
+  per-configuration quality metrics.
+- `results/figures/selected_features/feature_quality_comparison.png` with
+  comparison visualizations.
+- Console output summarizing per-configuration scores and recommendations.
 """
 from __future__ import annotations
 
@@ -316,7 +336,7 @@ def main():
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     selection_method = "pr_auc"
-    output_dir = Path("results/figures/selected_features")
+    output_dir = Path("results/figures/selected_features_quality_comparison")
     
     CHANNEL_METHODS = {
         "beta": {

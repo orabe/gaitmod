@@ -1,10 +1,31 @@
 #!/usr/bin/env python3
 """
-Create univariate summary figures for a selected feature list, matching
-the style of gaitmod/stats/run_univariate_analysis.py.
+Generate univariate analysis plots for previously selected HCTSA feature lists.
+
+What this script does:
+- Loads HCTSA data for preferred subject-channel mappings.
+- Reads selected-feature JSON files (typically produced by the feature
+  selection grid-search script).
+- Computes class-wise univariate statistics for the selected feature subset.
+- Creates summary visualizations plus a clustered feature-correlation heatmap.
+
+Required input:
+- HCTSA data root directory (default: `data/hctsa`).
+- Preferred channel mapping (`CHANNEL_METHODS` in this file).
+- Selected-feature JSON files in
+  `results/figures/selected_features/` named like:
+  `{method}_var{variance}_nfeat{n_features}_ct{corr}_selected_feat.json`.
+- HCTSA operations metadata with feature names.
+
+Generated output:
+- Combined figure files saved in `results/figures/selected_features/` for each
+  processed parameter combination, containing:
+  feature statistics panels, KDE overlap summary, and correlation matrix.
+- Console/log messages summarizing processed combinations and saved figures.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import re
@@ -21,11 +42,33 @@ import scipy.cluster.hierarchy as sch
 
 from gaitmod.preprocessing.hctsa_segments import parse_segment_identifier
 from gaitmod.utils.utils import load_hctsa_data
-from gaitmod.stats.run_univariate_analysis import (
-    compute_class_statistics,
-    create_visualizations,
-)
 from scipy.stats import gaussian_kde
+
+# Numbered module filenames cannot be imported with `from ... import ...`.
+_UNIVARIATE_MODULE_PATH = Path(__file__).with_name("01_run_univariate_analysis.py")
+_UNIVARIATE_SPEC = importlib.util.spec_from_file_location(
+    "stats_univariate_analysis",
+    _UNIVARIATE_MODULE_PATH,
+)
+if _UNIVARIATE_SPEC is None or _UNIVARIATE_SPEC.loader is None:
+    raise ImportError(f"Failed to load module from {_UNIVARIATE_MODULE_PATH}")
+_UNIVARIATE_MODULE = importlib.util.module_from_spec(_UNIVARIATE_SPEC)
+_UNIVARIATE_SPEC.loader.exec_module(_UNIVARIATE_MODULE)
+
+compute_class_statistics = _UNIVARIATE_MODULE.compute_class_statistics
+create_visualizations = _UNIVARIATE_MODULE.create_visualizations
+
+
+def _configure_plot_style() -> None:
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["Arial", "Helvetica", "DejaVu Sans"]
+
+
+def _remove_spines(ax: plt.Axes) -> None:
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
 
 
 def compute_mean_overlap_coefficient(X, y, n_points=1000):
@@ -71,7 +114,7 @@ def compute_mean_overlap_coefficient(X, y, n_points=1000):
             overlap = np.minimum(pdf_0, pdf_1)
             
             # Integrate using trapezoidal rule
-            overlap_area = np.trapezoid(overlap, x_grid)
+            overlap_area = np.trapz(overlap, x_grid)
             overlaps.append(overlap_area)
         except:
             # KDE may fail for some features, skip them
@@ -204,7 +247,7 @@ def main() -> None:
     variance_thresholds = [0.0001]
     selection_methods = ["mann_whitney"] # roc_auc
     correlation_thresholds = [0.7] #[0.01, 0.3, 0.5, 0.7, 0.9]
-    n_features_list = [100]#[10, 50, 100, 300, 500, 1000, 2000]
+    n_features_list = [100]
     
     data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"
@@ -217,6 +260,7 @@ def main() -> None:
     normalize = True
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    _configure_plot_style()
 
     preferred_map = CHANNEL_METHODS.get(channel_method, {})
     if not preferred_map:
@@ -352,7 +396,12 @@ def main() -> None:
             )
             axes[0].imshow(combined_img)
             axes[0].axis("off")
-            axes[0].set_title(f"Feature mean comparisons\nPer-feature KDE overlap: {mean_overlap:.4f} (lower=better)")
+            axes[0].set_title(
+                f"Feature Mean Comparisons\nPer-feature KDE overlap: {mean_overlap:.4f} (lower=better)",
+                fontsize=14,
+                fontweight="bold",
+            )
+            axes[0].text(-0.03, 1.02, "A", transform=axes[0].transAxes, fontsize=18, fontweight="bold", va="top")
             
             sns.heatmap(
                 corr_matrix_sorted,
@@ -366,9 +415,12 @@ def main() -> None:
                 cbar_kws={"label": "Correlation"},
                 ax=axes[1],
             )
-            axes[1].set_title("Correlation matrix of selected features")
-            axes[1].tick_params(axis="x", labelrotation=90, labelsize=6)
-            axes[1].tick_params(axis="y", labelsize=6)
+            axes[1].set_title("Correlation Matrix of Selected Features", fontsize=14, fontweight="bold")
+            axes[1].tick_params(axis="x", labelrotation=90, labelsize=7)
+            axes[1].tick_params(axis="y", labelsize=7)
+            axes[1].grid(False)
+            _remove_spines(axes[1])
+            axes[1].text(-0.1, 1.02, "B", transform=axes[1].transAxes, fontsize=18, fontweight="bold", va="top")
             
             # Add parameters text box
             params_text = (
@@ -380,11 +432,23 @@ def main() -> None:
                 f"Final features: {len(selected_names)}"
             )
             fig.text(0.01, 0.99, params_text, 
-                     fontsize=9, 
+                     fontsize=11, 
                      verticalalignment='top', 
                      horizontalalignment='left',
-                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='black', linewidth=1))
+                     bbox=dict(
+                         boxstyle='round,pad=0.35',
+                         facecolor='white',
+                         alpha=0.94,
+                         edgecolor='#C0C0C0',
+                         linewidth=1.2,
+                     ))
             
+            fig.suptitle(
+                "Selected-Feature Distribution and Correlation Overview",
+                fontsize=16,
+                fontweight="bold",
+                y=1.02,
+            )
             fig.tight_layout()
             fig.savefig(combined_path, dpi=200)
             plt.close(fig)

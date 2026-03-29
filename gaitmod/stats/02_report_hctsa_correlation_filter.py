@@ -1,6 +1,26 @@
 #!/usr/bin/env python3
 """
-Report how many HCTSA features remain after correlation filtering for one channel per subject.
+Run a feature-selection grid search on HCTSA features and export selected features.
+
+What this script does:
+- Loads HCTSA features for subject-specific preferred channels.
+- Applies `FeatureSelector` over configured combinations of variance threshold,
+  selection method, correlation threshold, and requested feature count.
+- Logs filtering/selection statistics for each parameter combination.
+- Exports selected feature indices and names to JSON files.
+
+Required input:
+- HCTSA data root directory (default: `data/hctsa`).
+- Channel-to-subject mapping from `CHANNEL_METHODS` in this file.
+- Valid HCTSA operations metadata (feature names) available in loaded data.
+- Grid-search settings configured in `main()` (thresholds, methods, top-k).
+
+Generated output:
+- One JSON file per parameter combination in
+  `results/figures/selected_features/`, containing:
+  selected feature indices, selected feature names, and run metadata.
+- A run log file:
+  `results/figures/selected_features/feature_selection_grid_search.log`.
 """
 from __future__ import annotations
 
@@ -67,11 +87,11 @@ def main() -> None:
     channel_method = "beta"  # "beta" or "logRegF1"
     
     # Grid search parameters
-    # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"] ++++++ "brunner_munzel"
+    # selection_methods = ["mann_whitney", "roc_auc"]
     variance_thresholds = [0.0001]
-    selection_methods = ["mann_whitney"] #["roc_auc"]
-    correlation_thresholds = [0.7] # [0.01, 0.3, 0.5, 0.7, 0.9]
-    n_features_list = [100] #[10, 50, 100, 300, 500, 1000, 2000]
+    selection_methods = ["anova", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta", "brunner_munzel", "mutual_info"]
+    correlation_thresholds = [0.01, 0.3, 0.5]
+    n_features_list = [20, 50, 100]
     
     output_dir = Path("results/figures/selected_features")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -150,7 +170,7 @@ def main() -> None:
     logging.info(f"\n{'='*80}")
     logging.info(f"Running grid search: {len(param_combinations)} combinations")
     logging.info(f"{'='*80}\n")
-    
+
     # Run feature selection for each combination
     for idx, (variance_threshold, selection_method, n_features, ct) in enumerate(param_combinations, 1):
         logging.info(f"\n[{idx}/{len(param_combinations)}] Running combination:")

@@ -659,7 +659,7 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
             
             # Compute overlap
             overlap = np.minimum(pdf_0, pdf_1)
-            overlap_area = np.trapezoid(overlap, x_grid)
+            overlap_area = np.trapz(overlap, x_grid)
             
             # Plot KDE curves
             ax[1].plot(
