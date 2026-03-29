@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs_stateful_6296",
+    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs",
     "model_type": "Seq2SeqCNNLSTM",
     "feature_data": {
       "source": "raw",
@@ -12,17 +12,15 @@
       "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
       "monitor": "val_loss",
-      "patience": 10
+      "patience": 15
     },
     "decision_threshold_search": {
       "range": [
         0.3,
         0.8
       ],
-      "num_sweep_thresholds": 1,
-      "metrics": [
-        "f1"
-      ]
+      "num_sweep_thresholds": 10,
+      "metrics": ["f1"]
     },
     "stateful_testing": {
       "use_stateful_mode": true,

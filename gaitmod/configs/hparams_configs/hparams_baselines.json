@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "logreg_hctsa_betaChs",
-    "model_type": "logreg",
+    "experiment_name": "svm_hctsa_betaChs",
+    "model_type": "svm",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -11,15 +11,12 @@
       "reduce_lr_factor": 0.5,
       "reduce_lr_min_lr": 1e-05,
       "reduce_lr_patience_ratio": 0.3,
-      "monitor": "loss",
-      "patience": 10
+      "monitor": "val_loss",
+      "patience": 15
     },
     "decision_threshold_search": {
-      "range": [
-        0.3,
-        0.8
-      ],
-      "num_sweep_thresholds": 41,
+      "range": [0.3, 0.8],
+      "num_sweep_thresholds": 10,
       "metrics": ["f1"]
     },
     "masking": {
@@ -51,7 +48,7 @@
       "channels": null
     },
     "selection_metrics": {
-      "selection_score_metric": "val_tuned_f1",
+      "selection_score_metric": "val_f1",
       "selection_score_aggregation": "median"
     },
     "global_selection": {
@@ -71,25 +68,23 @@
     }
   },
   "feature_params": {
-    "feature_selector__enabled": [
-      true
-    ],
+    "feature_selector__enabled": [true],
     "feature_selector__selection_method": ["roc_auc"],
-    "feature_selector__n_features": [20, 50, 100, 200],
+    "feature_selector__n_features": [20, 50, 100],
     "feature_selector__variance_threshold": [0.0001],
-    "feature_selector__correlation_threshold": [0.05, 0.3]
+    "feature_selector__correlation_threshold": [0.1, 0.3]
   },
 
   "dummy": {
     "param_grid": {
-      "classifier__strategy": ["most_frequent"]
+      "classifier__strategy": ["stratified"]
     }
   },  
   "logreg": {
     "param_grid": {
       "classifier__solver": ["lbfgs"],
       "classifier__penalty": ["l2"],
-      "classifier__C": [0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0],
+      "classifier__C": [0.003, 0.01, 0.03, 0.1, 0.3, 1.0],
       "classifier__class_weight": [null, "balanced"],
       "classifier__max_iter": [3000],
       "classifier__tol": [0.0001, 0.001],
@@ -99,80 +94,38 @@
   "svm": {
     "param_grid": {
       "classifier__C": [0.1, 1, 10],
-      "classifier__gamma": ["scale", "auto"],
+      "classifier__gamma": ["auto"],
       "classifier__kernel": ["rbf", "linear"],
       "classifier__class_weight": [null, "balanced"]
     }
   },
   "rf": {
     "param_grid": {
-      "classifier__n_estimators": [
-        100,
-        200
-      ],
-      "classifier__max_depth": [
-        10,
-        20
-      ],
-      "classifier__min_samples_split": [
-        2,
-        5
-      ],
-      "classifier__min_samples_leaf": [
-        1,
-        2
-      ],
-      "classifier__max_features": [
-        "sqrt",
-        "log2",
-        0.3,
-        0.5
-      ]
+      "classifier__n_estimators": [100,200],
+      "classifier__max_depth": [10, 20],
+      "classifier__min_samples_split": [2],
+      "classifier__min_samples_leaf": [1, 2],
+      "classifier__max_features": ["sqrt", "log2", 0.3, 0.5]
     }
   }, 
-    "xgb": {
+  "xgb": {
     "param_grid": {
-      "classifier__n_estimators": [
-        100,
-        200
-      ],
-      "classifier__max_depth": [
-        3,
-        6
-      ],
-      "classifier__learning_rate": [
-        0.01,
-        0.1
-      ]
+      "classifier__n_estimators": [100, 200],
+      "classifier__max_depth": [3, 6],
+      "classifier__learning_rate": [0.01, 0.1]
     }
   }, 
   "lda": {
     "param_grid": {
-      "classifier__solver": [
-        "svd",
-        "lsqr"
-      ],
-      "classifier__shrinkage": [
-        null,
-        "auto"
-      ]
+      "classifier__solver": ["svd", "lsqr"],
+      "classifier__shrinkage": [null, "auto"]
     }
   },
   "knn": {
     "param_grid": {
-      "classifier__n_neighbors": [
-        3,
-        5,
-        7,
-        11
-      ],
-      "classifier__weights": [
-        "uniform",
-        "distance"
-      ],
-      "classifier__metric": [
-        "minkowski"
-      ]
+      "classifier__n_neighbors": [3, 5, 7, 11],
+      "classifier__weights": ["uniform", "distance"],
+      "classifier__metric": ["minkowski"]
     }
   }
 }
