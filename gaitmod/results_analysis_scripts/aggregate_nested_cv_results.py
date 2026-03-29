@@ -273,16 +273,16 @@ def main(args: Optional[argparse.Namespace] = None):
     except Exception as report_error:
         print(f"Warning: Failed to generate report: {report_error}")
 
-    print(f"Aggregated {len(df)} refit results.")
     print(f"- CSV written to: {csv_path}")
     print(f"- Summary JSON written to: {summary_path}")
+    print(f"Aggregated {len(df)} refit results.")
 
 
 if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
     
-    experiment_name = "Seq2SeqCNNLSTM_raw_betaChs_stateful_6296"
+    experiment_name = "Seq2VecCNN_raw_betaChs_pooled"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",

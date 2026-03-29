@@ -146,7 +146,7 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     height / 2,
-                    f"{mean:.3f}±{std:.3f}",
+                    f"{mean:.2f}±{std:.2f}",
                     ha="center", va="center",
                     fontsize=9, fontweight='bold',
                     rotation=90, color='white'
@@ -261,7 +261,7 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
         ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=10)
         
         # Modern grid with horizontal lines only
-        ax.grid(axis="y", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
+        ax.grid(axis="both", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
         ax.set_axisbelow(True)
         
         # Add rectangular border around each subplot
@@ -295,8 +295,95 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
     fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
-def plot_metric_violinplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
-    """Plot modern boxplots with scatter for metric distributions across runs."""
+def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
+    """For each metric, plot subject-wise line curves for each model."""
+    if not metrics:
+        return
+
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+
+    subjects = dfs[0]["test_subject_name"].tolist()
+    x_positions = np.arange(len(subjects))
+
+    n_metrics = len(metrics)
+    n_cols = min(3, n_metrics)
+    n_rows = int(np.ceil(n_metrics / n_cols))
+
+    fig_width = max(18, n_cols * 7)
+    fig_height = max(10, n_rows * 5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    fig.patch.set_facecolor('white')
+    axes = axes.flatten()
+
+    colors = get_modern_colors(len(dfs))
+
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        ax.set_facecolor('white')
+
+        for idx, (df, label) in enumerate(zip(dfs, labels)):
+            if metric not in df.columns:
+                continue
+
+            metric_by_subject = pd.Series(
+                pd.to_numeric(df[metric], errors='coerce').values,
+                index=df['test_subject_name']
+            )
+            values = np.array([metric_by_subject.get(subject, np.nan) for subject in subjects], dtype=float)
+
+            ax.plot(
+                x_positions,
+                values,
+                label=label,
+                color=colors[idx],
+                linewidth=2.2,
+                marker='o',
+                markersize=5,
+                alpha=0.9,
+            )
+
+        if i % n_cols == 0:
+            ax.set_ylabel('Score', fontsize=12, fontweight='bold')
+
+        ax.set_title(metric, fontsize=13, fontweight='bold', pad=10)
+        ax.set_ylim(0, 1.05)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(subjects, rotation=45, ha='right', fontsize=10)
+
+        ax.grid(axis='both', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
+        ax.set_axisbelow(True)
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor('black')
+
+    for j in range(n_metrics, len(axes)):
+        fig.delaxes(axes[j])
+
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    if handles:
+        legend = fig.legend(
+            handles, legend_labels,
+            loc='center left', bbox_to_anchor=(0.91, 0.5),
+            frameon=True, fancybox=False, shadow=False,
+            fontsize=11, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=12,
+        )
+        legend.get_frame().set_linewidth(1.0)
+        legend.get_frame().set_facecolor('none')
+
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
+    fig.suptitle(
+        'Per-Subject Line-Curve Comparison across Models',
+        fontsize=20, fontweight='bold', y=0.98,
+    )
+    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
+    """Plot modern boxplots for metric distributions across runs."""
     if not metrics:
         return
     
@@ -335,19 +422,7 @@ def plot_metric_violinplots(dfs: List[pd.DataFrame], metrics: List[str], labels:
         
         # Color the boxes (removed alpha for solid colors)
         for patch, color in zip(bp['boxes'], colors):
-            patch.set_facecolor(color)
-        
-        # Add jittered scatter points
-        for j, (vals, color) in enumerate(zip(data, colors)):
-            # Add slight jitter for better visibility
-            jitter = np.random.normal(0, 0.04, size=len(vals))
-            ax.scatter(
-                positions[j] + jitter, vals,
-                color=color, alpha=0.6, s=50,
-                edgecolors='white', linewidths=1.5,
-                zorder=4
-            )
-        
+            patch.set_facecolor(color)        
         ax.set_xticks(positions)
         ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=10, fontweight='medium')
         ax.set_ylabel("Score", fontsize=12, fontweight='bold')
@@ -391,6 +466,99 @@ def plot_metric_violinplots(dfs: List[pd.DataFrame], metrics: List[str], labels:
         fontsize=17, fontweight='bold', y=0.98
     )
     fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+def _format_metric_label(metric: str) -> str:
+    """Create compact axis labels for radar plots."""
+    label = metric
+    if label.startswith("test_"):
+        label = label[len("test_"):]
+    elif label.startswith("train_"):
+        label = "train " + label[len("train_"):]
+    label = label.replace("tuned_", "tuned ")
+    label = label.replace("_", "\n")
+    return label
+
+
+def plot_model_spider(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
+    """Plot a radar chart that compares models across metrics using median scores."""
+    if not metrics or not dfs:
+        return
+
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["Arial", "DejaVu Sans"]
+
+    valid_metrics: List[str] = []
+    metric_values: List[List[float]] = []
+    for metric in metrics:
+        run_values: List[float] = []
+        metric_is_valid = True
+        for df in dfs:
+            if metric not in df.columns:
+                metric_is_valid = False
+                break
+            values = pd.to_numeric(df[metric], errors="coerce").dropna().values
+            if values.size == 0:
+                metric_is_valid = False
+                break
+            run_values.append(float(np.nanmedian(values)))
+        if metric_is_valid:
+            valid_metrics.append(metric)
+            metric_values.append(run_values)
+
+    if not valid_metrics:
+        return
+
+    values_by_run = np.array(metric_values, dtype=float).T
+    values_by_run = np.clip(values_by_run, 0.0, 1.0)
+
+    n_metrics = len(valid_metrics)
+    angles = np.linspace(0, 2 * np.pi, n_metrics, endpoint=False)
+    angles_closed = np.concatenate([angles, [angles[0]]])
+
+    fig, ax = plt.subplots(figsize=(10, 10), subplot_kw={"polar": True})
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_theta_direction(-1)
+
+    colors = get_modern_colors(len(dfs))
+    for idx, label in enumerate(labels):
+        run_values = values_by_run[idx]
+        run_values_closed = np.concatenate([run_values, [run_values[0]]])
+        ax.plot(angles_closed, run_values_closed, color=colors[idx], linewidth=2.5, label=label)
+        ax.fill(angles_closed, run_values_closed, color=colors[idx], alpha=0.15)
+
+    ax.set_xticks(angles)
+    ax.set_xticklabels([_format_metric_label(m) for m in valid_metrics], fontsize=10, fontweight="medium")
+
+    ax.set_ylim(0.0, 1.0)
+    radial_ticks = [0.2, 0.4, 0.6, 0.8, 1.0]
+    ax.set_yticks(radial_ticks)
+    ax.set_yticklabels([f"{tick:.1f}" for tick in radial_ticks], fontsize=9)
+    ax.yaxis.grid(True, linestyle="-", alpha=0.3, linewidth=1.0, color="gray")
+    ax.xaxis.grid(True, linestyle="-", alpha=0.25, linewidth=1.0, color="gray")
+
+    legend = ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.08, 1.05),
+        frameon=True,
+        fancybox=False,
+        shadow=False,
+        fontsize=11,
+        edgecolor="black",
+        framealpha=0,
+        title="Models",
+        title_fontsize=12,
+    )
+    legend.get_frame().set_linewidth(1.0)
+    legend.get_frame().set_facecolor("none")
+
+    ax.set_title("Model Performance Radar (Median Across Subjects)", fontsize=16, fontweight="bold", pad=25)
+
+    fig.tight_layout(rect=[0, 0, 0.84, 1])
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 def main(args=None):
@@ -471,85 +639,77 @@ def main(args=None):
         metrics = [m for m in args.metrics if all(m in df.columns for df in dfs)]
 
     plot_metric_summary(dfs, metrics, labels, os.path.join(output_dir, "metrics_bar_summary_compare.png"))
-    plot_metric_violinplots(dfs, metrics, labels, os.path.join(output_dir, "metrics_violinplots_compare.png"))
+    plot_metric_boxplots(dfs, metrics, labels, os.path.join(output_dir, "metrics_boxplots_compare.png"))
+    plot_model_spider(dfs, metrics, labels, os.path.join(output_dir, "metrics_spider_compare.png"))
     plot_subject_barplots(dfs, metrics, labels, os.path.join(output_dir, "subject_barplots_compare.png"))
+    plot_subject_lineplots(dfs, metrics, labels, os.path.join(output_dir, "subject_lineplots_compare.png"))
 
     print("Comparison complete. Generated figures:")
     print(f"- {os.path.join(output_dir, 'metrics_bar_summary_compare.png')}")
-    print(f"- {os.path.join(output_dir, 'metrics_violinplots_compare.png')}")
+    print(f"- {os.path.join(output_dir, 'metrics_boxplots_compare.png')}")
+    print(f"- {os.path.join(output_dir, 'metrics_spider_compare.png')}")
     print(f"- {os.path.join(output_dir, 'subject_barplots_compare.png')}")
+    print(f"- {os.path.join(output_dir, 'subject_lineplots_compare.png')}")
 
-if __name__ == "__main__":
-    from argparse import Namespace
-    
-    base_path = "logs/results"
-    
-    # label0 = "hparams_lstm_roc_auc_refit"
-    
-    # label1 = "rf_raw"
-    # label2 = "rf_beta"
-    # label3 = "rf_hctsa"
-    
-    # label4 = "logreg_raw"
-    # label5 = "logreg_beta"
-    # label6 = "logreg_hctsa"
-    
-    # label7 = "svm_raw"
-    # label8 = "svm_beta"
-    # label9 = "svm_hctsa"
-    
-    # label10 = "xgb_raw"
-    # label11 = "xgb_beta"
-    # label12 = "xgb_hctsa"
-    
-    label0 = "Seq2SeqLSTM_raw_betaChs_init"
-    label1 = "Seq2VecLSTM_hctsa_betaChs"
-    label2 = "Seq2SeqLSTM_raw_betaChs"
-    label3 = "Seq2SeqLSTM_raw_betaChs_shuffle"
-    
-    
-    args = Namespace(
-        csv=[
-            f"{base_path}/{label0}/summary/nested_cv_results.csv",
-            f"{base_path}/{label1}/summary/nested_cv_results.csv",
-            f"{base_path}/{label2}/summary/nested_cv_results.csv",
-            f"{base_path}/{label3}/summary/nested_cv_results.csv",
-        ],
-        labels=[
-            "Seq2SeqLSTM_raw_betaChs_init",
-            "Seq2VecLSTM_hctsa_betaChs",
-            "Seq2SeqLSTM_raw_betaChs",
-            "Seq2SeqLSTM_raw_betaChs_shuffle",
-        ],
-        output_dir="logs/results/comparison_figures/test",
-        metrics=[
-            "test_f1",
-            "test_tuned_f1",
-            "test_accuracy",
-            "test_tuned_accuracy",
-            "test_balanced_accuracy",
-            "test_tuned_balanced_accuracy",
-            "test_precision",
-            "test_tuned_precision",
-            "test_recall",
-            "test_tuned_recall",
-            "test_roc_auc",
-            "test_pr_auc",
-            
-            #  include train metrics
-            # "train_f1",
-            # "train_tuned_f1",
-            # "train_accuracy",
-            # "train_tuned_accuracy",
-            # "train_balanced_accuracy",
-            # "train_tuned_balanced_accuracy",
-            # "train_precision",
-            # "train_tuned_precision",
-            # "train_recall",
-            # "train_tuned_recall",
-            # "train_roc_auc",
-            # "train_pr_auc",
-        ],
+def build_default_namespace(
+    base_path: str = "logs/results",
+    output_dir: str = "logs/results/comparison_figures/test",
+    include_train_metrics: bool = False,
+) -> argparse.Namespace:
+    """Build a local, reproducible default configuration."""
+    run_specs = [
+        ("dummy_raw_betaChs", "dummy"),
+        ("logreg_hctsa_betaChs", "logreg"),
+        ("rf_hctsa_betaChs", "rf"),
+        ("xgb_hctsa_betaChs", "xgb"),
+        ("svm_hctsa_betaChs", "svm"),
+        ("Seq2VecCNN_raw_betaChs", "Seq2VecCNN"),
+        ("Seq2VecLSTM_raw_betaChs", "Seq2VecLSTM"),
+    ]
+
+    test_metrics = [
+        "test_f1",
+        "test_accuracy",
+        "test_balanced_accuracy",
+        "test_precision",
+        "test_recall",
+        "test_specificity",
+        "test_roc_auc",
+        "test_pr_auc",
+    ]
+    train_metrics = [
+        # "train_f1",
+        # "train_tuned_f1",
+        # "train_accuracy",
+        # "train_tuned_accuracy",
+        # "train_balanced_accuracy",
+        # "train_tuned_balanced_accuracy",
+        # "train_precision",
+        # "train_tuned_precision",
+        # "train_recall",
+        # "train_tuned_recall",
+        # "train_roc_auc",
+        # "train_pr_auc",
+    ]
+
+    metrics = test_metrics + (train_metrics if include_train_metrics else [])
+    csv_paths = [f"{base_path}/{run_id}/summary/nested_cv_results.csv" for run_id, _ in run_specs]
+    labels = [display_name for _, display_name in run_specs]
+
+    return argparse.Namespace(
+        csv=csv_paths,
+        labels=labels,
+        output_dir=output_dir,
+        metrics=metrics,
         refit_run=[],
     )
-    main(args)
+
+
+if __name__ == "__main__":
+    import sys
+
+    # CLI args take precedence; with no args we run the local default preset.
+    if len(sys.argv) > 1:
+        main()
+    else:
+        main(build_default_namespace())

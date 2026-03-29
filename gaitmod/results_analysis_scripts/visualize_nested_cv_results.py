@@ -289,7 +289,7 @@ def main(args=None):
 
 if __name__ == "__main__":
     from argparse import Namespace
-    base_path = "logs/hparams_seq2vec_LSTM_hctsa_24configs_corrScr/results"
+    base_path = "logs/results/dummy_raw_betaChs"
     args = Namespace(
         csv=f"{base_path}/summary/nested_cv_results.csv",
         output_dir=f"{base_path}/figures",
