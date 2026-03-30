@@ -1119,8 +1119,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
         thresholds = np.linspace(threshold_range[0], threshold_range[1], n_thresholds)
         
         for metric_name in metrics:
-            best_threshold = 0.5
-            best_score = 0.0
+            best_threshold = np.nan
+            best_score = np.nan
             all_scores = []
             
             for threshold in thresholds:
@@ -1140,14 +1140,14 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                     elif metric_name == 'balanced_accuracy':
                         score = balanced_accuracy_score(y_true_valid, y_pred)
                     else:
-                        score = 0.0
+                        score = np.nan
                     
                     all_scores.append(score)
-                    if score > best_score:
+                    if not np.isnan(score) and (np.isnan(best_score) or score > best_score):
                         best_score = score
                         best_threshold = threshold
                 except Exception:
-                    all_scores.append(0.0)
+                    all_scores.append(np.nan)
             
             optimal_thresholds[metric_name] = best_threshold
             optimized_scores[metric_name] = best_score
@@ -1176,8 +1176,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                 logging.info(f"  PR AUC: {pr_auc:.4f} (threshold-independent)")
         except Exception as e:
             logging.warning(f"Failed to compute AUC scores: {e}")
-            optimized_scores['roc_auc'] = 0.5
-            optimized_scores['pr_auc'] = 0.0
+            optimized_scores['roc_auc'] = np.nan
+            optimized_scores['pr_auc'] = np.nan
         
         return {
             'optimized_scores': optimized_scores,

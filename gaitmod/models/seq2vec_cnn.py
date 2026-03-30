@@ -3,7 +3,7 @@ import numpy as np
 import tensorflow as tf
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.class_weight import compute_class_weight
-from tensorflow.keras.layers import Input, Conv1D, Dropout, Dense, Flatten
+from tensorflow.keras.layers import Input, Conv1D, MaxPooling1D, Dropout, Dense, Flatten
 from tensorflow.keras.metrics import Precision, Recall, AUC, BinaryAccuracy
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.optimizers import Adam, RMSprop, SGD
@@ -26,6 +26,8 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         kernel_size=5,
         conv_layers=4,
         conv_activation='relu',
+        use_pooling=False,
+        pool_size=2,
         dense_units=128,
         dense_layers=2,
         dropout=0.5,
@@ -53,6 +55,8 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         self.kernel_size = kernel_size
         self.conv_layers = conv_layers
         self.conv_activation = conv_activation
+        self.use_pooling = use_pooling
+        self.pool_size = pool_size
         self.dense_units = dense_units
         self.dense_layers = dense_layers
         self.dropout = dropout
@@ -108,7 +112,7 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
         model = Sequential()
         model.add(Input(shape=input_shape))
 
-        for _ in range(int(self.conv_layers)):
+        for idx in range(int(self.conv_layers)):
             model.add(
                 Conv1D(
                     filters=int(self.conv_filters),
@@ -117,6 +121,9 @@ class Seq2VecCNN(BaseEstimator, ClassifierMixin):
                     activation=self.conv_activation,
                 )
             )
+            if self.use_pooling:
+                model.add(MaxPooling1D(pool_size=int(self.pool_size), name=f'maxpool_{idx+1}'))
+
 
         model.add(Flatten())
         for _ in range(int(self.dense_layers)):
