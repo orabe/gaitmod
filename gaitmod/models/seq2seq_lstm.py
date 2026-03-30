@@ -694,7 +694,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         return accuracy_score(y_true_flat[mask], y_pred_flat[mask])
     
     @staticmethod
@@ -705,10 +705,10 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
+            return np.nan
         return balanced_accuracy_score(y_true_flat[mask], y_pred_flat[mask])
     
     @staticmethod
@@ -719,11 +719,11 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes for F1
-            return 0.0
-        return f1_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
+            return np.nan
+        return f1_score(y_true_flat[mask], y_pred_flat[mask], pos_label=1, zero_division=0)
 
     @staticmethod
     def eval_masked_roc_auc_score(y_true, y_pred_proba, y_mask_val=-1):
@@ -735,10 +735,10 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_proba_flat = y_pred_proba_pos.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.5
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes for AUC
-            return 0.5
+            return np.nan
         return roc_auc_score(y_true_flat[mask], y_pred_proba_flat[mask])
 
     @staticmethod
@@ -763,7 +763,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         mask = y_true_flat != y_mask_val
         
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
             
         # Get valid data
         y_true_valid = y_true_flat[mask]
@@ -772,7 +772,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         # Check if we have at least 2 classes
         valid_classes = np.unique(y_true_valid)
         if len(valid_classes) < 2:
-            return 0.0
+            return np.nan
         
         # Binary classification - use positive class probability
         return average_precision_score(y_true_valid, y_pred_proba_valid)
@@ -785,11 +785,11 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        return precision_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
+            return np.nan
+        return precision_score(y_true_flat[mask], y_pred_flat[mask], pos_label=1, zero_division=0)
 
     @staticmethod
     def eval_masked_recall_score(y_true, y_pred, y_mask_val=-1):
@@ -799,11 +799,11 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
-        return recall_score(y_true_flat[mask], y_pred_flat[mask], average='weighted')
+            return np.nan
+        return recall_score(y_true_flat[mask], y_pred_flat[mask], pos_label=1, zero_division=0)
     
     @staticmethod
     def eval_masked_specificity_score(y_true, y_pred, y_mask_val=-1):
@@ -813,16 +813,16 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_pred_flat = y_pred.ravel()
         mask = y_true_flat != y_mask_val
         if np.sum(mask) == 0:  # No valid predictions
-            return 0.0
+            return np.nan
         valid_classes = np.unique(y_true_flat[mask])
         if len(valid_classes) < 2:  # Need at least 2 classes
-            return 0.0
+            return np.nan
         # Calculate specificity = TN / (TN + FP)
         cm = confusion_matrix(y_true_flat[mask], y_pred_flat[mask])
         if cm.shape == (2, 2):
             tn, fp, fn, tp = cm.ravel()
-            return tn / (tn + fp) if (tn + fp) > 0 else 0.0
-        return 0.0
+            return tn / (tn + fp) if (tn + fp) > 0 else np.nan
+        return np.nan
 
     @staticmethod
     def eval_masked_confusion_matrix(y_true, y_pred, y_mask_val=-1):
@@ -934,8 +934,8 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         y_mask_val = self.mask_values.get('y_mask', 2)
         
         # Initialize tracking variables
-        best_threshold = 0.5
-        best_score = 0.0
+        best_threshold = np.nan
+        best_score = np.nan
         all_scores = []
         detailed_evaluations = [] if store_details else None
         
@@ -990,17 +990,17 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                     })
                 
                 # Track best score and threshold
-                if score > best_score:
+                if not np.isnan(score) and (np.isnan(best_score) or score > best_score):
                     best_score = score
                     best_threshold = threshold
                     
             except Exception as e:
                 # Handle any computation errors gracefully
-                all_scores.append(0.0)
+                all_scores.append(np.nan)
                 if store_details:
                     detailed_evaluations.append({
                         'threshold': threshold,
-                        'score': 0.0,
+                        'score': np.nan,
                         'metric': metric_name,
                         'n_valid_samples': 0,
                         'error': str(e)
@@ -1018,7 +1018,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                 'all_scores': all_scores,
                 'thresholds': thresholds.tolist(),
                 'detailed_evaluations': detailed_evaluations,
-                'best_threshold_index': np.argmax(all_scores) if all_scores else 0,
+                'best_threshold_index': int(np.nanargmax(all_scores)) if all_scores and np.any(~np.isnan(all_scores)) else 0,
                 'metric_info': {
                     'func': metric_func,
                     'requires_both_classes': True if metric_name != 'accuracy' else False,
@@ -1085,7 +1085,7 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                     results[metric_name] = {
                         'optimal_threshold': optimal_threshold,
                         'optimal_score': optimal_score,
-                        'all_scores': detailed_results if isinstance(detailed_results, list) else [0.0] * n_thresholds
+                        'all_scores': detailed_results if isinstance(detailed_results, list) else [np.nan] * n_thresholds
                     }
                 
                 if verbose:
@@ -1094,9 +1094,9 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
             except Exception as e:
                 logging.warning(f"Failed to tune threshold for {metric_name}: {e}")
                 default_result = {
-                    'optimal_threshold': 0.5,
-                    'optimal_score': 0.0,
-                    'all_scores': [0.0] * n_thresholds
+                    'optimal_threshold': np.nan,
+                    'optimal_score': np.nan,
+                    'all_scores': [np.nan] * n_thresholds
                 }
                 if store_details:
                     default_result['detailed_evaluations'] = []
@@ -1126,8 +1126,8 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                 
         except Exception as e:
             logging.warning(f"Failed to compute AUC scores: {e}")
-            results['roc_auc'] = {'optimal_threshold': None, 'optimal_score': 0.5, 'all_scores': []}
-            results['pr_auc'] = {'optimal_threshold': None, 'optimal_score': 0.0, 'all_scores': []}
+            results['roc_auc'] = {'optimal_threshold': None, 'optimal_score': np.nan, 'all_scores': []}
+            results['pr_auc'] = {'optimal_threshold': None, 'optimal_score': np.nan, 'all_scores': []}
         
         # Add summary statistics if storing details
         if store_details and all_detailed_evaluations:
