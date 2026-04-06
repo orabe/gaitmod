@@ -8,7 +8,6 @@ What this script does:
 - For each successful parameter combination, computes PCA on the selected feature matrix
   and saves one overview figure:
   1) PC1 vs PC2 scatter colored by class labels.
-  2) Explained-variance scree plot (individual + cumulative).
 
 Required input:
 - HCTSA data root directory (default: `data/hctsa`).
@@ -47,8 +46,8 @@ if _MATRIX_SPEC is None or _MATRIX_SPEC.loader is None:
 _MATRIX_MODULE = importlib.util.module_from_spec(_MATRIX_SPEC)
 _MATRIX_SPEC.loader.exec_module(_MATRIX_MODULE)
 
-_PCA_MODULE_PATH = Path(__file__).with_name("10_plot_feature_matrix_pca.py")
-_PCA_SPEC = importlib.util.spec_from_file_location("stats_plot_feature_matrix_pca", _PCA_MODULE_PATH)
+_PCA_MODULE_PATH = Path(__file__).with_name("10_plot_pca.py")
+_PCA_SPEC = importlib.util.spec_from_file_location("stats_plot_pca", _PCA_MODULE_PATH)
 if _PCA_SPEC is None or _PCA_SPEC.loader is None:
     raise ImportError(f"Failed to load module from {_PCA_MODULE_PATH}")
 _PCA_MODULE = importlib.util.module_from_spec(_PCA_SPEC)
@@ -176,7 +175,7 @@ def main() -> None:
     # PCA / preprocessing configuration
     normalize_0_1 = True
     normalization_method = "robust_sigmoid"  # "robust_sigmoid" | "minmax"
-    pca_max_components = 20
+    pca_max_components = 10
 
     output_dir = Path("results/hctsa_segments_datamatrix")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,14 +261,8 @@ def main() -> None:
             else:
                 x_plot = x_sel
 
-            base_name = f"{selection_method}_var{var_thr}_nfeat{n_feat}_ct{ct}_selected_pca_overview"
-            title = (
-                "PCA After Feature Selection | "
-                f"method={selection_method}, variance_threshold={var_thr}, "
-                f"correlation_threshold={ct}, top_k={n_feat}, selected={operations_sel.shape[0]}"
-            )
-            if normalize_0_1:
-                title += f" | {normalization_method}01"
+            base_name = f"pca_after_selection_{selection_method}_var{var_thr}_nfeat{n_feat}_ct{ct}"
+            title = ""
 
             out_path = output_dir / f"{base_name}.png"
             plot_pca_overview(

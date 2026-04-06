@@ -246,8 +246,8 @@ def main() -> None:
     # selection_methods = ["anova", "mutual_info", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta"]
     variance_thresholds = [0.0001]
     selection_methods = ["mann_whitney"] # roc_auc
-    correlation_thresholds = [0.7] #[0.01, 0.3, 0.5, 0.7, 0.9]
-    n_features_list = [100]
+    correlation_thresholds = [0.3] #[0.01, 0.3, 0.5, 0.7, 0.9]
+    n_features_list = [20]
     
     data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"

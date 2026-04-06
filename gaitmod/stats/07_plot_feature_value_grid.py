@@ -487,26 +487,20 @@ def _plot_joyplots_by_depth(
             ax.tick_params(axis="x", labelsize=11)
             _remove_spines(ax)
 
-    fig.suptitle(
-        f"Joyplots of Feature-Mean Density per Class (normalized KDE; overlay; depth: {depth_label})",
-        fontsize=16,
-        fontweight="bold",
-        y=1.01,
-    )
     legend_handles = [
         Patch(facecolor=CLASS_COLOR_MAP[0], edgecolor=outline_colors[0], label=CLASS_NAME_MAP[0]),
         Patch(facecolor=CLASS_COLOR_MAP[1], edgecolor=outline_colors[1], label=CLASS_NAME_MAP[1]),
     ]
     fig.legend(
         handles=legend_handles,
-        loc="center left",
-        ncol=1,
+        loc="upper center",
+        ncol=2,
         frameon=True,
-        bbox_to_anchor=(0.955, 0.5),
+        bbox_to_anchor=(0.5, 0.995),
         fontsize=12,
         edgecolor="#D0D0D0",
     )
-    fig.tight_layout(rect=[0, 0, 0.95, 0.985])
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
 
     nfeat_tag = "-".join(str(v) for v in n_features_list)
     joyplot_path = output_dir / (

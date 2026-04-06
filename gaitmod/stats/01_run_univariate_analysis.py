@@ -13,14 +13,13 @@ Required input:
 - HCTSA segment cache directory (default: `data/hctsa_segments`).
 - Channel selection summary JSON (default: `results/channel_selection_summary.json`).
 - Optional configuration via constants in this file (normalization, thresholds,
-  top-k, output directory, selection method labels).
+  output directory, selection method labels).
 
 Generated output:
 - `analysis_results.csv` with per-feature statistics/metrics.
 - `analysis_summary.json` with run metadata and aggregate summary.
 - `univariate_decision_rationale.json` with selected method + rationale.
-- Visualization files under `.../univariate_analysis/` (combined stats, top-k,
-  distributions, metric intersections, ROC/PR curves, correlation matrix).
+- `.../univariate_analysis/univariate_analysis_distributions.png`.
 """
 
 import json
@@ -50,7 +49,6 @@ from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache
 DEFAULT_OUTPUT_DIR = Path("results") / "class_stats"
 DEFAULT_FEATURE_NORMALIZATION = True
 DEFAULT_CLIP_PERCENTILES = (1, 99)
-DEFAULT_TOP_FEATURES_FOR_PLOTS = 100
 DEFAULT_VERBOSE = 1
 DEFAULT_NORMALITY_ALPHA = 0.05
 DEFAULT_VARIANCE_ALPHA = 0.05
@@ -67,8 +65,7 @@ DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
 MAX_FEATURE_NAME_LENGTH = 48
 THRESHOLD_LINE_WIDTH = 2.0
 THRESHOLD_LINE_COLOR = 'black'
-# DEFAULT_COMBINED_FIGURE_METRIC = 'abs_mean_diff'
-DEFAULT_COMBINED_FIGURE_METRIC = 'univ_roc_auc'
+DIST_KDE_BW_ADJUST = 0.6
 ASCENDING_METRICS = {
     'univ_anova_p',
     'univ_mann_whitney_p',
@@ -675,45 +672,89 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
         data_1 = series_dict[1]
         
         if len(data_0) >= 3 and len(data_1) >= 3:
-            # Create KDEs
-            kde_0 = gaussian_kde(data_0)
-            kde_1 = gaussian_kde(data_1)
-            
-            # Create evaluation grid
-            x_min = min(data_0.min(), data_1.min())
-            x_max = max(data_0.max(), data_1.max())
-            x_grid = np.linspace(x_min, x_max, 1000)
-            
-            # Evaluate PDFs
-            pdf_0 = kde_0(x_grid)
-            pdf_1 = kde_1(x_grid)
-            
-            # Compute overlap
-            overlap = np.minimum(pdf_0, pdf_1)
-            overlap_area = np.trapz(overlap, x_grid)
-            
-            # Plot KDE curves
-            ax[1].plot(
-                x_grid,
-                pdf_0,
-                label='Steady-State Walking',
-                linewidth=2,
-                color=class_colors['Steady-State Walking'],
-            )
-            ax[1].plot(
-                x_grid,
-                pdf_1,
-                label='Gait modulation',
-                linewidth=2,
-                color=class_colors['Gait modulation'],
-            )
-            
-            # Fill overlap region
-            ax[1].fill_between(x_grid, overlap, alpha=0.22, color='gray', label=f'Overlap: {overlap_area:.3f}')
-            
-            ax[1].legend()
-            if log_kde_overlap:
-                logging.info("  KDE overlap (mean-class density): %.4f", overlap_area)
+            # Create KDEs with a robust fallback for near-constant/singular covariance cases.
+            kde_ok = True
+            try:
+                kde_0 = gaussian_kde(data_0)
+                kde_1 = gaussian_kde(data_1)
+            except Exception:
+                # Retry with tiny deterministic jitter to avoid singular covariance.
+                rng = np.random.default_rng(42)
+                std0 = float(np.nanstd(data_0))
+                std1 = float(np.nanstd(data_1))
+                j0 = max(std0, 1.0) * 1e-6
+                j1 = max(std1, 1.0) * 1e-6
+                try:
+                    kde_0 = gaussian_kde(data_0 + rng.normal(0.0, j0, size=len(data_0)))
+                    kde_1 = gaussian_kde(data_1 + rng.normal(0.0, j1, size=len(data_1)))
+                except Exception:
+                    kde_ok = False
+
+            if kde_ok:
+                # Create evaluation grid
+                x_min = min(data_0.min(), data_1.min())
+                x_max = max(data_0.max(), data_1.max())
+                if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+                    x_max = x_min + 1.0
+                x_grid = np.linspace(x_min, x_max, 1000)
+
+                # Evaluate PDFs
+                pdf_0 = kde_0(x_grid)
+                pdf_1 = kde_1(x_grid)
+
+                # Compute overlap
+                overlap = np.minimum(pdf_0, pdf_1)
+                overlap_area = np.trapz(overlap, x_grid)
+
+                # Plot KDE curves
+                ax[1].plot(
+                    x_grid,
+                    pdf_0,
+                    label='Steady-State Walking',
+                    linewidth=2,
+                    color=class_colors['Steady-State Walking'],
+                )
+                ax[1].plot(
+                    x_grid,
+                    pdf_1,
+                    label='Gait modulation',
+                    linewidth=2,
+                    color=class_colors['Gait modulation'],
+                )
+
+                # Fill overlap region
+                ax[1].fill_between(x_grid, overlap, alpha=0.22, color='gray', label=f'Overlap: {overlap_area:.3f}')
+                ax[1].legend()
+                if log_kde_overlap:
+                    logging.info("  KDE overlap (mean-class density): %.4f", overlap_area)
+            else:
+                # Final fallback: step-density histograms (always stable).
+                logging.warning(
+                    "KDE failed due to singular covariance; using histogram-density fallback for overlap panel."
+                )
+                sns.histplot(
+                    data_0,
+                    stat='density',
+                    bins=30,
+                    element='step',
+                    fill=False,
+                    linewidth=2,
+                    color=class_colors['Steady-State Walking'],
+                    label='Steady-State Walking',
+                    ax=ax[1],
+                )
+                sns.histplot(
+                    data_1,
+                    stat='density',
+                    bins=30,
+                    element='step',
+                    fill=False,
+                    linewidth=2,
+                    color=class_colors['Gait modulation'],
+                    label='Gait modulation',
+                    ax=ax[1],
+                )
+                ax[1].legend()
         else:
             # Fallback to seaborn if not enough data
             for cls in sorted(stats.keys()):
@@ -769,14 +810,19 @@ def create_visualizations(stats, summary_df, output_dir: Path, base_name: str,
     return combined_path
 
 
-def run_univariate_feature_analysis(X, operations, labels, config, verbose=1):
-    X_filtered, operations_filtered, valid_mask = filter_features(
-        X,
-        operations_df=operations,
-        variance_threshold=config.variance_threshold,
-        missing_threshold=config.missing_threshold,
-        verbose=verbose
-    )
+def run_univariate_feature_analysis(X, operations, labels, config, verbose=1, skip_filtering: bool = False):
+    if skip_filtering:
+        X_filtered = X
+        operations_filtered = operations
+        valid_mask = np.ones(X.shape[1], dtype=bool)
+    else:
+        X_filtered, operations_filtered, valid_mask = filter_features(
+            X,
+            operations_df=operations,
+            variance_threshold=config.variance_threshold,
+            missing_threshold=config.missing_threshold,
+            verbose=verbose
+        )
 
     if verbose >= 1:
         logging.info(f"[UNIVARIATE] Running statistical tests on shape={X_filtered.shape}")
@@ -947,62 +993,155 @@ def create_topk_figure(df, top_k, output_path, title_suffix: str = ""):
 
 def create_distribution_figure(df, output_path, baseline_values=None,
                                threshold_values=None, title_suffix: str = ""):
-    cols = 3
-    rows = max(1, ceil(len(METRICS) / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 4 * rows))
-    axes = np.asarray(axes).flatten()
+    # Publication-style defaults for this figure only.
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
 
-    for ax in axes:
-        ax.axis('off')
+    metric_cfg = {m['column']: m for m in METRICS}
 
-    for idx, metric_cfg in enumerate(METRICS):
-        ax = axes[idx]
-        column = metric_cfg['column']
-        title = metric_cfg['title']
-        series = df[column].dropna()
-        ax.hist(series, bins=40, color=metric_cfg.get('color', '#1f77b4'), alpha=0.85)
-        ax.set_title(f"{title} Distribution")
-        ax.set_xlabel(metric_cfg.get('axis_label', 'Score'))
-        ax.set_ylabel('Count')
-        ax.grid(alpha=0.3)
-        ax.axis('on')
-        legend_handles = []
-        legend_labels = []
+    # Group metrics by comparable scale/interpretation.
+    grouped_panels = [
+        {
+            'letter': 'A',
+            'title': 'p-value Distributions',
+            'columns': ['univ_anova_p', 'univ_mann_whitney_p', 'univ_brunner_munzel_p'],
+            'xlabel': 'p-value',
+            'xlim': (0.0, 1.0),
+            'bins': 50
+        },
+        {
+            'letter': 'B',
+            'title': 'AUC Distributions',
+            'columns': ['univ_roc_auc', 'univ_pr_auc'],
+            'xlabel': 'Score',
+            'xlim': None,
+            'bins': 45
+        },
+        {
+            'letter': 'C',
+            'title': 'Mutual Information Distribution',
+            'columns': ['univ_mutual_info'],
+            'xlabel': 'Score',
+            'xlim': None,
+            'bins': 45
+        },
+        {
+            'letter': 'D',
+            'title': "Cliff's Delta Distribution",
+            'columns': ['univ_cliffs_delta'],
+            'xlabel': 'Score',
+            'xlim': None,
+            'bins': 45
+        },
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    axes = axes.flatten()
+
+    def _fmt_ref_value(value: float) -> str:
+        # Keep reference labels concise for publication (e.g., 0.341 -> 0.34, 0.00 -> 0).
+        return f"{float(value):.2f}".rstrip('0').rstrip('.')
+
+    for ax, panel in zip(axes, grouped_panels):
+        seen_baselines = set()
+        seen_thresholds = set()
+        for col in panel['columns']:
+            if col not in df:
+                continue
+            series = df[col].dropna()
+            if series.empty:
+                continue
+            cfg = metric_cfg.get(col, {})
+            color = cfg.get('color', '#1f77b4')
+            label = cfg.get('title', col)
+            finite = series[np.isfinite(series)]
+            ax.hist(
+                finite,
+                bins=panel['bins'],
+                density=False,
+                histtype='step',
+                linewidth=2.0,
+                color=color,
+                alpha=0.95,
+                label=label
+            )
+
+        # Baselines and thresholds relevant to this grouped panel.
         if baseline_values:
-            baseline = baseline_values.get(column)
-            if baseline is not None and np.isfinite(baseline):
-                baseline_line = ax.axvline(
-                    baseline,
-                    color=THRESHOLD_LINE_COLOR,
-                    linestyle=':',
-                    linewidth=THRESHOLD_LINE_WIDTH
-                )
-                legend_handles.append(baseline_line)
-                legend_labels.append(f"Baseline = {baseline:.3f}")
+            for col in panel['columns']:
+                baseline = baseline_values.get(col)
+                if baseline is not None and np.isfinite(baseline):
+                    baseline_key = float(baseline)
+                    if baseline_key in seen_baselines:
+                        label = None
+                    else:
+                        seen_baselines.add(baseline_key)
+                        label = (
+                            f"{metric_cfg.get(col, {}).get('title', col)} baseline = "
+                            f"{_fmt_ref_value(baseline)}"
+                        )
+                    ax.axvline(
+                        baseline,
+                        color=THRESHOLD_LINE_COLOR,
+                        linestyle=':',
+                        linewidth=1.8,
+                        alpha=0.9,
+                        label=label
+                    )
         if threshold_values:
-            threshold = threshold_values.get(column)
-            if threshold is not None and np.isfinite(threshold):
-                threshold_line = ax.axvline(
-                    threshold,
-                    color=THRESHOLD_LINE_COLOR,
-                    linestyle='--',
-                    linewidth=THRESHOLD_LINE_WIDTH
-                )
-                legend_handles.append(threshold_line)
-                legend_labels.append(f"Threshold = {threshold:.3f}")
-        if legend_handles:
-            ax.legend(legend_handles, legend_labels, fontsize=8)
+            for col in panel['columns']:
+                threshold = threshold_values.get(col)
+                if threshold is not None and np.isfinite(threshold):
+                    threshold_key = float(threshold)
+                    if threshold_key in seen_thresholds:
+                        label = None
+                    else:
+                        seen_thresholds.add(threshold_key)
+                        label = f"Threshold = {_fmt_ref_value(threshold)}"
+                    ax.axvline(
+                        threshold,
+                        color=THRESHOLD_LINE_COLOR,
+                        linestyle='--',
+                        linewidth=1.8,
+                        alpha=0.9,
+                        label=label
+                    )
 
-    for idx in range(len(METRICS), len(axes)):
-        axes[idx].axis('off')
+        ax.set_title(panel['title'], fontsize=12, fontweight='bold', loc='left', x=0.06)
+        ax.set_xlabel(panel['xlabel'], fontsize=11)
+        ax.set_ylabel('Count', fontsize=11)
+        if panel['xlim'] is not None:
+            ax.set_xlim(*panel['xlim'])
+        if panel['letter'] == 'C':
+            # Keep MI axis labels concise for publication readability.
+            ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.3f}"))
+        ax.grid(axis='y', linestyle='--', alpha=0.35, linewidth=0.8)
+        ax.tick_params(labelsize=10)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.text(
+            -0.12,
+            1.06,
+            panel['letter'],
+            transform=ax.transAxes,
+            fontsize=13,
+            fontweight='bold',
+            va='top',
+            ha='left'
+        )
+        if panel['letter'] == 'B':
+            ax.legend(
+                fontsize=8,
+                frameon=True,
+                loc='upper center',
+                bbox_to_anchor=(0.5, 0.98),
+                ncol=2
+            )
+        else:
+            ax.legend(fontsize=8, frameon=True, loc='best')
 
-    scope_label = describe_feature_scope(len(df), len(df))
-    title = f'Score Distributions per Univariate Metric ({scope_label})'
-    if title_suffix:
-        title = f"{title} – {title_suffix}"
-    fig.suptitle(title, fontsize=16)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(output_path, dpi=200)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=600, bbox_inches='tight')
     return output_path
 
 
@@ -1249,8 +1388,6 @@ def main():
         verbose=DEFAULT_VERBOSE,
         feature_normalization=DEFAULT_FEATURE_NORMALIZATION,
         clip_percentiles=DEFAULT_CLIP_PERCENTILES,
-        top_features_for_plots=DEFAULT_TOP_FEATURES_FOR_PLOTS,
-        combined_figure_metric=DEFAULT_COMBINED_FIGURE_METRIC,
         normality_alpha=DEFAULT_NORMALITY_ALPHA,
         variance_alpha=DEFAULT_VARIANCE_ALPHA,
         mean_diff_threshold=DEFAULT_MEAN_DIFF_THRESHOLD,
@@ -1288,18 +1425,29 @@ def main():
         logging.info("[STATS] Applying per-feature z-score normalization")
         X = normalize_features(X)
 
+    logging.info(
+        "[STEP] Applying feature filter before class statistics "
+        "(variance_threshold=%s, missing_threshold=%s)",
+        args.univariate.variance_threshold,
+        args.univariate.missing_threshold
+    )
+    X, operations, _ = filter_features(
+        X,
+        operations_df=operations,
+        variance_threshold=args.univariate.variance_threshold,
+        missing_threshold=args.univariate.missing_threshold,
+        verbose=args.verbose
+    )
+
     segment_type_label = infer_segment_type_label(args.segment_cache_dir)
     channel_selection_label = format_channel_selection_label(args.channel_selection_method)
     title_suffix = f"{segment_type_label} | {channel_selection_label}"
-    combined_top_k = args.top_features_for_plots
-    if "hctsa" not in segment_type_label.lower():
-        combined_top_k = None
     segment_dir = sanitize_path_component(segment_type_label)
     channel_dir = sanitize_path_component(channel_selection_label)
-    topk_label = combined_top_k if combined_top_k not in (None, 0) else 'all'
-    metric_dir = sanitize_path_component(args.combined_figure_metric)
-    topk_dir = f"topk_{topk_label}_{metric_dir}"
-    run_output_dir = Path(args.output_dir) / segment_dir / channel_dir / topk_dir
+    var_tag = f"{args.univariate.variance_threshold:g}"
+    miss_tag = f"{args.univariate.missing_threshold:g}"
+    run_tag = sanitize_path_component(f"univariate_fullspace_var_{var_tag}_miss_{miss_tag}")
+    run_output_dir = Path(args.output_dir) / segment_dir / channel_dir / run_tag
     run_output_dir.mkdir(parents=True, exist_ok=True)
     vis_dir = run_output_dir / "univariate_analysis"
     vis_dir.mkdir(parents=True, exist_ok=True)
@@ -1313,21 +1461,8 @@ def main():
     stats, summary_df = compute_class_statistics(X, labels, feature_names=feature_names)
 
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    filename_prefix = "class_stats"
     run_output_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.info("[STEP] Creating class statistics visualizations")
-    combined_path = create_visualizations(
-        stats,
-        summary_df,
-        vis_dir,
-        filename_prefix,
-        clip_percentiles=args.clip_percentiles,
-        top_k=combined_top_k,
-        title_suffix=title_suffix,
-        total_features=len(summary_df),
-        top_metric=args.combined_figure_metric
-    )
     logging.info("[STEP] Computing summary metrics")
     summary_stats = compute_summary_metrics(
         summary_df,
@@ -1354,18 +1489,12 @@ def main():
         operations,
         labels,
         args.univariate,
-        verbose=args.verbose
+        verbose=args.verbose,
+        skip_filtering=True
     )
 
     logging.info("[STEP] Generating univariate visualizations")
-    topk_fig = vis_dir / "univariate_analysis_topk.png"
     dist_fig = vis_dir / "univariate_analysis_distributions.png"
-    inter_fig = vis_dir / "univariate_analysis_intersection.png"
-    roc_curve_fig = vis_dir / "univariate_analysis_roc_curves.png"
-    pr_curve_fig = vis_dir / "univariate_analysis_pr_curves.png"
-    pr_curve_worst_fig = vis_dir / "univariate_analysis_pr_curves_worst.png"
-    corr_fig = vis_dir / "univariate_analysis_correlation_matrix.png"
-    create_topk_figure(univariate_df, DEFAULT_VIS_TOP_K, topk_fig, title_suffix=title_suffix)
     baseline_values = {
         'univ_mutual_info': 0.0,
         'univ_cliffs_delta': 0.0,
@@ -1384,18 +1513,6 @@ def main():
         threshold_values=threshold_values,
         title_suffix=title_suffix
     )
-    create_intersection_figure(univariate_df, DEFAULT_VIS_TOP_K, inter_fig, title_suffix=title_suffix)
-    create_curve_figure(X, labels, univariate_df, 'roc_rank', DEFAULT_VIS_TOP_K, 'roc', roc_curve_fig, title_suffix=title_suffix)
-    create_curve_figure(
-        X, labels, univariate_df, 'pr_rank', DEFAULT_VIS_TOP_K, 'pr', pr_curve_fig,
-        baseline=positive_prevalence, title_suffix=title_suffix
-    )
-    create_worst_curve_figure(
-        X, labels, univariate_df, 'pr_rank', DEFAULT_VIS_WORST_K, 'pr', pr_curve_worst_fig,
-        baseline=positive_prevalence, title_suffix=title_suffix
-    )
-    create_correlation_matrix(X, univariate_df, 'mi_rank', DEFAULT_VIS_TOP_K, corr_fig, title_suffix=title_suffix)
-    print_univariate_summary(univariate_df, DEFAULT_VIS_TOP_K)
 
     univariate_for_merge = univariate_df.drop(columns=['feature_name_display'], errors='ignore')
     merged_df = summary_df.merge(univariate_for_merge, on=['feature_index', 'feature_name'], how='left')
@@ -1406,7 +1523,6 @@ def main():
         'timestamp': timestamp,
         'feature_normalization': args.feature_normalization,
         'clip_percentiles': args.clip_percentiles,
-        'top_features_for_plots': args.top_features_for_plots,
         'class_counts': {str(cls): stats[cls]['count'] for cls in stats},
         'summary_statistics': summary_stats,
         'univariate_decision': {
@@ -1420,19 +1536,11 @@ def main():
             'channel_selection_method': args.channel_selection_method,
             'segment_type_label': segment_type_label,
             'channel_selection_label': channel_selection_label,
-            'combined_figure_metric': args.combined_figure_metric,
             'subject_channel_map': subject_channel_map
         },
         'output_directory': str(run_output_dir),
         'visualizations': {
-            'combined': str(combined_path),
-            'topk': str(topk_fig),
             'distributions': str(dist_fig),
-            'intersection': str(inter_fig),
-            'roc_curves': str(roc_curve_fig),
-            'pr_curves': str(pr_curve_fig),
-            'pr_curves_worst': str(pr_curve_worst_fig),
-            'correlation_matrix': str(corr_fig),
         }
     }
 
@@ -1442,14 +1550,7 @@ def main():
 
     logging.info(f"[STATS] Saved per-feature CSV to {per_feature_path}")
     logging.info(f"[STATS] Saved summary JSON to {summary_json_path}")
-    logging.info(f"[STATS] Saved combined visualization to {combined_path}")
-    logging.info(f"[UNIVARIATE] Saved top-k visualization to {topk_fig}")
     logging.info(f"[UNIVARIATE] Saved distribution visualization to {dist_fig}")
-    logging.info(f"[UNIVARIATE] Saved intersection visualization to {inter_fig}")
-    logging.info(f"[UNIVARIATE] Saved ROC curve visualization to {roc_curve_fig}")
-    logging.info(f"[UNIVARIATE] Saved PR curve visualization to {pr_curve_fig}")
-    logging.info(f"[UNIVARIATE] Saved worst PR curve visualization to {pr_curve_worst_fig}")
-    logging.info(f"[UNIVARIATE] Saved correlation matrix visualization to {corr_fig}")
     logging.info(f"[STATS] Final analysis complete")
 
 

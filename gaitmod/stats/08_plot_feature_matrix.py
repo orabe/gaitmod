@@ -17,12 +17,12 @@ from gaitmod.preprocessing.hctsa_segments import HCTSASegmentCache, parse_segmen
 
 logger = logging.getLogger(__name__)
 
-TITLE_FONTSIZE = 16
-AXIS_LABEL_FONTSIZE = 16
-TICK_LABEL_FONTSIZE = 10
-LEGEND_FONTSIZE = 10
-LEGEND_TITLE_FONTSIZE = 11
-CBAR_LABEL_FONTSIZE = 12
+TITLE_FONTSIZE = 18
+AXIS_LABEL_FONTSIZE = 32
+TICK_LABEL_FONTSIZE = 12
+LEGEND_FONTSIZE = 12
+LEGEND_TITLE_FONTSIZE = 13
+CBAR_LABEL_FONTSIZE = 14
 
 DEFAULT_GROUP_COLORS_HEX = ["#298c8c", "#f1a226"]
 
@@ -373,6 +373,8 @@ def plot_data_matrix(
     show_group_strip: bool = True,
     show_legend: bool = True,
     show_feature_names: bool = False,
+    figure_size: Optional[Tuple[float, float]] = None,
+    show_colorbar_label: bool = True,
 ):
     row_order = None
     col_order = None
@@ -446,8 +448,11 @@ def plot_data_matrix(
         cmap = base_cmap.copy()
         cmap.set_bad(color="black")
 
-    fig_w = max(10.0, min(22.0, 8.0 + X.shape[1] / 350.0))
-    fig_h = max(6.0, min(18.0, 4.0 + X.shape[0] / 120.0))
+    if figure_size is None:
+        fig_w = max(10.0, min(22.0, 8.0 + X.shape[1] / 350.0))
+        fig_h = max(6.0, min(18.0, 4.0 + X.shape[0] / 120.0))
+    else:
+        fig_w, fig_h = float(figure_size[0]), float(figure_size[1])
     fig = plt.figure(figsize=(fig_w, fig_h))
     ax_group = None
     ax_leg = None
@@ -515,7 +520,8 @@ def plot_data_matrix(
         cb = fig.colorbar(im, cax=ax_cb, ticks=norm.boundaries)
     else:
         cb = fig.colorbar(im, cax=ax_cb)
-    cb.set_label("Feature value", fontsize=CBAR_LABEL_FONTSIZE)
+    if show_colorbar_label:
+        cb.set_label("Feature value", fontsize=CBAR_LABEL_FONTSIZE)
     cb.ax.tick_params(labelsize=TICK_LABEL_FONTSIZE)
 
     if ax_leg is not None:
@@ -547,6 +553,7 @@ def plot_data_matrix_color_groups(
     group_color_map: Optional[Dict[str, Tuple[float, float, float]]] = None,
     discrete_step: Optional[float] = None,
     feature_tick_step: Optional[int] = None,
+    figure_size: Optional[Tuple[float, float]] = None,
 ):
     """
     hctsa-like "colorGroups" visualization:
@@ -671,8 +678,11 @@ def plot_data_matrix_color_groups(
         start += n
         boundaries.append(start)
 
-    fig_w = max(10.0, min(22.0, 8.0 + X.shape[1] / 350.0))
-    fig_h = max(6.0, min(18.0, 4.0 + X.shape[0] / 120.0))
+    if figure_size is None:
+        fig_w = max(10.0, min(22.0, 8.0 + X.shape[1] / 350.0))
+        fig_h = max(6.0, min(18.0, 4.0 + X.shape[0] / 120.0))
+    else:
+        fig_w, fig_h = float(figure_size[0]), float(figure_size[1])
     fig = plt.figure(figsize=(fig_w, fig_h))
 
     # Heatmap + a stacked colorbar column (one per group), aligned exactly to the
@@ -682,8 +692,8 @@ def plot_data_matrix_color_groups(
         nrows=X.shape[0],
         ncols=2,
         figure=fig,
-        width_ratios=[4.8, 0.35],
-        wspace=0.10,
+        width_ratios=[4.8, 0.25],
+        wspace=0.05,
         hspace=0.0,
     )
 
@@ -845,9 +855,9 @@ def plot_data_matrix_color_groups_mixed(
         nrows=len(cb_groups),
         ncols=2,
         figure=fig,
-        width_ratios=[4.8, 0.35],
+        width_ratios=[4.8, 0.25],
         height_ratios=height_ratios,
-        wspace=0.10,
+        wspace=0.05,
         hspace=0.25,
     )
 
@@ -968,18 +978,14 @@ def main() -> int:
     print(f"Dropped features: {n_dropped} (kept {int(X.shape[1])})")
 
     meta = _parse_row_metadata(timeseries_df)
-    title = f"HCTSA segments data matrix (beta-selected channels) | rows={X.shape[0]} cols={X.shape[1]}"
-    if groups:
-        title += f" | groups={','.join(groups)}"
-    if normalize_0_1:
-        title += f" | {normalization_method}01"
+    title = ""
 
     if save_color_groups_figure and normalize_0_1:
         plot_data_matrix_color_groups(
             X,
             meta,
             operations_df,
-            title=title + " | colorGroups",
+            title=title,
             output_path=outdir / "datamatrix_beta_selected_colorGroups.png",
             cluster_rows=bool(cluster_rows),
             cluster_cols=bool(cluster_cols),

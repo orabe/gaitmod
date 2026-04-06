@@ -2,27 +2,21 @@
 """
 Compare nested CV results from multiple runs.
 
-Examples:
-    # Compare two aggregated CSV exports (legacy behavior)
-    python scripts/compare_nested_cv_results.py \
-        --csv logs/run1/summary/nested_cv_results.csv \
-        logs/run2/summary/nested_cv_results.csv \
-        --labels Run1 Run2
+Default usage (no CLI needed):
+    python gaitmod/results_analysis_scripts/compare_nested_cv_results.py
 
-    # Compare two runs directly from refit JSON files
-    python scripts/compare_nested_cv_results.py \
-        --refit-run Run1 "logs/ExpA/PW_SN61/.../refit/*/refit_results.json" "logs/ExpA/PW_EM59/.../refit/*/refit_results.json" \
-        --refit-run Run2 "logs/ExpB/PW_SN61/.../refit/*/refit_results.json" "logs/ExpB/PW_EM59/.../refit/*/refit_results.json"
+Configure behavior by editing the variables in the ``if __name__ == "__main__":`` block.
 """
 
 import argparse
 import glob
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from cycler import cycler
 
 from aggregate_nested_cv_results import collect_refit_results
 
@@ -34,11 +28,173 @@ except OSError:
     except OSError:
         pass
 
+PUBLICATION_DPI = 600
+FANCY_PALETTE = [
+    "#4C78A8",  # cobalt blue
+    "#F58518",  # orange
+    "#54A24B",  # green
+    "#E45756",  # coral red
+    "#72B7B2",  # teal
+    "#B279A2",  # violet
+    "#FF9DA6",  # rose
+    "#9D755D",  # warm brown
+    "#2E91E5",  # bright azure
+    "#00A6A6",  # aqua
+    "#8E6C8A",  # mauve
+    "#F2A104",  # amber
+]
+MODEL_COLOR_MAP = {
+    # Top models: most distinctive colors
+    "InterSeg-CNN-LSTM": "#FF2D55",
+    "IntraSeg-CNN": "#22C55E",
+    "InterSeg-LSTM": "#7B61FF",
+    # Remaining deep models
+    "IntraSeg-MLP": "#2EC4B6",
+    "IntraSeg-LSTM": "#00C2FF",
+    "IntraSeg-MLP-LSTM": "#FF8A65",
+    # Classical ML
+    "LogReg": "#F59E0B",
+    "RF": "#8B5CF6",
+    "XGB": "#E11D48",
+    "SVM": "#14B8A6",
+    # Baseline
+    "Baseline-Dummy": "#6B7280",
+}
+
+
+def apply_publication_style() -> None:
+    """Apply a consistent publication-oriented matplotlib style."""
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["DejaVu Sans", "Arial"],
+            "font.size": 16,
+            "axes.titlesize": 18,
+            "axes.labelsize": 17,
+            "xtick.labelsize": 15,
+            "ytick.labelsize": 15,
+            "legend.fontsize": 14,
+            "figure.titlesize": 18,
+            "axes.linewidth": 1.5,
+            "lines.linewidth": 2.4,
+            "savefig.dpi": PUBLICATION_DPI,
+            "axes.prop_cycle": cycler(color=FANCY_PALETTE),
+        }
+    )
+
+
+def pretty_metric_name(metric: str) -> str:
+    mapping = {
+        "test_f1": "Test F1",
+        "test_tuned_f1": "Test Tuned F1",
+        "test_accuracy": "Test Accuracy",
+        "test_balanced_accuracy": "Test Balanced Accuracy",
+        "test_precision": "Test Precision",
+        "test_recall": "Test Recall",
+        "test_specificity": "Test Specificity",
+        "test_roc_auc": "Test ROC-AUC",
+        "test_pr_auc": "Test PR-AUC",
+    }
+    return mapping.get(metric, metric.replace("_", " ").title())
+
 # Modern color palette - use a professional color scheme
 def get_modern_colors(n):
     """Get a modern, professional color palette."""
-    # Use viridis colormap for professional and colorblind-friendly colors
-    return plt.cm.viridis(np.linspace(0, 0.9, n))  # 0.9 to avoid very light yellow
+    if n <= 0:
+        return np.asarray([])
+    colors = [FANCY_PALETTE[i % len(FANCY_PALETTE)] for i in range(n)]
+    return np.asarray(colors, dtype=object)
+
+
+def get_model_colors(labels: List[str]) -> np.ndarray:
+    """Return deterministic colors for model labels across all figures."""
+    colors: List[str] = []
+    fallback_idx = 0
+    for label in labels:
+        if label in MODEL_COLOR_MAP:
+            colors.append(MODEL_COLOR_MAP[label])
+        else:
+            colors.append(FANCY_PALETTE[fallback_idx % len(FANCY_PALETTE)])
+            fallback_idx += 1
+    return np.asarray(colors, dtype=object)
+
+
+def _find_dummy_index(labels: List[str]) -> Optional[int]:
+    """Find the index of the dummy baseline run by label."""
+    for i, label in enumerate(labels):
+        lname = str(label).lower()
+        if "dummy" in lname or "baseline" in lname:
+            return i
+    return None
+
+
+def _dummy_metric_means(
+    dfs: List[pd.DataFrame],
+    labels: List[str],
+    metrics: List[str],
+) -> Optional[dict]:
+    """Return per-metric mean values for the dummy run (baseline)."""
+    idx = _find_dummy_index(labels)
+    if idx is None:
+        return None
+    df = dfs[idx]
+    out = {}
+    for metric in metrics:
+        if metric in df.columns:
+            vals = pd.to_numeric(df[metric], errors="coerce").dropna().values
+            out[metric] = float(np.mean(vals)) if vals.size > 0 else np.nan
+    return out
+
+
+def _slugify(text: str) -> str:
+    return (
+        str(text)
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace("/", "_")
+    )
+
+
+def _infer_family(label: str) -> str:
+    lname = str(label).lower()
+    if lname.startswith("interseg-"):
+        return "Inter-segment"
+    if lname.startswith("intraseg-"):
+        return "Intra-segment"
+    if "dummy" in lname or "baseline" in lname:
+        return "Baseline"
+    if lname in {"logreg", "rf", "xgb", "svm"}:
+        return "Classical ML"
+    return "Other"
+
+
+def _subset_runs_by_family(
+    dfs: List[pd.DataFrame], labels: List[str], family_name: str
+) -> Tuple[List[pd.DataFrame], List[str]]:
+    out_dfs: List[pd.DataFrame] = []
+    out_labels: List[str] = []
+    for df, label in zip(dfs, labels):
+        if _infer_family(label) == family_name:
+            out_dfs.append(df)
+            out_labels.append(label)
+    return out_dfs, out_labels
+
+
+DEFAULT_METRIC_GROUPS: Dict[str, List[str]] = {
+    "primary": ["test_f1"],
+    "discrimination": ["test_roc_auc", "test_pr_auc", "test_balanced_accuracy"],
+    "operating_point": ["test_precision", "test_recall", "test_specificity", "test_tuned_f1"],
+}
+
+
+DEFAULT_FAMILY_ORDER: List[str] = [
+    "Inter-segment",
+    "Intra-segment",
+    "Classical ML",
+    "Baseline",
+]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare nested CV summary metrics across multiple runs.")
@@ -89,9 +245,7 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
     if not metrics:
         return
     
-    # Set modern style
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    apply_publication_style()
     
     # Create positions with proper spacing between metric groups
     n_metrics = len(metrics)
@@ -110,7 +264,8 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
     ax.set_facecolor('white')
     
     # Use modern colors
-    colors = get_modern_colors(len(dfs))
+    colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
     
     for idx, (df, label) in enumerate(zip(dfs, labels)):
         means = df[metrics].mean()
@@ -135,27 +290,31 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
             capsize=4, capthick=1.5, alpha=0.6
         )
         
-        # Annotate bars with values
-        for i, bar in enumerate(bars):
-            mean = means.iloc[i]
-            std = stds.iloc[i]
-            height = bar.get_height()
-            
-            # Only show text if bar is tall enough
-            if height > 0.15:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    height / 2,
-                    f"{mean:.2f}±{std:.2f}",
-                    ha="center", va="center",
-                    fontsize=9, fontweight='bold',
-                    rotation=90, color='white'
-                )
+        # No in-bar text to keep publication figure uncluttered.
+
+    if dummy_means is not None:
+        baseline_x = group_positions + group_width / 2 - bar_width / 2
+        baseline_y = np.array([dummy_means.get(m, np.nan) for m in metrics], dtype=float)
+        ax.plot(
+            baseline_x,
+            baseline_y,
+            linestyle="--",
+            color="black",
+            linewidth=2.0,
+            label="Dummy baseline mean",
+            zorder=5,
+        )
     
     # Set x-axis ticks at the center of each metric group
     ax.set_xticks(group_positions + group_width / 2 - bar_width / 2)
-    ax.set_xticklabels(metrics, rotation=45, ha="right", fontsize=11, fontweight='medium')
-    ax.set_ylabel("Score", fontsize=13, fontweight='bold')
+    ax.set_xticklabels(
+        [pretty_metric_name(m) for m in metrics],
+        rotation=45,
+        ha="right",
+        fontsize=15,
+        fontweight='medium',
+    )
+    ax.set_ylabel("Score", fontsize=18, fontweight='bold')
     ax.set_ylim(0, 1.05)
     
     # Modern grid with horizontal lines only
@@ -172,25 +331,24 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
     legend = ax.legend(
         loc="upper left", bbox_to_anchor=(1.02, 1),
         frameon=True, fancybox=False, shadow=False,
-        fontsize=11, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=12  # Added title
+        fontsize=15, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=16  # Added title
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor('none')
     
     ax.set_title(
         "Model Performance Across Subjects (Mean ± Std)", 
-        fontsize=15, fontweight='bold', pad=20
+        fontsize=19, fontweight='bold', pad=20
     )
     
     fig.tight_layout(rect=[0, 0, 0.88, 1])
-    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
     """For each metric, plot barplots for each subject, comparing all runs."""
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    apply_publication_style()
     
     subjects = dfs[0]["test_subject_name"].tolist()
     n_metrics = len(metrics)
@@ -215,7 +373,8 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
     # Calculate positions for each subject group
     group_positions = np.arange(n_subjects) * (group_width + group_spacing)
     
-    colors = get_modern_colors(len(dfs))
+    colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
     
     for i, metric in enumerate(metrics):
         ax = axes[i]
@@ -238,27 +397,29 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
                 align='edge'  # Align to edge for precise positioning
             )
             
-            for bar, value in zip(bars, values):
-                height = bar.get_height()
-                if height > 0.15:
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        height / 2,
-                        f"{value:.2f}",
-                        ha="center", va="center",
-                        rotation=90, fontsize=9,
-                        fontweight='bold', color='white'
-                    )
+            # No in-bar text to keep publication figure uncluttered.
+
+        if dummy_means is not None and metric in dummy_means and not np.isnan(dummy_means[metric]):
+            baseline_label = "Dummy baseline mean" if i == 0 else "_nolegend_"
+            ax.axhline(
+                y=float(dummy_means[metric]),
+                linestyle='--',
+                color='black',
+                linewidth=1.8,
+                alpha=0.9,
+                label=baseline_label,
+                zorder=4,
+            )
         
         if i % n_cols == 0:
-            ax.set_ylabel("Score", fontsize=12, fontweight='bold')
+            ax.set_ylabel("Score", fontsize=17, fontweight='bold')
         
-        ax.set_title(metric, fontsize=13, fontweight='bold', pad=10)
+        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
         ax.set_ylim(0, 1.05)
         
         # Set x-axis ticks at the center of each subject group
         ax.set_xticks(group_positions + group_width / 2 - bar_width / 2)
-        ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=10)
+        ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=14)
         
         # Modern grid with horizontal lines only
         ax.grid(axis="both", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
@@ -281,18 +442,14 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
             handles, legend_labels,
             loc="center left", bbox_to_anchor=(0.91, 0.5),
             frameon=True, fancybox=False, shadow=False,
-            fontsize=11, edgecolor='black', framealpha=0,
-            title='Models', title_fontsize=12  # Added title
+            fontsize=15, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=16  # Added title
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor('none')
     
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
-    fig.suptitle(
-        "Per-Subject Performance Comparison across Models", 
-        fontsize=22, fontweight='bold', y=0.98
-    )
-    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
@@ -300,8 +457,7 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
     if not metrics:
         return
 
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    apply_publication_style()
 
     subjects = dfs[0]["test_subject_name"].tolist()
     x_positions = np.arange(len(subjects))
@@ -316,7 +472,8 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
     fig.patch.set_facecolor('white')
     axes = axes.flatten()
 
-    colors = get_modern_colors(len(dfs))
+    colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
 
     for i, metric in enumerate(metrics):
         ax = axes[i]
@@ -343,13 +500,25 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
                 alpha=0.9,
             )
 
-        if i % n_cols == 0:
-            ax.set_ylabel('Score', fontsize=12, fontweight='bold')
+        if dummy_means is not None and metric in dummy_means and not np.isnan(dummy_means[metric]):
+            baseline_label = "Dummy baseline mean" if i == 0 else "_nolegend_"
+            ax.axhline(
+                y=float(dummy_means[metric]),
+                linestyle='--',
+                color='black',
+                linewidth=1.8,
+                alpha=0.9,
+                label=baseline_label,
+                zorder=4,
+            )
 
-        ax.set_title(metric, fontsize=13, fontweight='bold', pad=10)
+        if i % n_cols == 0:
+            ax.set_ylabel('Score', fontsize=17, fontweight='bold')
+
+        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
         ax.set_ylim(0, 1.05)
         ax.set_xticks(x_positions)
-        ax.set_xticklabels(subjects, rotation=45, ha='right', fontsize=10)
+        ax.set_xticklabels(subjects, rotation=45, ha='right', fontsize=14)
 
         ax.grid(axis='both', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
         ax.set_axisbelow(True)
@@ -368,18 +537,160 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
             handles, legend_labels,
             loc='center left', bbox_to_anchor=(0.91, 0.5),
             frameon=True, fancybox=False, shadow=False,
-            fontsize=11, edgecolor='black', framealpha=0,
-            title='Models', title_fontsize=12,
+            fontsize=15, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=16,
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor('none')
 
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
-    fig.suptitle(
-        'Per-Subject Line-Curve Comparison across Models',
-        fontsize=20, fontweight='bold', y=0.98,
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+def plot_model_grouped_subject_barplots(
+    dfs: List[pd.DataFrame],
+    metrics: List[str],
+    labels: List[str],
+    output_path: str,
+) -> None:
+    """For each metric, plot subject trajectories across models with model-color overlays."""
+    if not metrics:
+        return
+
+    apply_publication_style()
+
+    subjects = dfs[0]["test_subject_name"].tolist()
+    n_metrics = len(metrics)
+    n_cols = min(3, n_metrics)
+    n_rows = int(np.ceil(n_metrics / n_cols))
+
+    fig_width = max(18, n_cols * 7)
+    fig_height = max(10, n_rows * 5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    fig.patch.set_facecolor('white')
+    axes = axes.flatten()
+
+    n_models = len(dfs)
+    n_subjects = len(subjects)
+    x_positions = np.arange(n_models)
+
+    model_colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
+
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        ax.set_facecolor('white')
+
+        # Draw model-wise violin distributions (across subjects) behind points/lines.
+        violin_data = []
+        for df in dfs:
+            if metric not in df.columns:
+                violin_data.append(np.asarray([], dtype=float))
+                continue
+            vals = pd.to_numeric(df[metric], errors='coerce').dropna().values
+            violin_data.append(np.asarray(vals, dtype=float))
+
+        parts = ax.violinplot(
+            violin_data,
+            positions=x_positions,
+            widths=0.7,
+            showmeans=False,
+            showmedians=False,
+            showextrema=False,
+        )
+        for body, color in zip(parts['bodies'], model_colors):
+            body.set_facecolor(color)
+            body.set_edgecolor('#2c3e50')
+            body.set_linewidth(0.8)
+            body.set_alpha(1.0)
+            body.set_zorder(0)
+
+        # Overlay model-colored points (color encodes model).
+        for m_idx, df in enumerate(dfs):
+            if metric not in df.columns:
+                continue
+            subj_series = pd.Series(
+                pd.to_numeric(df[metric], errors='coerce').values,
+                index=df["test_subject_name"],
+            )
+            yvals = np.array([float(subj_series.get(subject, np.nan)) for subject in subjects], dtype=float)
+            jitter = np.linspace(-0.08, 0.08, n_subjects) if n_subjects > 1 else np.array([0.0])
+            xvals = np.full(n_subjects, x_positions[m_idx], dtype=float) + jitter
+            ax.scatter(
+                xvals,
+                yvals,
+                color=model_colors[m_idx],
+                edgecolor='white',
+                linewidth=0.8,
+                s=28,
+                alpha=0.45,
+                zorder=3,
+            )
+
+        if dummy_means is not None and metric in dummy_means and not np.isnan(dummy_means[metric]):
+            baseline_label = "Dummy baseline mean" if i == 0 else "_nolegend_"
+            ax.axhline(
+                y=float(dummy_means[metric]),
+                linestyle='--',
+                color='black',
+                linewidth=1.8,
+                alpha=0.9,
+                label=baseline_label,
+                zorder=4,
+            )
+
+        if i % n_cols == 0:
+            ax.set_ylabel("Score", fontsize=17, fontweight='bold')
+
+        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_ylim(0, 1.05)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14)
+
+        ax.grid(axis="y", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
+        ax.set_axisbelow(True)
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor('black')
+
+    for j in range(n_metrics, len(axes)):
+        fig.delaxes(axes[j])
+
+    model_handles = [
+        plt.Line2D(
+            [0], [0],
+            marker='o',
+            markersize=7,
+            linestyle='None',
+            markerfacecolor=model_colors[idx],
+            markeredgecolor='white',
+            markeredgewidth=0.8,
+            label=label,
+        )
+        for idx, label in enumerate(labels)
+    ]
+    baseline_handle = plt.Line2D(
+        [0], [0],
+        color='black',
+        linestyle='--',
+        linewidth=1.8,
+        label='Dummy baseline mean',
     )
-    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    legend = fig.legend(
+        model_handles + [baseline_handle],
+        [*labels, "Dummy baseline mean"],
+        loc="center left", bbox_to_anchor=(0.91, 0.5),
+        frameon=True, fancybox=False, shadow=False,
+        fontsize=14, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=16
+    )
+    legend.get_frame().set_linewidth(1.0)
+    legend.get_frame().set_facecolor('none')
+
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
@@ -387,8 +698,7 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
     if not metrics:
         return
     
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
+    apply_publication_style()
     
     n_metrics = len(metrics)
     n_cols = min(3, n_metrics)
@@ -400,7 +710,8 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
     fig.patch.set_facecolor('white')
     axes = axes.flatten()
     
-    colors = get_modern_colors(len(dfs))
+    colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
     
     for i, metric in enumerate(metrics):
         ax = axes[i]
@@ -423,10 +734,21 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
         # Color the boxes (removed alpha for solid colors)
         for patch, color in zip(bp['boxes'], colors):
             patch.set_facecolor(color)        
+
+        if dummy_means is not None and metric in dummy_means and not np.isnan(dummy_means[metric]):
+            ax.axhline(
+                y=float(dummy_means[metric]),
+                linestyle='--',
+                color='black',
+                linewidth=1.8,
+                alpha=0.9,
+                zorder=4,
+            )
+
         ax.set_xticks(positions)
-        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=10, fontweight='medium')
-        ax.set_ylabel("Score", fontsize=12, fontweight='bold')
-        ax.set_title(f"{metric}", fontsize=13, fontweight='bold', pad=10)
+        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14, fontweight='medium')
+        ax.set_ylabel("Score", fontsize=17, fontweight='bold')
+        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
         ax.set_ylim(0, 1.05)
         
         # Modern grid with horizontal lines only
@@ -450,22 +772,144 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
                    markeredgecolor='white', markeredgewidth=1.5) 
         for c in colors
     ]
+    legend_labels = list(labels)
+    handles.append(
+        plt.Line2D(
+            [0], [0],
+            color='black',
+            linestyle='--',
+            linewidth=2.0,
+        )
+    )
+    legend_labels.append("Dummy baseline mean")
     legend = fig.legend(
-        handles, labels,
+        handles, legend_labels,
         loc='center left', bbox_to_anchor=(0.91, 0.5),
         frameon=True, fancybox=False, shadow=False,
-        fontsize=11, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=12  # Added title
+        fontsize=15, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=16  # Added title
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor('none')  # Explicitly set no background color
     
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.94, bottom=0.08)
-    fig.suptitle(
-        "Distribution of Model Performance across Subjects", 
-        fontsize=17, fontweight='bold', y=0.98
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+
+def plot_metric_meanstd_bars(dfs: List[pd.DataFrame], metrics: List[str], labels: List[str], output_path: str) -> None:
+    """Plot metric-wise bars (mean) with std whiskers using the same subplot style as boxplots."""
+    if not metrics:
+        return
+
+    apply_publication_style()
+
+    n_metrics = len(metrics)
+    n_cols = min(3, n_metrics)
+    n_rows = int(np.ceil(n_metrics / n_cols))
+
+    fig_width = max(18, n_cols * 7)
+    fig_height = max(10, n_rows * 5)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), squeeze=False)
+    fig.patch.set_facecolor('white')
+    axes = axes.flatten()
+
+    colors = get_model_colors(labels)
+    dummy_means = _dummy_metric_means(dfs, labels, metrics)
+
+    for i, metric in enumerate(metrics):
+        ax = axes[i]
+        ax.set_facecolor('white')
+
+        positions = np.arange(1, len(dfs) + 1)
+        means = []
+        stds = []
+        for df in dfs:
+            vals = pd.to_numeric(df[metric], errors='coerce').dropna().values
+            means.append(float(np.mean(vals)) if vals.size > 0 else np.nan)
+            stds.append(float(np.std(vals)) if vals.size > 0 else np.nan)
+
+        means_arr = np.asarray(means, dtype=float)
+        stds_arr = np.asarray(stds, dtype=float)
+
+        ax.bar(
+            positions,
+            means_arr,
+            width=0.55,
+            color=colors,
+            edgecolor='#2c3e50',
+            linewidth=1.2,
+            alpha=0.95,
+            zorder=2,
+        )
+        ax.errorbar(
+            positions,
+            means_arr,
+            yerr=stds_arr,
+            fmt='none',
+            ecolor='#2c3e50',
+            elinewidth=1.8,
+            capsize=5,
+            capthick=1.8,
+            zorder=3,
+        )
+
+        if dummy_means is not None and metric in dummy_means and not np.isnan(dummy_means[metric]):
+            ax.axhline(
+                y=float(dummy_means[metric]),
+                linestyle='--',
+                color='black',
+                linewidth=1.8,
+                alpha=0.9,
+                zorder=4,
+            )
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14, fontweight='medium')
+        ax.set_ylabel("Score", fontsize=17, fontweight='bold')
+        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_ylim(0, 1.05)
+
+        ax.grid(axis='y', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
+        ax.set_axisbelow(True)
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.5)
+            spine.set_edgecolor('black')
+
+    for j in range(n_metrics, len(axes)):
+        fig.delaxes(axes[j])
+
+    handles = [
+        plt.Line2D(
+            [0], [0], marker='s', color='w',
+            markerfacecolor=c, markersize=11,
+            markeredgecolor='#2c3e50', markeredgewidth=1.2
+        )
+        for c in colors
+    ]
+    legend_labels = list(labels)
+    handles.append(
+        plt.Line2D(
+            [0], [0],
+            color='black',
+            linestyle='--',
+            linewidth=2.0,
+        )
     )
-    fig.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    legend_labels.append("Dummy baseline mean")
+    legend = fig.legend(
+        handles, legend_labels,
+        loc='center left', bbox_to_anchor=(0.91, 0.5),
+        frameon=True, fancybox=False, shadow=False,
+        fontsize=15, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=16
+    )
+    legend.get_frame().set_linewidth(1.0)
+    legend.get_frame().set_facecolor('none')
+
+    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
 def _format_metric_label(metric: str) -> str:
@@ -523,20 +967,33 @@ def plot_model_spider(dfs: List[pd.DataFrame], metrics: List[str], labels: List[
     ax.set_theta_offset(np.pi / 2)
     ax.set_theta_direction(-1)
 
-    colors = get_modern_colors(len(dfs))
+    colors = get_model_colors(labels)
+    dummy_idx = _find_dummy_index(labels)
     for idx, label in enumerate(labels):
         run_values = values_by_run[idx]
         run_values_closed = np.concatenate([run_values, [run_values[0]]])
         ax.plot(angles_closed, run_values_closed, color=colors[idx], linewidth=2.5, label=label)
         ax.fill(angles_closed, run_values_closed, color=colors[idx], alpha=0.15)
 
+    if dummy_idx is not None:
+        baseline_vals = values_by_run[dummy_idx]
+        baseline_closed = np.concatenate([baseline_vals, [baseline_vals[0]]])
+        ax.plot(
+            angles_closed,
+            baseline_closed,
+            color='black',
+            linestyle='--',
+            linewidth=2.5,
+            label='Dummy baseline mean',
+        )
+
     ax.set_xticks(angles)
-    ax.set_xticklabels([_format_metric_label(m) for m in valid_metrics], fontsize=10, fontweight="medium")
+    ax.set_xticklabels([_format_metric_label(m) for m in valid_metrics], fontsize=14, fontweight="medium")
 
     ax.set_ylim(0.0, 1.0)
     radial_ticks = [0.2, 0.4, 0.6, 0.8, 1.0]
     ax.set_yticks(radial_ticks)
-    ax.set_yticklabels([f"{tick:.1f}" for tick in radial_ticks], fontsize=9)
+    ax.set_yticklabels([f"{tick:.1f}" for tick in radial_ticks], fontsize=13)
     ax.yaxis.grid(True, linestyle="-", alpha=0.3, linewidth=1.0, color="gray")
     ax.xaxis.grid(True, linestyle="-", alpha=0.25, linewidth=1.0, color="gray")
 
@@ -546,24 +1003,109 @@ def plot_model_spider(dfs: List[pd.DataFrame], metrics: List[str], labels: List[
         frameon=True,
         fancybox=False,
         shadow=False,
-        fontsize=11,
+        fontsize=14,
         edgecolor="black",
         framealpha=0,
         title="Models",
-        title_fontsize=12,
+        title_fontsize=16,
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor("none")
 
-    ax.set_title("Model Performance Radar (Median Across Subjects)", fontsize=16, fontweight="bold", pad=25)
+    ax.set_title("Model Performance Radar (Median Across Subjects)", fontsize=19, fontweight="bold", pad=25)
 
     fig.tight_layout(rect=[0, 0, 0.84, 1])
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+
+
+def generate_split_figures(
+    dfs: List[pd.DataFrame],
+    labels: List[str],
+    metrics: List[str],
+    output_dir: str,
+    metric_groups: Optional[Dict[str, List[str]]] = None,
+    family_order: Optional[List[str]] = None,
+    include_metric_group_plots: bool = True,
+    include_family_plots: bool = True,
+    include_family_metric_cross: bool = False,
+) -> List[str]:
+    """Generate optional split figures to reduce visual clutter in main figures."""
+    generated: List[str] = []
+    metric_groups = metric_groups or DEFAULT_METRIC_GROUPS
+    family_order = family_order or DEFAULT_FAMILY_ORDER
+
+    split_dir = os.path.join(output_dir, "split")
+    os.makedirs(split_dir, exist_ok=True)
+
+    # 1) Split by metric group, all models together.
+    if include_metric_group_plots:
+        for group_name, group_metrics in metric_groups.items():
+            selected_metrics = [m for m in group_metrics if m in metrics]
+            if not selected_metrics:
+                continue
+            group_slug = _slugify(group_name)
+
+            out_box = os.path.join(
+                split_dir, f"metrics_boxplots_compare_group-{group_slug}_all-models.png"
+            )
+            out_bar = os.path.join(
+                split_dir, f"metrics_meanstd_bars_compare_group-{group_slug}_all-models.png"
+            )
+            plot_metric_boxplots(dfs, selected_metrics, labels, out_box)
+            plot_metric_meanstd_bars(dfs, selected_metrics, labels, out_bar)
+            generated.extend([out_box, out_bar])
+
+    # 2) Split by model family, all metrics together.
+    if include_family_plots:
+        for family_name in family_order:
+            fam_dfs, fam_labels = _subset_runs_by_family(dfs, labels, family_name)
+            if not fam_dfs:
+                continue
+            family_slug = _slugify(family_name)
+
+            out_box = os.path.join(
+                split_dir, f"metrics_boxplots_compare_family-{family_slug}_all-metrics.png"
+            )
+            out_bar = os.path.join(
+                split_dir, f"metrics_meanstd_bars_compare_family-{family_slug}_all-metrics.png"
+            )
+            plot_metric_boxplots(fam_dfs, metrics, fam_labels, out_box)
+            plot_metric_meanstd_bars(fam_dfs, metrics, fam_labels, out_bar)
+            generated.extend([out_box, out_bar])
+
+            # 3) Optional cross split: per family + metric group.
+            if include_family_metric_cross:
+                for group_name, group_metrics in metric_groups.items():
+                    selected_metrics = [m for m in group_metrics if m in metrics]
+                    if not selected_metrics:
+                        continue
+                    group_slug = _slugify(group_name)
+                    out_box_cross = os.path.join(
+                        split_dir,
+                        (
+                            "metrics_boxplots_compare_"
+                            f"family-{family_slug}_group-{group_slug}.png"
+                        ),
+                    )
+                    out_bar_cross = os.path.join(
+                        split_dir,
+                        (
+                            "metrics_meanstd_bars_compare_"
+                            f"family-{family_slug}_group-{group_slug}.png"
+                        ),
+                    )
+                    plot_metric_boxplots(fam_dfs, selected_metrics, fam_labels, out_box_cross)
+                    plot_metric_meanstd_bars(
+                        fam_dfs, selected_metrics, fam_labels, out_bar_cross
+                    )
+                    generated.extend([out_box_cross, out_bar_cross])
+
+    return generated
 
 def main(args=None):
     if args is None:
-        args = parse_args()
+        args = build_default_namespace()
     csv_paths = [os.path.abspath(p) for p in (args.csv or [])]
     refit_runs = args.refit_run or []
     if not csv_paths and not refit_runs:
@@ -638,37 +1180,69 @@ def main(args=None):
     else:
         metrics = [m for m in args.metrics if all(m in df.columns for df in dfs)]
 
-    plot_metric_summary(dfs, metrics, labels, os.path.join(output_dir, "metrics_bar_summary_compare.png"))
     plot_metric_boxplots(dfs, metrics, labels, os.path.join(output_dir, "metrics_boxplots_compare.png"))
-    plot_model_spider(dfs, metrics, labels, os.path.join(output_dir, "metrics_spider_compare.png"))
+    plot_metric_meanstd_bars(dfs, metrics, labels, os.path.join(output_dir, "metrics_meanstd_bars_compare.png"))
     plot_subject_barplots(dfs, metrics, labels, os.path.join(output_dir, "subject_barplots_compare.png"))
-    plot_subject_lineplots(dfs, metrics, labels, os.path.join(output_dir, "subject_lineplots_compare.png"))
+    plot_model_grouped_subject_barplots(
+        dfs, metrics, labels, os.path.join(output_dir, "model_violin_dots_compare.png")
+    )
+
+    split_outputs: List[str] = []
+    enable_split_figures = bool(getattr(args, "enable_split_figures", True))
+    if enable_split_figures:
+        split_outputs = generate_split_figures(
+            dfs=dfs,
+            labels=labels,
+            metrics=metrics,
+            output_dir=output_dir,
+            metric_groups=getattr(args, "metric_groups", DEFAULT_METRIC_GROUPS),
+            family_order=getattr(args, "family_order", DEFAULT_FAMILY_ORDER),
+            include_metric_group_plots=bool(
+                getattr(args, "split_include_metric_groups", True)
+            ),
+            include_family_plots=bool(getattr(args, "split_include_family", True)),
+            include_family_metric_cross=bool(
+                getattr(args, "split_include_family_metric_cross", False)
+            ),
+        )
 
     print("Comparison complete. Generated figures:")
-    print(f"- {os.path.join(output_dir, 'metrics_bar_summary_compare.png')}")
     print(f"- {os.path.join(output_dir, 'metrics_boxplots_compare.png')}")
-    print(f"- {os.path.join(output_dir, 'metrics_spider_compare.png')}")
+    print(f"- {os.path.join(output_dir, 'metrics_meanstd_bars_compare.png')}")
     print(f"- {os.path.join(output_dir, 'subject_barplots_compare.png')}")
-    print(f"- {os.path.join(output_dir, 'subject_lineplots_compare.png')}")
+    print(f"- {os.path.join(output_dir, 'model_violin_dots_compare.png')}")
+    for path in split_outputs:
+        print(f"- {path}")
 
 def build_default_namespace(
     base_path: str = "logs/results",
     output_dir: str = "logs/results/comparison_figures/test",
     include_train_metrics: bool = False,
+    enable_split_figures: bool = True,
+    split_include_metric_groups: bool = True,
+    split_include_family: bool = True,
+    split_include_family_metric_cross: bool = False,
+    metric_groups: Optional[Dict[str, List[str]]] = None,
+    family_order: Optional[List[str]] = None,
 ) -> argparse.Namespace:
     """Build a local, reproducible default configuration."""
     run_specs = [
-        ("dummy_raw_betaChs", "dummy"),
-        ("logreg_hctsa_betaChs", "logreg"),
-        ("rf_hctsa_betaChs", "rf"),
-        ("xgb_hctsa_betaChs", "xgb"),
-        ("svm_hctsa_betaChs", "svm"),
-        ("Seq2VecCNN_raw_betaChs", "Seq2VecCNN"),
-        ("Seq2VecLSTM_raw_betaChs", "Seq2VecLSTM"),
+        ("dummy_raw_betaChs", "Baseline-Dummy"),
+        ("logreg_hctsa_betaChs", "LogReg"),
+        ("rf_hctsa_betaChs", "RF"),
+        ("xgb_hctsa_betaChs", "XGB"),
+        ("svm_hctsa_betaChs", "SVM"),
+        ("Seq2VecMLP_hctsa_betaChs", "IntraSeg-MLP"),
+        ("Seq2VecCNN_raw_betaChs", "IntraSeg-CNN"),
+        ("Seq2VecLSTM_raw_betaChs", "IntraSeg-LSTM"),
+        ("Seq2VecMLPLSTM_betaChs", "IntraSeg-MLP-LSTM"),
+        ("Seq2SeqLSTM_hctsa_betaChs", "InterSeg-LSTM"),
+        ("Seq2SeqCNNLSTM_raw_betaChs", "InterSeg-CNN-LSTM"),
     ]
 
     test_metrics = [
         "test_f1",
+        "test_tuned_f1",
         "test_accuracy",
         "test_balanced_accuracy",
         "test_precision",
@@ -702,14 +1276,42 @@ def build_default_namespace(
         output_dir=output_dir,
         metrics=metrics,
         refit_run=[],
+        enable_split_figures=enable_split_figures,
+        split_include_metric_groups=split_include_metric_groups,
+        split_include_family=split_include_family,
+        split_include_family_metric_cross=split_include_family_metric_cross,
+        metric_groups=metric_groups or DEFAULT_METRIC_GROUPS,
+        family_order=family_order or DEFAULT_FAMILY_ORDER,
     )
 
 
 if __name__ == "__main__":
-    import sys
+    # Configuration variables (edit here; no CLI required).
+    BASE_PATH = "logs/results"
+    OUTPUT_DIR = "logs/results/comparison_figures/test"
+    INCLUDE_TRAIN_METRICS = False
 
-    # CLI args take precedence; with no args we run the local default preset.
-    if len(sys.argv) > 1:
-        main()
-    else:
-        main(build_default_namespace())
+    ENABLE_SPLIT_FIGURES = True
+    SPLIT_INCLUDE_METRIC_GROUPS = True
+    SPLIT_INCLUDE_FAMILY = True
+    SPLIT_INCLUDE_FAMILY_METRIC_CROSS = False
+
+    METRIC_GROUPS = {
+        "primary": ["test_f1"],
+        "discrimination": ["test_roc_auc", "test_pr_auc", "test_balanced_accuracy"],
+        "operating_point": ["test_precision", "test_recall", "test_specificity", "test_tuned_f1"],
+    }
+    FAMILY_ORDER = ["Inter-segment", "Intra-segment", "Classical ML", "Baseline"]
+
+    cfg = build_default_namespace(
+        base_path=BASE_PATH,
+        output_dir=OUTPUT_DIR,
+        include_train_metrics=INCLUDE_TRAIN_METRICS,
+        enable_split_figures=ENABLE_SPLIT_FIGURES,
+        split_include_metric_groups=SPLIT_INCLUDE_METRIC_GROUPS,
+        split_include_family=SPLIT_INCLUDE_FAMILY,
+        split_include_family_metric_cross=SPLIT_INCLUDE_FAMILY_METRIC_CROSS,
+        metric_groups=METRIC_GROUPS,
+        family_order=FAMILY_ORDER,
+    )
+    main(cfg)

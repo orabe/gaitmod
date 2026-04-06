@@ -32,6 +32,7 @@ import warnings
 from itertools import product
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -162,6 +163,66 @@ def _parse_row_metadata(timeseries_df: pd.DataFrame) -> pd.DataFrame:
     return meta
 
 
+def _save_side_by_side_matrix_pair(
+    standard_path: Path,
+    colorgroups_path: Path,
+    output_path: Path,
+) -> None:
+    """Save a 2-column figure that places standard and colorGroups matrices side-by-side."""
+    if not standard_path.exists() or not colorgroups_path.exists():
+        return
+
+    img_standard = plt.imread(str(standard_path))
+    img_colorgroups = plt.imread(str(colorgroups_path))
+
+    h1, w1 = img_standard.shape[:2]
+    h2, w2 = img_colorgroups.shape[:2]
+    ratio1 = w1 / max(h1, 1)
+    ratio2 = w2 / max(h2, 1)
+    fig_h = 8.0
+    # Keep figure width close to the true combined aspect of both images.
+    fig_w = fig_h * (ratio1 + ratio2 + 0.04)
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(fig_w, fig_h),
+        squeeze=True,
+        gridspec_kw={"width_ratios": [ratio1, ratio2], "wspace": 0.01},
+    )
+
+    axes[0].imshow(img_standard)
+    axes[0].text(
+        -0.06,
+        1.02,
+        "A",
+        transform=axes[0].transAxes,
+        fontsize=16,
+        fontweight="bold",
+        va="bottom",
+        ha="left",
+    )
+    axes[0].axis("off")
+
+    axes[1].imshow(img_colorgroups)
+    axes[1].text(
+        -0.06,
+        1.02,
+        "B",
+        transform=axes[1].transAxes,
+        fontsize=16,
+        fontweight="bold",
+        va="bottom",
+        ha="left",
+    )
+    axes[1].axis("off")
+
+    fig.subplots_adjust(left=0.005, right=0.995, bottom=0.005, top=0.995, wspace=0.01)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     # ------------------------------------------------------------------
     # Fixed configuration (edit here for your permutations)
@@ -193,8 +254,10 @@ def main() -> None:
     show_legend = False
     cluster_rows = True
     cluster_cols = True
-    show_feature_names = True
+    show_feature_names = False
     save_color_groups_figure = True
+    post_selection_square_figsize = (10.5, 10.5)
+    show_feature_value_cbar_label = False
 
     output_dir = Path("results/hctsa_segments_datamatrix")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -239,13 +302,13 @@ def main() -> None:
     logging.info("%s\n", "=" * 90)
 
     processed = 0
-    for idx, (var_thr, method, n_feat, ct) in enumerate(param_combinations, 1):
+    for idx, (var_thr, selection_method, n_feat, ct) in enumerate(param_combinations, 1):
         logging.info(
             "[%d/%d] variance_threshold=%s, method=%s, n_features=%s, corr_threshold=%s",
             idx,
             len(param_combinations),
             var_thr,
-            method,
+            selection_method,
             n_feat,
             ct,
         )
@@ -257,7 +320,7 @@ def main() -> None:
                     n_features=int(n_feat),
                     variance_threshold=float(var_thr),
                     correlation_threshold=float(ct),
-                    selection_method=str(method),
+                    selection_method=str(selection_method),
                     enabled=True,
                 )
                 selector.fit(x, y)
@@ -270,32 +333,29 @@ def main() -> None:
             x_sel = x[:, selected_indices]
             operations_sel = operations_df.iloc[selected_indices].reset_index(drop=True)
 
+            norm_tag = "raw"
             if normalize_0_1:
-                method = (normalization_method or "robust_sigmoid").strip().lower()
-                if method == "robust_sigmoid":
+                norm_method = (normalization_method or "robust_sigmoid").strip().lower()
+                if norm_method == "robust_sigmoid":
                     x_plot = robust_sigmoid_0_1(x_sel, axis=0)
-                elif method == "minmax":
+                elif norm_method == "minmax":
                     x_plot = minmax_scale_0_1(x_sel, axis=0)
                 else:
                     raise ValueError(f"Unknown normalization_method: {normalization_method}")
+                norm_tag = norm_method
             else:
                 x_plot = x_sel
 
             base_name = (
-                f"{method}_var{var_thr}_nfeat{n_feat}_ct{ct}_selected_matrix"
+                f"selected_feature_matrix_method-{selection_method}"
+                f"_var-{var_thr}_ct-{ct}_topk-{n_feat}_norm-{norm_tag}"
             )
-            title = (
-                "HCTSA Matrix After Feature Selection | "
-                f"method={method}, variance_threshold={var_thr}, "
-                f"correlation_threshold={ct}, top_k={n_feat}, selected={x_sel.shape[1]}"
-            )
-
             out_path = output_dir / f"{base_name}.png"
             plot_data_matrix(
                 x_plot,
                 meta_all,
                 operations_sel,
-                title=title,
+                title="",
                 output_path=out_path,
                 cluster_rows=bool(cluster_rows),
                 cluster_cols=bool(cluster_cols),
@@ -306,6 +366,8 @@ def main() -> None:
                 show_group_strip=bool(show_group_strip),
                 show_legend=bool(show_legend),
                 show_feature_names=bool(show_feature_names),
+                figure_size=post_selection_square_figsize,
+                show_colorbar_label=bool(show_feature_value_cbar_label),
             )
             logging.info("  Saved: %s", out_path.name)
 
@@ -315,12 +377,13 @@ def main() -> None:
                     x_plot,
                     meta_all,
                     operations_sel,
-                    title=title + " | colorGroups",
+                    title="",
                     output_path=out_path_groups,
                     cluster_rows=bool(cluster_rows),
                     cluster_cols=bool(cluster_cols),
                     discrete_step=discrete_step if normalize_0_1 else None,
                     feature_tick_step=feature_tick_step,
+                    figure_size=post_selection_square_figsize,
                 )
                 logging.info("  Saved: %s", out_path_groups.name)
 

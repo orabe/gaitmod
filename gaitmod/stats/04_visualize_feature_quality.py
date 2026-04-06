@@ -335,7 +335,7 @@ def main():
     data_root = Path("data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
-    selection_method = "pr_auc"
+    selection_method = "mann_whitney"
     output_dir = Path("results/figures/selected_features_quality_comparison")
     
     CHANNEL_METHODS = {
@@ -417,23 +417,30 @@ def main():
     # Configuration sets to compare
     configs = [
         {
-            'name': 'Restrictive',
-            'variance_threshold': 0.01,
+            'name': 'Restrictive1',
+            'variance_threshold': 0.0001,
+            'n_features': 20,
+            'ct': 0.3
+        },
+        {
+            'name': 'Permissive1',
+            'variance_threshold': 0.0001,
+            'n_features': 20,
+            'ct': 0.8
+        },
+        {
+            'name': 'Restrictive2',
+            'variance_threshold': 0.0001,
             'n_features': 100,
             'ct': 0.3
         },
         {
-            'name': 'Permissive',
-            'variance_threshold': 1e-8,
-            'n_features': 300,
+            'name': 'Permissive2',
+            'variance_threshold': 0.0001,
+            'n_features': 100,
             'ct': 0.8
-        },
-        {
-            'name': 'Balanced',
-            'variance_threshold': 1e-4,
-            'n_features': 200,
-            'ct': 0.6
-        },
+        },        
+
     ]
     
     results = []

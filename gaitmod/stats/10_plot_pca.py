@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Plot PCA overview for the HCTSA feature matrix in a dedicated script.
+Plot PCA overview for segment feature matrices in a dedicated script.
 
 What this script does:
-- Loads beta-selected channel data from the HCTSA segment cache.
+- Loads beta-selected channel data from the configured segment cache
+  (HCTSA or raw).
 - Applies the same optional row/feature subsetting and normalization as matrix plotting.
 - Generates one PCA overview figure containing:
   1) PC1 vs PC2 scatter colored by class labels.
-  2) Explained-variance scree plot (individual + cumulative).
 
 Required input:
 - Segment cache directory (default: `data/hctsa_segments`).
@@ -15,7 +15,10 @@ Required input:
   (default: `results/beta_channel_selection/beta_channel_selection.json`).
 
 Generated output:
-- `results/hctsa_segments_datamatrix/datamatrix_beta_selected_pca_overview.png`
+- `.../pca_scatter_beta_selected_hctsa.png` if cache path contains
+  `hctsa_segments`.
+- `.../pca_scatter_beta_selected_raw.png` if cache path contains
+  `raw_segments`.
 """
 from __future__ import annotations
 
@@ -72,6 +75,21 @@ def _impute_for_pca(X: np.ndarray) -> np.ndarray:
     return out
 
 
+def _infer_feature_type_from_cache_dir(segment_cache_dir: Path) -> str:
+    """
+    Infer feature type tag from segment cache directory path.
+    """
+    token = str(segment_cache_dir).strip().lower().replace("\\", "/")
+    if "hctsa_segments" in token:
+        return "hctsa"
+    if "raw_segments" in token:
+        return "raw"
+    raise ValueError(
+        f"Could not infer feature type from segment_cache_dir={segment_cache_dir}. "
+        "Expected path to contain 'hctsa_segments' or 'raw_segments'."
+    )
+
+
 def plot_pca_overview(
     X: np.ndarray,
     labels: np.ndarray,
@@ -80,7 +98,7 @@ def plot_pca_overview(
     output_path: Path,
     max_components: int = 20,
 ) -> None:
-    """Plot PC1/PC2 class scatter and scree plot in one figure."""
+    """Plot PC1/PC2 class scatter in one figure."""
     try:
         from sklearn.decomposition import PCA
     except Exception as exc:  # pragma: no cover
@@ -100,10 +118,7 @@ def plot_pca_overview(
     pca = PCA(n_components=n_comp, random_state=42)
     X_emb = pca.fit_transform(X_pca)
     explained = pca.explained_variance_ratio_
-    cumulative = np.cumsum(explained)
-
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2))
-    ax_scatter, ax_scree = axes
+    fig, ax_scatter = plt.subplots(1, 1, figsize=(6.4, 5.2))
 
     unique_labels = np.unique(labels)
     if unique_labels.size <= 2:
@@ -118,50 +133,30 @@ def plot_pca_overview(
     for i, lbl in enumerate(unique_labels):
         mask = labels == lbl
         name = label_name_map.get(int(lbl), f"Class {int(lbl)}")
+        xvals = X_emb[mask, 0]
+        yvals = X_emb[mask, 1]
         ax_scatter.scatter(
-            X_emb[mask, 0],
-            X_emb[mask, 1],
+            xvals,
+            yvals,
             s=18,
             alpha=0.68,
             color=palette[i],
             edgecolors="none",
             label=name,
+            zorder=2,
         )
 
-    ax_scatter.set_xlabel(f"PC1 ({explained[0] * 100:.2f}\\%)", fontsize=12)
-    ax_scatter.set_ylabel(f"PC2 ({explained[1] * 100:.2f}\\%)", fontsize=12)
+    ax_scatter.set_xlabel(f"PC1 ({explained[0] * 100:.2f}%)", fontsize=12)
+    ax_scatter.set_ylabel(f"PC2 ({explained[1] * 100:.2f}%)", fontsize=12)
     ax_scatter.tick_params(labelsize=10)
     ax_scatter.grid(True, linestyle="--", linewidth=0.8, alpha=0.35)
     ax_scatter.legend(fontsize=9, frameon=True, loc="best")
 
-    idx = np.arange(1, n_comp + 1)
-    ax_scree.bar(
-        idx,
-        explained,
-        color="#7aa5d6",
-        edgecolor="#4d78a8",
-        linewidth=0.8,
-        alpha=0.9,
-        label="Explained variance",
-    )
-    ax_scree.plot(
-        idx,
-        cumulative,
-        color="#d95f02",
-        linewidth=2.0,
-        marker="o",
-        markersize=3.5,
-        label="Cumulative variance",
-    )
-    ax_scree.set_xlabel("Principal component index", fontsize=12)
-    ax_scree.set_ylabel("Explained variance ratio", fontsize=12)
-    ax_scree.set_ylim(0.0, 1.02)
-    ax_scree.tick_params(labelsize=10)
-    ax_scree.grid(True, linestyle="--", linewidth=0.8, alpha=0.35)
-    ax_scree.legend(fontsize=9, frameon=True, loc="best")
-
-    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.01)
-    fig.tight_layout()
+    if str(title).strip():
+        fig.suptitle(title, fontsize=14, fontweight="bold", y=1.01)
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+    else:
+        fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -169,10 +164,9 @@ def plot_pca_overview(
 
 def main() -> int:
     # -------------------- configuration (edit here) --------------------
-    segment_cache_dir = Path("data/hctsa_segments")
+    segment_cache_dir = Path("data/raw_segments")
     beta_selection_json = Path("results/beta_channel_selection/beta_channel_selection.json")
-    outdir = Path("results/hctsa_segments_datamatrix")
-    feature_type = "hctsa"  # "hctsa" or "raw" (used in output filename)
+    outdir = Path("results/raw_segments_datamatrix")
 
     subjects: Optional[List[str]] = None  # e.g. ["PW_HK59", "PW_EM59"]
     groups: Optional[List[str]] = None  # e.g. ["normal_walking", "gait_modulation"]
@@ -184,7 +178,7 @@ def main() -> int:
     min_finite_fraction = 1.0
     min_feature_std: Optional[float] = None
 
-    pca_max_components = 20
+    pca_max_components = 10
     strict = True
     verbose = 1
     # ---------------------------------------------------------------
@@ -239,23 +233,12 @@ def main() -> int:
     n_dropped = n_features_before - int(X.shape[1])
     logger.info("Dropped features: %d (kept %d).", n_dropped, int(X.shape[1]))
 
-    title = (
-        f"PCA of HCTSA Feature Matrix (beta-selected channels) | "
-        f"rows={X.shape[0]} cols={X.shape[1]}"
-    )
-    if groups:
-        title += f" | groups={','.join(groups)}"
-    if normalize_0_1:
-        title += f" | {normalization_method}01"
-
-    feature_type_tag = str(feature_type).strip().lower().replace(" ", "_")
-    if feature_type_tag not in {"hctsa", "raw"}:
-        raise ValueError(f"feature_type must be 'hctsa' or 'raw', got: {feature_type}")
-    output_path = outdir / f"datamatrix_beta_selected_{feature_type_tag}_pca_overview.png"
+    feature_type_tag = _infer_feature_type_from_cache_dir(segment_cache_dir)
+    output_path = outdir / f"pca_scatter_beta_selected_{feature_type_tag}.png"
     plot_pca_overview(
         X,
         labels,
-        title=title,
+        title="",
         output_path=output_path,
         max_components=int(pca_max_components),
     )

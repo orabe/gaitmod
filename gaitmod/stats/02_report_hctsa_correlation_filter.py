@@ -87,11 +87,11 @@ def main() -> None:
     channel_method = "beta"  # "beta" or "logRegF1"
     
     # Grid search parameters
-    # selection_methods = ["mann_whitney", "roc_auc"]
     variance_thresholds = [0.0001]
-    selection_methods = ["anova", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta", "brunner_munzel", "mutual_info"]
-    correlation_thresholds = [0.01, 0.3, 0.5]
-    n_features_list = [20, 50, 100]
+    # selection_methods = ["anova", "mann_whitney", "roc_auc", "pr_auc", "cliffs_delta", "brunner_munzel", "mutual_info"]
+    selection_methods = ["mann_whitney"]
+    correlation_thresholds = [0.3]
+    n_features_list = [20]
     
     output_dir = Path("results/figures/selected_features")
     output_dir.mkdir(parents=True, exist_ok=True)

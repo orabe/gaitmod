@@ -18,6 +18,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from cycler import cycler
 from sklearn.metrics import (
     accuracy_score,
     auc,
@@ -30,10 +31,84 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+PUBLICATION_DPI = 600
+FANCY_PALETTE = [
+    "#4C78A8",
+    "#F58518",
+    "#54A24B",
+    "#E45756",
+    "#72B7B2",
+    "#B279A2",
+    "#FF9DA6",
+    "#9D755D",
+    "#2E91E5",
+    "#00A6A6",
+    "#8E6C8A",
+    "#F2A104",
+]
+MODEL_COLOR_MAP = {
+    # Top models: most distinctive colors
+    "InterSeg-CNN-LSTM": "#FF2D55",
+    "IntraSeg-CNN": "#22C55E",
+    "InterSeg-LSTM": "#7B61FF",
+    # Remaining deep models
+    "IntraSeg-MLP": "#2EC4B6",
+    "IntraSeg-LSTM": "#00C2FF",
+    "IntraSeg-MLP-LSTM": "#FF8A65",
+    # Classical ML
+    "LogReg": "#F59E0B",
+    "RF": "#8B5CF6",
+    "XGB": "#E11D48",
+    "SVM": "#14B8A6",
+    # Baseline
+    "Baseline-Dummy": "#6B7280",
+}
+
+
+def apply_publication_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["DejaVu Sans", "Arial"],
+            "font.size": 16,
+            "axes.titlesize": 18,
+            "axes.labelsize": 17,
+            "xtick.labelsize": 15,
+            "ytick.labelsize": 15,
+            "legend.fontsize": 14,
+            "axes.linewidth": 1.5,
+            "lines.linewidth": 2.4,
+            "savefig.dpi": PUBLICATION_DPI,
+            "axes.prop_cycle": cycler(color=FANCY_PALETTE),
+        }
+    )
+
+
+def _set_square_axis(ax) -> None:
+    try:
+        ax.set_box_aspect(1)
+    except Exception:
+        pass
+
 
 def get_modern_colors(n: int) -> np.ndarray:
-    """Get a colorblind-friendly palette."""
-    return plt.cm.viridis(np.linspace(0.0, 0.9, n))
+    """Get a modern fancy publication palette."""
+    if n <= 0:
+        return np.asarray([])
+    return np.asarray([FANCY_PALETTE[i % len(FANCY_PALETTE)] for i in range(n)], dtype=object)
+
+
+def get_model_colors(labels: list[str]) -> np.ndarray:
+    """Deterministic color assignment by model label across all threshold figures."""
+    colors: list[str] = []
+    fallback_idx = 0
+    for label in labels:
+        if label in MODEL_COLOR_MAP:
+            colors.append(MODEL_COLOR_MAP[label])
+        else:
+            colors.append(FANCY_PALETTE[fallback_idx % len(FANCY_PALETTE)])
+            fallback_idx += 1
+    return np.asarray(colors, dtype=object)
 
 
 def _grid(n: int) -> tuple[int, int]:
@@ -278,22 +353,23 @@ def plot_models_threshold_curves(
     if not model_summaries:
         raise RuntimeError("No model summaries available to plot.")
 
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = ["Arial", "DejaVu Sans"]
+    apply_publication_style()
 
     plot_metrics = _order_metrics_for_plot(metrics)
     nrows, ncols = _grid(len(plot_metrics))
+    panel = 7.4
+    legend_space = 3.6
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(max(16, ncols * 6.3), max(8, nrows * 4.8)),
+        figsize=(max(18, ncols * panel + legend_space), max(10, nrows * panel)),
         squeeze=False,
     )
     fig.patch.set_facecolor("white")
     axes_flat = axes.flatten()
 
     model_labels = list(model_summaries.keys())
-    colors = get_modern_colors(len(model_labels))
+    colors = get_model_colors(model_labels)
 
     for metric_idx, metric in enumerate(plot_metrics):
         ax = axes_flat[metric_idx]
@@ -315,8 +391,8 @@ def plot_models_threshold_curves(
                 lower = np.clip(mean - std, 0.0, 1.0)
                 upper = np.clip(mean + std, 0.0, 1.0)
 
-                ax.plot(thresholds, mean, color=color, linewidth=2.4, label=model_label)
-                ax.fill_between(thresholds, lower, upper, color=color, alpha=0.12)
+                ax.plot(thresholds, mean, color=color, linewidth=2.2, label=model_label)
+                ax.fill_between(thresholds, lower, upper, color=color, alpha=0.10)
 
                 best_idx = int(np.nanargmax(mean))
                 best_threshold = float(thresholds[best_idx])
@@ -329,11 +405,11 @@ def plot_models_threshold_curves(
                 std = np.asarray(metric_info["std"], dtype=float)
                 lower = np.clip(mean - std, 0.0, 1.0)
                 upper = np.clip(mean + std, 0.0, 1.0)
-                ax.plot(x_vals, mean, color=color, linewidth=2.4, label=model_label)
-                ax.fill_between(x_vals, lower, upper, color=color, alpha=0.12)
+                ax.plot(x_vals, mean, color=color, linewidth=2.2, label=model_label)
+                ax.fill_between(x_vals, lower, upper, color=color, alpha=0.10)
 
         base_metric, _, _ = _parse_metric_name(metric)
-        ax.set_title(_format_metric_name(metric), fontsize=12, fontweight="bold")
+        ax.set_title(_format_metric_name(metric), fontsize=18, fontweight="bold")
         ax.set_xlim(0.0, 1.0)
         ax.set_ylim(0.0, 1.02)
         ax.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
@@ -348,14 +424,25 @@ def plot_models_threshold_curves(
         else:
             ax.set_xlabel("Threshold")
             ax.set_ylabel(f"{metric_split.title()} Score")
+            ax.axvline(0.5, linestyle=":", color="gray", alpha=0.7, linewidth=1.2)
+        _set_square_axis(ax)
 
         for spine in ax.spines.values():
             spine.set_visible(True)
             spine.set_linewidth(1.2)
             spine.set_edgecolor("black")
 
-        if base_metric in {"roc_auc", "pr_auc"}:
-            ax.text(0.98, 0.03, "standard curve", transform=ax.transAxes, ha="right", va="bottom", fontsize=9, color="dimgray")
+        # if base_metric in {"roc_auc", "pr_auc"}:
+        #     ax.text(
+        #         0.98,
+        #         0.03,
+        #         "standard curve",
+        #         transform=ax.transAxes,
+        #         ha="right",
+        #         va="bottom",
+        #         fontsize=13,
+        #         color="dimgray",
+        #     )
 
     for idx in range(len(plot_metrics), len(axes_flat)):
         axes_flat[idx].axis("off")
@@ -366,53 +453,63 @@ def plot_models_threshold_curves(
             handles,
             legend_labels,
             loc="center left",
-            bbox_to_anchor=(0.92, 0.5),
+            bbox_to_anchor=(0.91, 0.5),
+            ncol=1,
             frameon=True,
             fancybox=False,
             shadow=False,
-            fontsize=11,
+            fontsize=14,
             edgecolor="black",
             framealpha=0,
             title="Models",
-            title_fontsize=12,
+            title_fontsize=16,
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor("none")
 
-    parsed_metrics = [_parse_metric_name(metric) for metric in plot_metrics]
-    metric_splits = {split for _, split, _ in parsed_metrics if split is not None}
-    contains_curve_metrics = any(base in {"roc_auc", "pr_auc"} for base, _, _ in parsed_metrics)
-    contains_threshold_metrics = any(
-        base in {"f1", "accuracy", "balanced_accuracy", "precision", "recall", "specificity"}
-        for base, _, _ in parsed_metrics
-    )
-    if not metric_splits:
-        title_split = evaluation_split.title()
-    elif len(metric_splits) == 1:
-        title_split = next(iter(metric_splits)).title()
-    else:
-        title_split = "Mixed Train/Test"
-
-    if contains_curve_metrics and contains_threshold_metrics:
-        title_suffix = "(Threshold Metrics + ROC/PR Curves)"
-    elif contains_curve_metrics:
-        title_suffix = "(ROC/PR Curves)"
-    else:
-        title_suffix = "vs Threshold"
-
-    fig.subplots_adjust(wspace=0.32, hspace=0.36, left=0.06, right=0.90, top=0.93, bottom=0.08)
-    fig.suptitle(
-        f"Mean {title_split} Performance Across Subjects {title_suffix}",
-        fontsize=17,
-        fontweight="bold",
-    )
+    fig.subplots_adjust(wspace=0.38, hspace=0.44, left=0.06, right=0.86, top=0.95, bottom=0.08)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
 
 def _default_pattern(model_type: str) -> str:
     return f"logs/{model_type}/*/outer_fold_*_test_*/refit/*/refit_results_scores.npz"
+
+
+def _filter_models_by_labels(models: list[dict], include_labels: list[str]) -> list[dict]:
+    include_set = {str(x).strip() for x in include_labels}
+    out = [m for m in models if str(m.get("label", "")).strip() in include_set]
+    if not out:
+        raise RuntimeError(
+            "No models matched `main_model_labels`. Check label spelling in __main__ config."
+        )
+    return out
+
+
+def _build_model_summaries(
+    models: list[dict],
+    metrics: list[str],
+    thresholds: np.ndarray,
+) -> dict[str, dict[str, dict[str, np.ndarray | float | str | int]]]:
+    model_summaries: dict[str, dict[str, dict[str, np.ndarray | float | str | int]]] = {}
+    for model_def in models:
+        label = model_def.get("label")
+        model_type = model_def.get("model_type")
+        pattern = model_def.get("pattern") or (_default_pattern(model_type) if model_type else None)
+
+        if not label or not pattern:
+            raise ValueError(
+                "Each model definition must include 'label' and either 'pattern' or 'model_type'."
+            )
+
+        subject_paths = _collect_subject_paths(model_type=model_type, pattern=pattern)
+        if not subject_paths:
+            raise RuntimeError(f"No score files found for model '{label}' with pattern: {pattern}")
+
+        grouped = {subject: _load_scores(paths) for subject, paths in subject_paths.items()}
+        model_summaries[label] = _summarize_model(grouped, metrics=metrics, thresholds=thresholds)
+    return model_summaries
 
 
 def main(args: Namespace | None = None) -> None:
@@ -431,47 +528,104 @@ def main(args: Namespace | None = None) -> None:
     evaluation_split = str(getattr(args, "evaluation_split", "test")).strip().lower() or "test"
     thresholds = np.asarray(getattr(args, "thresholds", np.linspace(0.0, 1.0, 101)), dtype=float)
     output_dir = Path(getattr(args, "output_dir", "logs/results/comparison_figures/threshold_curves"))
-    output_name = getattr(args, "output_name", "models_threshold_curves.png")
-
-    model_summaries: dict[str, dict[str, dict[str, np.ndarray | float | str | int]]] = {}
-
-    for model_def in models:
-        label = model_def.get("label")
-        model_type = model_def.get("model_type")
-        pattern = model_def.get("pattern") or (_default_pattern(model_type) if model_type else None)
-
-        if not label or not pattern:
-            raise ValueError(
-                "Each model definition must include 'label' and either 'pattern' or 'model_type'."
-            )
-
-        subject_paths = _collect_subject_paths(model_type=model_type, pattern=pattern)
-        if not subject_paths:
-            raise RuntimeError(f"No score files found for model '{label}' with pattern: {pattern}")
-
-        grouped = {subject: _load_scores(paths) for subject, paths in subject_paths.items()}
-        model_summaries[label] = _summarize_model(grouped, metrics=metrics, thresholds=thresholds)
-
-    output_path = output_dir / output_name
-    plot_models_threshold_curves(
-        model_summaries,
-        metrics=metrics,
-        thresholds=thresholds,
-        output_path=output_path,
-        evaluation_split=evaluation_split,
+    output_name_full = getattr(args, "output_name_full", "models_threshold_curves.png")
+    output_name_main = getattr(args, "output_name_main", "models_threshold_curves_main.png")
+    output_name_main_auc = getattr(args, "output_name_main_auc", "models_threshold_curves_main_auc.png")
+    output_name_main_threshold = getattr(
+        args, "output_name_main_threshold", "models_threshold_curves_main_threshold.png"
     )
-    print(f"Saved figure ({evaluation_split} metrics): {output_path}")
+
+    # Main-paper clean view options
+    generate_clean_main = bool(getattr(args, "generate_clean_main", True))
+    generate_full_appendix = bool(getattr(args, "generate_full_appendix", True))
+    main_metrics = list(
+        getattr(args, "main_metrics", ["test_f1", "test_balanced_accuracy", "test_roc_auc", "test_pr_auc"])
+    )
+    main_metrics_auc = list(getattr(args, "main_metrics_auc", ["test_roc_auc", "test_pr_auc"]))
+    main_metrics_threshold = list(
+        getattr(args, "main_metrics_threshold", ["test_f1", "test_precision", "test_recall", "test_specificity"])
+    )
+    main_model_labels = list(
+        getattr(
+            args,
+            "main_model_labels",
+            ["InterSeg-CNN-LSTM", "IntraSeg-CNN", "InterSeg-LSTM", "Baseline-Dummy"],
+        )
+    )
+    generate_clean_main_combined = bool(getattr(args, "generate_clean_main_combined", False))
+
+    if generate_full_appendix:
+        model_summaries_full = _build_model_summaries(models, metrics=metrics, thresholds=thresholds)
+        output_path_full = output_dir / output_name_full
+        plot_models_threshold_curves(
+            model_summaries_full,
+            metrics=metrics,
+            thresholds=thresholds,
+            output_path=output_path_full,
+            evaluation_split=evaluation_split,
+        )
+        print(f"Saved full threshold figure ({evaluation_split} metrics): {output_path_full}")
+
+    if generate_clean_main:
+        main_models = _filter_models_by_labels(models, include_labels=main_model_labels)
+        # Build summaries with the union of all metrics needed by all clean-main outputs.
+        merged_main_metrics: list[str] = []
+        for m in [*main_metrics, *main_metrics_auc, *main_metrics_threshold]:
+            if m not in merged_main_metrics:
+                merged_main_metrics.append(m)
+        model_summaries_main = _build_model_summaries(
+            main_models, metrics=merged_main_metrics, thresholds=thresholds
+        )
+
+        if generate_clean_main_combined:
+            output_path_main = output_dir / output_name_main
+            plot_models_threshold_curves(
+                model_summaries_main,
+                metrics=main_metrics,
+                thresholds=thresholds,
+                output_path=output_path_main,
+                evaluation_split=evaluation_split,
+            )
+            print(f"Saved clean main threshold figure ({evaluation_split} metrics): {output_path_main}")
+
+        output_path_main_auc = output_dir / output_name_main_auc
+        plot_models_threshold_curves(
+            model_summaries_main,
+            metrics=main_metrics_auc,
+            thresholds=thresholds,
+            output_path=output_path_main_auc,
+            evaluation_split=evaluation_split,
+        )
+        print(f"Saved clean AUC threshold figure ({evaluation_split} metrics): {output_path_main_auc}")
+
+        output_path_main_thr = output_dir / output_name_main_threshold
+        plot_models_threshold_curves(
+            model_summaries_main,
+            metrics=main_metrics_threshold,
+            thresholds=thresholds,
+            output_path=output_path_main_thr,
+            evaluation_split=evaluation_split,
+        )
+        print(f"Saved clean threshold-metrics figure ({evaluation_split} metrics): {output_path_main_thr}")
 
 
 if __name__ == "__main__":
     args = Namespace(
         models=[
-            {"label": "dummy", "model_type": "dummy_raw_betaChs"},
-            {"label": "logreg", "model_type": "logreg_hctsa_betaChs"},
-            {"label": "rf", "model_type": "rf_hctsa_betaChs"},
-            {"label": "xgb", "model_type": "xgb_hctsa_betaChs"},
-            {"label": "Seq2VecCNN", "model_type": "Seq2VecCNN_raw_betaChs"},
-            {"label": "Seq2VecLSTM", "model_type": "Seq2VecLSTM_raw_betaChs"},
+            {"label": "Baseline-Dummy", "model_type": "dummy_raw_betaChs"},
+            {"label": "LogReg", "model_type": "logreg_hctsa_betaChs"},
+            {"label": "RF", "model_type": "rf_hctsa_betaChs"},
+            {"label": "XGB", "model_type": "xgb_hctsa_betaChs"},
+            {"label": "SVM", "model_type": "svm_hctsa_betaChs"},
+            
+            {"label": "IntraSeg-MLP", "model_type": "Seq2VecMLP_hctsa_betaChs"},
+            {"label": "IntraSeg-CNN", "model_type": "Seq2VecCNN_raw_betaChs"},
+            {"label": "IntraSeg-LSTM", "model_type": "Seq2VecLSTM_raw_betaChs"},
+            
+            {"label": "IntraSeg-MLP-LSTM", "model_type": "Seq2VecMLPLSTM_betaChs"},
+            
+            {"label": "InterSeg-LSTM", "model_type": "Seq2SeqLSTM_hctsa_betaChs"},
+            {"label": "InterSeg-CNN-LSTM", "model_type": "Seq2SeqCNNLSTM_raw_betaChs"},
         ],
         metrics=[
             "test_f1",
@@ -486,6 +640,36 @@ if __name__ == "__main__":
         thresholds=np.linspace(0.0, 1.0, 101),
         evaluation_split="test",
         output_dir="logs/results/comparison_figures/test",
-        output_name="models_threshold_curves.png",
+        output_name_full="models_threshold_curves.png",
+        output_name_main="models_threshold_curves_main.png",
+        output_name_main_auc="models_threshold_curves_main_auc.png",
+        output_name_main_threshold="models_threshold_curves_main_threshold.png",
+        generate_full_appendix=True,
+        generate_clean_main=True,
+        generate_clean_main_combined=False,
+        # Clean, readable main figure selection:
+        main_model_labels=[
+            "InterSeg-CNN-LSTM",
+            "IntraSeg-CNN",
+            "InterSeg-LSTM",
+            "Baseline-Dummy",
+        ],
+        main_metrics=[
+            "test_f1",
+            "test_balanced_accuracy",
+            "test_roc_auc",
+            "test_pr_auc",
+        ],
+        # Requested split for clearer visuals:
+        main_metrics_auc=[
+            "test_roc_auc",
+            "test_pr_auc",
+        ],
+        main_metrics_threshold=[
+            "test_f1",
+            "test_precision",
+            "test_recall",
+            "test_specificity",
+        ],
     )
     main(args)

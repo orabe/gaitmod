@@ -282,7 +282,7 @@ if __name__ == "__main__":
     from argparse import Namespace
     from pathlib import Path
     
-    experiment_name = "Seq2VecCNN_raw_betaChs_pooled"
+    experiment_name = "Seq2VecMLPLSTM_betaChs"
     
     subject_fold_map = {
         "PW_EM59": "outer_fold_01_test_PW_EM59",
