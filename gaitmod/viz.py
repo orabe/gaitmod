@@ -10,7 +10,844 @@ from matplotlib.ticker import FuncFormatter
 from mne.time_frequency import psd_array_multitaper
 
 class Visualise:
+    # @staticmethod
+    # def plot_trial_length_histogram_and_boxplot(subjects_lfp_data_dict: dict, lfp_sfreq: float = None, figsize: tuple = (12, 10), save_path: str = None, fig_name: str = None) -> None:
+    #     """
+    #     Create a two-row figure showing trial length distributions:
+    #     - Row 1: Histogram of all trial lengths combined
+    #     - Row 2: Horizontal boxplots per subject
         
+    #     Parameters:
+    #     subjects_lfp_data_dict (dict): Dict of subject -> list of np.ndarray (trials, shape (n_channels, n_samples)).
+    #     lfp_sfreq (float, optional): If provided, converts samples to seconds.
+    #     figsize (tuple): Figure size (width, height).
+    #     save_path (str, optional): Directory path to save the figure.
+    #     fig_name (str, optional): Name of the figure file to save.
+    #     """
+    #     import matplotlib.pyplot as plt
+    #     import numpy as np
+        
+    #     # Collect all trial lengths and organize by subject
+    #     all_lengths = []
+    #     subj_lengths = {}
+    #     subjects = list(subjects_lfp_data_dict.keys())
+        
+    #     for subject in subjects:
+    #         trial_lengths = [trial.shape[1] for trial in subjects_lfp_data_dict[subject] if hasattr(trial, 'shape')]
+    #         if lfp_sfreq is not None:
+    #             trial_lengths = [length / lfp_sfreq for length in trial_lengths]
+    #         subj_lengths[subject] = trial_lengths
+    #         all_lengths.extend(trial_lengths)
+        
+    #     if len(all_lengths) == 0:
+    #         raise ValueError("No trial lengths found in the input dictionary.")
+        
+    #     # Create figure with two subplots (shared x-axis)
+    #     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+        
+    #     # Unified title for the entire figure
+    #     fig.suptitle('Trial Length Distribution', fontsize=16, fontweight='bold', y=0.98)
+        
+    #     # Row 1: Histogram of all trial lengths combined
+    #     # Use a trendy modern color suitable for publication
+    #     hist_color = '#6C5CE7'  # Modern vibrant purple
+    #     ax1.hist(all_lengths, bins=30, color=hist_color, edgecolor='#2D3436', alpha=0.75, linewidth=1.2)
+    #     ax1.set_ylabel('Frequency', fontsize=13, fontweight='bold')
+    #     ax1.set_title('All Subjects Combined', fontsize=12, style='italic', pad=8, loc='right')
+    #     ax1.grid(axis='y', linestyle='--', alpha=0.4)
+    #     ax1.tick_params(labelsize=11)
+        
+    #     # Remove spines from histogram
+    #     ax1.spines['top'].set_visible(False)
+    #     ax1.spines['right'].set_visible(False)
+    #     ax1.spines['left'].set_visible(False)
+    #     ax1.spines['bottom'].set_visible(False)
+        
+    #     # Row 2: Horizontal boxplots per subject
+    #     # Use trendy modern colors for each subject with high contrast
+    #     import seaborn as sns
+    #     import matplotlib.colors as mcolors
+        
+    #     # Enhanced color palette with better contrast between subjects
+    #     box_colors = ['#3498DB', '#9B59B6', '#E91E63', '#F39C12', '#1ABC9C', '#16A085', '#E74C3C', '#95A5A6'][:len(subjects)]
+    #     if len(subjects) > len(box_colors):
+    #         box_colors = sns.color_palette('husl', len(subjects))  # Fallback for many subjects
+        
+    #     # Helper function to darken colors for stroke
+    #     def darken_color(color, factor=0.6):
+    #         """Darken a color by reducing RGB values."""
+    #         if isinstance(color, str):
+    #             rgb = mcolors.to_rgb(color)
+    #         else:
+    #             rgb = color[:3]
+    #         darkened = tuple(max(0, c * factor) for c in rgb)
+    #         return darkened
+        
+    #     # Prepare data for horizontal boxplot with trial counts
+    #     boxplot_data = [subj_lengths[subject] for subject in subjects]
+    #     labels_with_counts = [f'{subject} (n={len(subj_lengths[subject])})' for subject in subjects]
+        
+    #     # Create horizontal boxplot
+    #     bp = ax2.boxplot(boxplot_data, 
+    #                      vert=False,  # Horizontal orientation
+    #                      patch_artist=True,
+    #                      labels=labels_with_counts,
+    #                      widths=0.6,
+    #                      medianprops=dict(color='darkred', linewidth=2),
+    #                      boxprops=dict(linewidth=1.5),
+    #                      whiskerprops=dict(linewidth=1.5),
+    #                      capprops=dict(linewidth=1.5),
+    #                      flierprops=dict(marker='o', markerfacecolor='gray', markersize=5, alpha=0.6))
+        
+    #     # Color each box with a distinct color and use darker version for strokes
+    #     for i, (patch, color) in enumerate(zip(bp['boxes'], box_colors)):
+    #         patch.set_facecolor(color)
+    #         patch.set_alpha(0.7)
+            
+    #         # Use darkened version of the color for edges and median
+    #         dark_color = darken_color(color, factor=0.6)
+    #         patch.set_edgecolor(dark_color)
+            
+    #         # Match whisker, cap, and median colors to darkened box color
+    #         bp['whiskers'][i*2].set_color(dark_color)
+    #         bp['whiskers'][i*2+1].set_color(dark_color)
+    #         bp['caps'][i*2].set_color(dark_color)
+    #         bp['caps'][i*2+1].set_color(dark_color)
+    #         bp['medians'][i].set_color(dark_color)
+    #         bp['medians'][i].set_linewidth(2)
+        
+    #     ax2.set_xlabel('Trial Length' + (' (seconds)' if lfp_sfreq else ' (samples)'), fontsize=13, fontweight='bold')
+    #     ax2.set_ylabel('Subject', fontsize=13, fontweight='bold')
+    #     ax2.set_title('Per Subject', fontsize=12, style='italic', pad=8, loc='right')
+    #     ax2.grid(axis='both', linestyle='--', alpha=0.4)
+    #     ax2.tick_params(labelsize=11)
+        
+    #     # Remove spines from boxplot
+    #     ax2.spines['top'].set_visible(False)
+    #     ax2.spines['right'].set_visible(False)
+    #     ax2.spines['left'].set_visible(False)
+    #     ax2.spines['bottom'].set_visible(False)
+        
+    #     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for suptitle
+        
+    #     if save_path and fig_name:
+    #         os.makedirs(save_path, exist_ok=True)
+    #         plt.savefig(os.path.join(save_path, fig_name), dpi=300, bbox_inches='tight')
+        
+    #     plt.show()
+        
+    @staticmethod
+    def plot_combined_trial_and_segments_distribution(subjects_lfp_data_dict: dict, patients_epochs: Dict, lfp_sfreq: float = None, figsize: tuple = (20, 15), save_path: str = None, fig_name: str = None) -> None:
+        """
+        Create a comprehensive figure with 5 subplots showing both trial length and segment distributions:
+        
+        Row 1 (Histograms):
+        - A: Histogram of all trial lengths combined
+        - B: Histogram for each class label showing segments per trial
+        
+        Row 2 (Boxplots):
+        - C: Horizontal boxplots of trial lengths per subject
+        - D: Boxplot of segments per class label per subject
+        
+        Row 3 (Per Subject Summary):
+        - E: Stacked bar chart showing total segments per subject for each class label (stretched across both columns)
+        
+        Parameters:
+        -----------
+        subjects_lfp_data_dict : dict
+            Dict of subject -> list of np.ndarray (trials, shape (n_channels, n_samples)).
+        patients_epochs : Dict
+            Dictionary containing patient names as keys and MNE Epochs objects as values.
+        lfp_sfreq : float, optional
+            If provided, converts samples to seconds for trial lengths.
+        figsize : tuple, optional
+            Figure size (width, height). Default is (20, 15) for publication format.
+        save_path : str, optional
+            Directory path to save the figure.
+        fig_name : str, optional
+            Name of the figure file to save.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import seaborn as sns
+        import matplotlib.colors as mcolors
+        import os
+        import pandas as pd
+        from matplotlib.patches import Patch
+        
+        # Set font to Arial/Helvetica for publication
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+        
+        # Font sizes
+        axis_label_fontsize = 15
+        tick_fontsize = 13
+        panel_label_fontsize = 18
+        
+        # Line weight
+        line_width = 1.5
+        
+        # Colorblind-friendly palette for trial lengths
+        hist_color = '#95A5A6'
+        box_colors = ['#95A5A6', '#95A5A6', '#95A5A6', '#95A5A6', '#95A5A6', '#95A5A6', '#95A5A6']
+        
+        # Colorblind-friendly colors for segments
+        class_colors = {'normal': "#298c8c", 'modulation': "#f1a226"}
+        class_names = {0: 'Steady-State Walking', 1: 'Gait Modulation'}
+        alpha_val = 0.8
+        
+        # Create figure with 2 rows, 6 columns for flexible layout
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(2, 6, hspace=0.45, wspace=0.6, height_ratios=[1, 1])
+        
+        # Remove all spines helper function
+        def remove_spines(ax):
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+        
+        # Helper function to darken colors for stroke
+        def darken_color(color, factor=0.6):
+            """Darken a color by reducing RGB values."""
+            if isinstance(color, str):
+                rgb = mcolors.to_rgb(color)
+            else:
+                rgb = color[:3]
+            darkened = tuple(max(0, c * factor) for c in rgb)
+            return darkened
+        
+        # ===== COLLECT DATA =====
+        
+        # Collect all trial lengths and organize by subject
+        all_lengths = []
+        subj_lengths = {}
+        subjects = list(subjects_lfp_data_dict.keys())
+        
+        # Create subject name mapping (remove "PW_" prefix)
+        subject_name_map = {subject: subject.replace('PW_', '') for subject in subjects}
+        
+        for subject in subjects:
+            trial_lengths = [trial.shape[1] for trial in subjects_lfp_data_dict[subject] if hasattr(trial, 'shape')]
+            if lfp_sfreq is not None:
+                trial_lengths = [length / lfp_sfreq for length in trial_lengths]
+            subj_lengths[subject] = trial_lengths
+            all_lengths.extend(trial_lengths)
+        
+        if len(all_lengths) == 0:
+            raise ValueError("No trial lengths found in the input dictionary.")
+        
+        # Extract segment data from epochs
+        n_subjects = len(subjects)
+        
+        # Collect segment counts per subject and class
+        subject_segments = {}
+        violin_data = []
+        
+        for subject in subjects:
+            epochs = patients_epochs[subject]
+            trial_indices = epochs.events[:, 1]
+            labels = epochs.events[:, 2]
+            
+            # Count total segments per class for this subject
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            subject_segments[subject] = {int(label): count for label, count in zip(unique_labels, counts)}
+            
+            # Count segments per trial for each class
+            unique_trials = np.unique(trial_indices)
+            for trial_idx in unique_trials:
+                trial_mask = trial_indices == trial_idx
+                trial_labels = labels[trial_mask]
+                for class_label in [0, 1]:
+                    count = np.sum(trial_labels == class_label)
+                    if count > 0:
+                        violin_data.append({
+                            'Segments': count,
+                            'Class': class_names[class_label],
+                            'Subject': subject
+                        })
+        
+        violin_df = pd.DataFrame(violin_data)
+        
+        # Determine bins for segment histogram
+        if not violin_df.empty:
+            bins_segments = np.arange(0, max(violin_df['Segments'].max(), 1) + 2) - 0.5
+            n_bins_segments = len(bins_segments) - 1
+        else:
+            n_bins_segments = 10
+        
+        # ===== ROW 1: HISTOGRAMS =====
+        
+        # Panel A: Histogram of all trial lengths combined
+        ax1 = fig.add_subplot(gs[0, :2])
+        bins_trial = n_bins_segments  # Match the number of bins
+        ax1.hist(all_lengths, bins=bins_trial, color=hist_color, edgecolor=hist_color, alpha=0.85, linewidth=line_width)
+        ax1.set_ylabel('Number of Trials', fontsize=axis_label_fontsize)
+        ax1.set_xlabel('Trial Length' + (' (seconds)' if lfp_sfreq else ' (samples)'), fontsize=axis_label_fontsize)
+        ax1.grid(axis='y', linestyle='--', alpha=0.4, linewidth=1)
+        ax1.tick_params(labelsize=tick_fontsize)
+        ax1.tick_params(axis='x', rotation=15)
+        ax1.text(-0.1, 1.08, 'A\n', transform=ax1.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        remove_spines(ax1)
+        
+        # Panel D: Histogram of segment counts per trial per class label
+        ax2 = fig.add_subplot(gs[1, :2])
+        if not violin_df.empty:
+            data0 = violin_df[violin_df['Class'] == class_names[0]]['Segments']
+            data1 = violin_df[violin_df['Class'] == class_names[1]]['Segments']
+            ax2.hist(data0, bins=bins_segments, color=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5)
+            ax2.hist(data1, bins=bins_segments, color=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5)
+        ax2.text(-0.1, 1.08, 'D\n', transform=ax2.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        ax2.set_xlabel('Number of Segments per Trial', fontsize=axis_label_fontsize)
+        ax2.set_ylabel('Count', fontsize=axis_label_fontsize)
+        ax2.grid(axis='x', linestyle='--', alpha=0.4)
+        ax2.tick_params(labelsize=tick_fontsize)
+        ax2.tick_params(axis='x', rotation=15)
+        remove_spines(ax2)
+        
+        # ===== ROW 2: BOXPLOTS =====
+        
+        # Panel B: Vertical boxplots of trial lengths per subject
+        ax3 = fig.add_subplot(gs[0, 2:4])
+        palette = box_colors[:len(subjects)]
+        if len(subjects) > len(palette):
+            palette = sns.color_palette('colorblind', len(subjects))
+        
+        boxplot_data = [subj_lengths[subject] for subject in subjects]
+        labels_panel_c = [subject_name_map[subject] for subject in subjects]
+        
+        bp = ax3.boxplot(boxplot_data, 
+                         vert=True,
+                         patch_artist=True,
+                         labels=labels_panel_c,
+                         widths=0.6,
+                         medianprops=dict(color='darkred', linewidth=2),
+                         boxprops=dict(linewidth=line_width),
+                         whiskerprops=dict(linewidth=line_width),
+                         capprops=dict(linewidth=line_width),
+                         flierprops=dict(marker='o', markerfacecolor='gray', markersize=5, alpha=0.6))
+        
+        for i, (patch, color) in enumerate(zip(bp['boxes'], palette)):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.8)
+            dark_color = darken_color(color, factor=0.6)
+            patch.set_edgecolor(dark_color)
+            bp['whiskers'][i*2].set_color(dark_color)
+            bp['whiskers'][i*2+1].set_color(dark_color)
+            bp['caps'][i*2].set_color(dark_color)
+            bp['caps'][i*2+1].set_color(dark_color)
+            bp['medians'][i].set_color(dark_color)
+            bp['medians'][i].set_linewidth(2)
+        
+        ax3.set_ylabel('Trial Length' + (' (seconds)' if lfp_sfreq else ' (samples)'), fontsize=axis_label_fontsize)
+        ax3.set_xlabel('Subject', fontsize=axis_label_fontsize)
+        ax3.grid(axis='both', linestyle='--', alpha=0.4, linewidth=1)
+        ax3.tick_params(labelsize=tick_fontsize)
+        ax3.tick_params(axis='x', rotation=15)
+        ax3.text(-0.1, 1.08, 'B\n', transform=ax3.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        remove_spines(ax3)
+        
+        # Panel C: Bar plot of number of trials per subject
+        ax6 = fig.add_subplot(gs[0, 4:])
+        n_trials_per_subject = [len(subj_lengths[subject]) for subject in subjects]
+        x_pos_trials = np.arange(n_subjects)
+        ax6.bar(x_pos_trials, n_trials_per_subject, color=hist_color, alpha=0.85, edgecolor=hist_color, linewidth=line_width)
+        ax6.set_ylabel('Number of Trials', fontsize=axis_label_fontsize)
+        ax6.set_xlabel('Subject', fontsize=axis_label_fontsize)
+        ax6.set_xticks(x_pos_trials)
+        ax6.set_xticklabels([subject_name_map[subject] for subject in subjects], fontsize=tick_fontsize)
+        ax6.grid(axis='y', linestyle='--', alpha=0.4, linewidth=1)
+        ax6.tick_params(labelsize=tick_fontsize)
+        ax6.tick_params(axis='x', rotation=15)
+        ax6.text(-0.1, 1.08, 'C\n', transform=ax6.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        remove_spines(ax6)
+        
+        # Panel E: Boxplot of segments per subject
+        ax4 = fig.add_subplot(gs[1, 2:4])
+        boxplot_data_normal = []
+        boxplot_data_modulation = []
+        labels_list = []
+        for subject in subjects:
+            epochs = patients_epochs[subject]
+            trial_indices = epochs.events[:, 1]
+            labels = epochs.events[:, 2]
+            unique_trials = np.unique(trial_indices)
+            normal_per_trial = []
+            modulation_per_trial = []
+            for trial_idx in unique_trials:
+                trial_mask = trial_indices == trial_idx
+                trial_labels = labels[trial_mask]
+                normal_count = np.sum(trial_labels == 0)
+                modulation_count = np.sum(trial_labels == 1)
+                if normal_count > 0:
+                    normal_per_trial.append(normal_count)
+                if modulation_count > 0:
+                    modulation_per_trial.append(modulation_count)
+            boxplot_data_normal.append(normal_per_trial)
+            boxplot_data_modulation.append(modulation_per_trial)
+            labels_list.append(subject)
+        
+        positions_normal = np.arange(n_subjects) * 2
+        positions_modulation = np.arange(n_subjects) * 2 + 0.8
+        bp1 = ax4.boxplot(boxplot_data_normal, positions=positions_normal, widths=0.6,
+                            vert=True, patch_artist=True,
+                            boxprops=dict(linewidth=1.5),
+                            whiskerprops=dict(linewidth=1.5),
+                            capprops=dict(linewidth=1.5),
+                            medianprops=dict(linewidth=2),
+                            flierprops=dict(marker='o', markersize=5, alpha=0.6))
+        bp2 = ax4.boxplot(boxplot_data_modulation, positions=positions_modulation, widths=0.6,
+                            vert=True, patch_artist=True,
+                            boxprops=dict(linewidth=1.5),
+                            whiskerprops=dict(linewidth=1.5),
+                            capprops=dict(linewidth=1.5),
+                            medianprops=dict(linewidth=2),
+                            flierprops=dict(marker='o', markersize=5, alpha=0.6))
+        
+        for i, (patch_n, patch_m) in enumerate(zip(bp1['boxes'], bp2['boxes'])):
+            patch_n.set_facecolor(class_colors['normal'])
+            patch_n.set_alpha(alpha_val)
+            patch_n.set_edgecolor(class_colors['normal'])
+            bp1['medians'][i].set_color(class_colors['normal'])
+            bp1['medians'][i].set_linewidth(2.5)
+            bp1['whiskers'][i*2].set_color(class_colors['normal'])
+            bp1['whiskers'][i*2+1].set_color(class_colors['normal'])
+            bp1['caps'][i*2].set_color(class_colors['normal'])
+            bp1['caps'][i*2+1].set_color(class_colors['normal'])
+            patch_m.set_facecolor(class_colors['modulation'])
+            patch_m.set_alpha(alpha_val)
+            patch_m.set_edgecolor(class_colors['modulation'])
+            bp2['medians'][i].set_color(class_colors['modulation'])
+            bp2['medians'][i].set_linewidth(2.5)
+            bp2['whiskers'][i*2].set_color(class_colors['modulation'])
+            bp2['whiskers'][i*2+1].set_color(class_colors['modulation'])
+            bp2['caps'][i*2].set_color(class_colors['modulation'])
+            bp2['caps'][i*2+1].set_color(class_colors['modulation'])
+        
+        ax4.set_xticks(positions_normal + 0.4)
+        ax4.set_xticklabels([subject_name_map[subject] for subject in labels_list], fontsize=tick_fontsize)
+        ax4.text(-0.1, 1.08, 'E\n', transform=ax4.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        ax4.set_ylabel('Number of Segments per Trial', fontsize=axis_label_fontsize)
+        ax4.set_xlabel('Subject', fontsize=axis_label_fontsize)
+        ax4.grid(axis='y', linestyle='--', alpha=0.4)
+        ax4.tick_params(labelsize=tick_fontsize)
+        ax4.tick_params(axis='x', rotation=15)
+        remove_spines(ax4)
+        
+        # ===== ROW 2: PER SUBJECT SUMMARY =====
+        
+        # Panel F: Stacked bar chart per subject
+        ax5 = fig.add_subplot(gs[1, 4:])
+        normal_totals = [subject_segments[subject].get(0, 0) for subject in subjects]
+        modulation_totals = [subject_segments[subject].get(1, 0) for subject in subjects]
+        x_pos = np.arange(n_subjects)
+        ax5.bar(x_pos, normal_totals, color=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5)
+        ax5.bar(x_pos, modulation_totals, bottom=normal_totals, color=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5)
+        
+        for i, (norm, mod) in enumerate(zip(normal_totals, modulation_totals)):
+            if norm > 0:
+                ax5.text(i, norm/2, f'{norm}', ha='center', va='center', fontsize=11, fontweight='bold', color='white')
+            if mod > 0:
+                ax5.text(i, norm + mod/2, f'{mod}', ha='center', va='center', fontsize=11, fontweight='bold', color='white')
+        
+        ax5.set_xticks(x_pos)
+        ax5.set_xticklabels([subject_name_map[subject] for subject in subjects], fontsize=tick_fontsize)
+        ax5.text(-0.1, 1.08, 'F\n', transform=ax5.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        ax5.set_ylabel('Total Number of Segments', fontsize=axis_label_fontsize)
+        ax5.set_xlabel('Subject', fontsize=axis_label_fontsize)
+        ax5.grid(axis='y', linestyle='--', alpha=0.4)
+        ax5.tick_params(labelsize=tick_fontsize)
+        ax5.tick_params(axis='x', rotation=15)
+        remove_spines(ax5)
+        
+        # Create shared legend
+        legend_elements = [
+            Patch(facecolor=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5, label='Steady-State Walking'),
+            Patch(facecolor=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5, label='Gait Modulation')
+        ]
+        fig.legend(handles=legend_elements, loc='lower center', ncol=2, fontsize=14, frameon=True, bbox_to_anchor=(0.5, -0.02))
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 1.0])
+        
+        if save_path and fig_name:
+            os.makedirs(save_path, exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=600, bbox_inches='tight')
+            plt.savefig(os.path.join(save_path, fig_name + '.pdf'), bbox_inches='tight')
+        
+        plt.show()
+    
+    @staticmethod
+    def plot_trial_length_histogram_and_boxplot(subjects_lfp_data_dict: dict, lfp_sfreq: float = None, figsize: tuple = (20, 10), save_path: str = None, fig_name: str = None) -> None:
+        """
+        DEPRECATED: Use plot_combined_trial_and_segments_distribution instead.
+        
+        Create a two-row figure showing trial length distributions:
+        - Row 1: Histogram of all trial lengths combined
+        - Row 2: Horizontal boxplots per subject
+        
+        Parameters:
+        subjects_lfp_data_dict (dict): Dict of subject -> list of np.ndarray (trials, shape (n_channels, n_samples)).
+        lfp_sfreq (float, optional): If provided, converts samples to seconds.
+        figsize (tuple): Figure size (width, height). Default is (20, 10) for single-column journal format.
+        save_path (str, optional): Directory path to save the figure.
+        fig_name (str, optional): Name of the figure file to save.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import seaborn as sns
+        import matplotlib.colors as mcolors
+        import os
+        
+        # Set font to Arial/Helvetica for publication
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+        
+        # Font sizes
+        axis_label_fontsize = 15
+        tick_fontsize = 13
+        panel_label_fontsize = 18
+        
+        # Line weight
+        line_width = 1.5
+        
+        # Colorblind-friendly palette
+        hist_color = '#95A5A6'  # ColorBrewer blue-green
+        box_colors = ['#f1a226', '#9B59B6', '#E91E63', '#F39C12', '#1ABC9C', '#E74C3C', '#95A5A6']
+        
+        # Collect all trial lengths and organize by subject
+        all_lengths = []
+        subj_lengths = {}
+        subjects = list(subjects_lfp_data_dict.keys())
+        
+        for subject in subjects:
+            trial_lengths = [trial.shape[1] for trial in subjects_lfp_data_dict[subject] if hasattr(trial, 'shape')]
+            if lfp_sfreq is not None:
+                trial_lengths = [length / lfp_sfreq for length in trial_lengths]
+            subj_lengths[subject] = trial_lengths
+            all_lengths.extend(trial_lengths)
+        
+        if len(all_lengths) == 0:
+            raise ValueError("No trial lengths found in the input dictionary.")
+        
+        # Create figure with two subplots (shared x-axis)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+        
+        # Row 1: Histogram of all trial lengths combined
+        bins = 10
+        ax1.hist(all_lengths, bins=bins, color=hist_color, edgecolor=hist_color, alpha=0.85, linewidth=line_width)
+        ax1.set_ylabel('Number of Trials', fontsize=axis_label_fontsize, fontweight='bold')
+        ax1.set_xlabel('Trial Length' + (' (seconds)' if lfp_sfreq else ' (samples)'), fontsize=axis_label_fontsize, fontweight='bold')
+        ax1.grid(axis='y', linestyle='--', alpha=0.4, linewidth=1)
+        ax1.tick_params(labelsize=tick_fontsize)
+        
+        # Panel label A
+        ax1.text(-0.12, 1.05, 'A', transform=ax1.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        
+        # Remove spines from histogram
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['left'].set_visible(False)
+        ax1.spines['bottom'].set_visible(False)
+        
+        # Row 2: Horizontal boxplots per subject
+        # Colorblind-friendly palette
+        palette = box_colors[:len(subjects)]
+        if len(subjects) > len(palette):
+            palette = sns.color_palette('colorblind', len(subjects))
+        
+        # Helper function to darken colors for stroke
+        def darken_color(color, factor=0.6):
+            """Darken a color by reducing RGB values."""
+            if isinstance(color, str):
+                rgb = mcolors.to_rgb(color)
+            else:
+                rgb = color[:3]
+            darkened = tuple(max(0, c * factor) for c in rgb)
+            return darkened
+        
+        # Prepare data for horizontal boxplot with trial counts
+        boxplot_data = [subj_lengths[subject] for subject in subjects]
+        labels_with_counts = [f'{subject} (n={len(subj_lengths[subject])})' for subject in subjects]
+        
+        # Create horizontal boxplot
+        bp = ax2.boxplot(boxplot_data, 
+                         vert=False,  # Horizontal orientation
+                         patch_artist=True,
+                         labels=labels_with_counts,
+                         widths=0.6,
+                         medianprops=dict(color='darkred', linewidth=2),
+                         boxprops=dict(linewidth=line_width),
+                         whiskerprops=dict(linewidth=line_width),
+                         capprops=dict(linewidth=line_width),
+                         flierprops=dict(marker='o', markerfacecolor='gray', markersize=5, alpha=0.6))
+        
+        # Color each box with a distinct color and use darker version for strokes
+        for i, (patch, color) in enumerate(zip(bp['boxes'], palette)):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.8)
+            
+            # Use darkened version of the color for edges and median
+            dark_color = darken_color(color, factor=0.6)
+            patch.set_edgecolor(dark_color)
+            
+            # Match whisker, cap, and median colors to darkened box color
+            bp['whiskers'][i*2].set_color(dark_color)
+            bp['whiskers'][i*2+1].set_color(dark_color)
+            bp['caps'][i*2].set_color(dark_color)
+            bp['caps'][i*2+1].set_color(dark_color)
+            bp['medians'][i].set_color(dark_color)
+            bp['medians'][i].set_linewidth(2)
+        
+        ax2.set_xlabel('Trial Length' + (' (seconds)' if lfp_sfreq else ' (samples)'), fontsize=axis_label_fontsize, fontweight='bold')
+        ax2.set_ylabel('Subject', fontsize=axis_label_fontsize, fontweight='bold')
+        ax2.grid(axis='both', linestyle='--', alpha=0.4, linewidth=1)
+        ax2.tick_params(labelsize=tick_fontsize)
+        
+        # Panel label B
+        ax2.text(-0.12, 1.05, 'B', transform=ax2.transAxes, fontsize=panel_label_fontsize, fontweight='bold', va='top')
+        
+        # Remove spines from boxplot
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.spines['left'].set_visible(False)
+        ax2.spines['bottom'].set_visible(False)
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 1.0])
+        
+        if save_path and fig_name:
+            os.makedirs(save_path, exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=600, bbox_inches='tight')
+            plt.savefig(os.path.join(save_path, fig_name + '.pdf'), bbox_inches='tight')
+        
+        plt.show()
+        
+    @staticmethod
+    def plot_segments_distribution(patients_epochs: Dict, save_path: str = None, fig_name: str = None, figsize: tuple = (20, 10)) -> None:
+        """
+        DEPRECATED: Use plot_combined_trial_and_segments_distribution instead.
+        
+        Create a comprehensive visualization of epoch/segment distributions across subjects.
+        
+        Row 1:
+        - Left: Histogram for each class label, showing the number of segments per trial across the entire dataset (horizontal orientation)
+        - Right: Horizontal stacked bar chart of total segments per class label
+        
+        Row 2:
+        - Left: Boxplot of segments per class label per subject (subjects on y-axis)
+        - Right: Stacked bar chart showing total segments per subject for each class label
+        
+        Parameters:
+        -----------
+        patients_epochs : Dict
+            Dictionary containing patient names as keys and MNE Epochs objects as values.
+        save_path : str, optional
+            Directory path where the plot image will be saved.
+        fig_name : str, optional
+            Name of the figure file to be saved (without extension).
+        figsize : tuple, optional
+            Figure size (width, height). Default is (20, 10) for single-column journal format.
+        """
+        import os
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import matplotlib.colors as mcolors
+        from matplotlib.patches import Patch
+        import pandas as pd
+
+        # Set font to Arial for publication
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+
+        # Extract data from epochs
+        subjects = list(patients_epochs.keys())
+        n_subjects = len(subjects)
+
+        # Use same color scheme as plot_trial_length_histogram_and_boxplot
+        subject_colors = ['#3498DB', '#9B59B6', '#E91E63', '#F39C12', '#1ABC9C', '#16A085', '#E74C3C', '#95A5A6'][:n_subjects]
+        if n_subjects > len(subject_colors):
+            subject_colors = sns.color_palette('husl', n_subjects)
+
+        # Colorblind-friendly colors (using ColorBrewer palette)
+        class_colors = {'normal': "#298c8c", 'modulation': "#f1a226"}  # Blue and Orange - colorblind safe
+        class_names = {0: 'Steady-State Walking', 1: 'Gait Modulation'}
+
+        # Consistent alpha value for all subplots
+        alpha_val = 0.8
+
+        # Collect segment counts per subject and class
+        subject_segments = {}
+        violin_data = []
+
+        for subject in subjects:
+            epochs = patients_epochs[subject]
+            trial_indices = epochs.events[:, 1]
+            labels = epochs.events[:, 2]
+
+            # Count total segments per class for this subject (for stacked bar chart)
+            unique_labels, counts = np.unique(labels, return_counts=True)
+            subject_segments[subject] = {int(label): count for label, count in zip(unique_labels, counts)}
+
+            # Count segments per trial for each class (for histogram)
+            unique_trials = np.unique(trial_indices)
+            for trial_idx in unique_trials:
+                trial_mask = trial_indices == trial_idx
+                trial_labels = labels[trial_mask]
+                for class_label in [0, 1]:
+                    count = np.sum(trial_labels == class_label)
+                    if count > 0:
+                        violin_data.append({
+                            'Segments': count,
+                            'Class': class_names[class_label],
+                            'Subject': subject
+                        })
+
+        violin_df = pd.DataFrame(violin_data)
+
+        # Create figure with 2x2 subplots
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+
+        # Remove all spines helper function
+        def remove_spines(ax):
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_visible(False)
+            ax.spines['bottom'].set_visible(False)
+
+        # ===== ROW 1, LEFT: Histogram of segment counts per trial per class label (no legend) =====
+        ax1 = fig.add_subplot(gs[0, 0])
+        if not violin_df.empty:
+            data0 = violin_df[violin_df['Class'] == class_names[0]]['Segments']
+            data1 = violin_df[violin_df['Class'] == class_names[1]]['Segments']
+            bins = np.arange(0, max(violin_df['Segments'].max(), 1) + 2) - 0.5
+            ax1.hist(data0, bins=bins, color=class_colors['normal'], alpha=alpha_val, label=class_names[0], edgecolor=class_colors['normal'], linewidth=1.5)
+            ax1.hist(data1, bins=bins, color=class_colors['modulation'], alpha=alpha_val, label=class_names[1], edgecolor=class_colors['modulation'], linewidth=1.5)
+            # No legend here
+        # Add panel label
+        ax1.text(-0.15, 1.05, 'A', transform=ax1.transAxes, fontsize=18, fontweight='bold', va='top')
+        ax1.set_xlabel('Number of Segments per Trial', fontsize=15)
+        ax1.set_ylabel('Count', fontsize=15)
+        ax1.grid(axis='x', linestyle='--', alpha=0.4)
+        ax1.tick_params(labelsize=13)
+        remove_spines(ax1)
+
+        # ===== ROW 1, RIGHT: Horizontal stacked bar chart of total segments =====
+        ax2 = fig.add_subplot(gs[0, 1])
+        total_normal = sum(subject_segments[subject].get(0, 0) for subject in subjects)
+        total_modulation = sum(subject_segments[subject].get(1, 0) for subject in subjects)
+        ax2.barh(['All Subjects'], [total_normal], color=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5, label='Steady-State Walking')
+        ax2.barh(['All Subjects'], [total_modulation], left=[total_normal], color=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5, label='Gait Modulation')
+        ax2.text(total_normal/2, 0, f'{total_normal}', ha='center', va='center', fontsize=13, fontweight='bold', color='white')
+        ax2.text(total_normal + total_modulation/2, 0, f'{total_modulation}', ha='center', va='center', fontsize=13, fontweight='bold', color='white')
+        ax2.text(-0.15, 1.05, 'B', transform=ax2.transAxes, fontsize=18, fontweight='bold', va='top')
+        ax2.set_xlabel('Total Number of Segments', fontsize=15)
+        ax2.grid(axis='x', linestyle='--', alpha=0.4)
+        ax2.tick_params(labelsize=13)
+        remove_spines(ax2)
+
+        # ===== ROW 2, LEFT: Boxplot per subject =====
+        ax3 = fig.add_subplot(gs[1, 0])
+        boxplot_data_normal = []
+        boxplot_data_modulation = []
+        labels_list = []
+        for subject in subjects:
+            epochs = patients_epochs[subject]
+            trial_indices = epochs.events[:, 1]
+            labels = epochs.events[:, 2]
+            unique_trials = np.unique(trial_indices)
+            normal_per_trial = []
+            modulation_per_trial = []
+            for trial_idx in unique_trials:
+                trial_mask = trial_indices == trial_idx
+                trial_labels = labels[trial_mask]
+                normal_count = np.sum(trial_labels == 0)
+                modulation_count = np.sum(trial_labels == 1)
+                if normal_count > 0:
+                    normal_per_trial.append(normal_count)
+                if modulation_count > 0:
+                    modulation_per_trial.append(modulation_count)
+            boxplot_data_normal.append(normal_per_trial)
+            boxplot_data_modulation.append(modulation_per_trial)
+            labels_list.append(subject)
+        positions_normal = np.arange(n_subjects) * 2
+        positions_modulation = np.arange(n_subjects) * 2 + 0.8
+        bp1 = ax3.boxplot(boxplot_data_normal, positions=positions_normal, widths=0.6,
+                            vert=False, patch_artist=True,
+                            boxprops=dict(linewidth=1.5),
+                            whiskerprops=dict(linewidth=1.5),
+                            capprops=dict(linewidth=1.5),
+                            medianprops=dict(linewidth=2),
+                            flierprops=dict(marker='o', markersize=5, alpha=0.6))
+        bp2 = ax3.boxplot(boxplot_data_modulation, positions=positions_modulation, widths=0.6,
+                            vert=False, patch_artist=True,
+                            boxprops=dict(linewidth=1.5),
+                            whiskerprops=dict(linewidth=1.5),
+                            capprops=dict(linewidth=1.5),
+                            medianprops=dict(linewidth=2),
+                            flierprops=dict(marker='o', markersize=5, alpha=0.6))
+        for i, (patch_n, patch_m) in enumerate(zip(bp1['boxes'], bp2['boxes'])):
+            patch_n.set_facecolor(class_colors['normal'])
+            patch_n.set_alpha(alpha_val)
+            patch_n.set_edgecolor(class_colors['normal'])
+            bp1['medians'][i].set_color(class_colors['normal'])
+            bp1['medians'][i].set_linewidth(2.5)
+            bp1['whiskers'][i*2].set_color(class_colors['normal'])
+            bp1['whiskers'][i*2+1].set_color(class_colors['normal'])
+            bp1['caps'][i*2].set_color(class_colors['normal'])
+            bp1['caps'][i*2+1].set_color(class_colors['normal'])
+            patch_m.set_facecolor(class_colors['modulation'])
+            patch_m.set_alpha(alpha_val)
+            patch_m.set_edgecolor(class_colors['modulation'])
+            bp2['medians'][i].set_color(class_colors['modulation'])
+            bp2['medians'][i].set_linewidth(2.5)
+            bp2['whiskers'][i*2].set_color(class_colors['modulation'])
+            bp2['whiskers'][i*2+1].set_color(class_colors['modulation'])
+            bp2['caps'][i*2].set_color(class_colors['modulation'])
+            bp2['caps'][i*2+1].set_color(class_colors['modulation'])
+        ax3.set_yticks(positions_normal + 0.4)
+        ax3.set_yticklabels(labels_list, fontsize=13)
+        ax3.text(-0.15, 1.05, 'C', transform=ax3.transAxes, fontsize=18, fontweight='bold', va='top')
+        ax3.set_xlabel('Number of Segments per Trial', fontsize=15)
+        ax3.set_ylabel('Subject', fontsize=15)
+        ax3.grid(axis='x', linestyle='--', alpha=0.4)
+        ax3.tick_params(labelsize=13)
+        remove_spines(ax3)
+
+        # ===== ROW 2, RIGHT: Stacked bar chart per subject =====
+        ax4 = fig.add_subplot(gs[1, 1])
+        normal_totals = [subject_segments[subject].get(0, 0) for subject in subjects]
+        modulation_totals = [subject_segments[subject].get(1, 0) for subject in subjects]
+        y_pos = np.arange(n_subjects)
+        bars1 = ax4.barh(y_pos, normal_totals, color=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5)
+        bars2 = ax4.barh(y_pos, modulation_totals, left=normal_totals, color=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5)
+        for i, (norm, mod) in enumerate(zip(normal_totals, modulation_totals)):
+            if norm > 0:
+                ax4.text(norm/2, i, f'{norm}', ha='center', va='center', fontsize=11, fontweight='bold', color='white')
+            if mod > 0:
+                ax4.text(norm + mod/2, i, f'{mod}', ha='center', va='center', fontsize=11, fontweight='bold', color='white')
+        ax4.set_yticks(y_pos)
+        ax4.set_yticklabels(subjects, fontsize=13)
+        ax4.text(-0.15, 1.05, 'D', transform=ax4.transAxes, fontsize=18, fontweight='bold', va='top')
+        ax4.set_xlabel('Total Number of Segments', fontsize=15)
+        ax4.set_ylabel('Subject', fontsize=15)
+        ax4.grid(axis='x', linestyle='--', alpha=0.4)
+        remove_spines(ax4)
+
+        # Create shared legend outside the figure
+        legend_elements = [
+            Patch(facecolor=class_colors['normal'], alpha=alpha_val, edgecolor=class_colors['normal'], linewidth=1.5, label='Steady-State Walking'),
+            Patch(facecolor=class_colors['modulation'], alpha=alpha_val, edgecolor=class_colors['modulation'], linewidth=1.5, label='Gait Modulation')
+        ]
+        fig.legend(handles=legend_elements, loc='lower center', ncol=2, fontsize=14, frameon=True, bbox_to_anchor=(0.5, -0.02))
+        plt.tight_layout(rect=[0, 0.03, 1, 1.0])
+        if save_path and fig_name:
+            os.makedirs(save_path, exist_ok=True)
+            plt.savefig(os.path.join(save_path, fig_name + '.png'), dpi=600, bbox_inches='tight')
+            plt.savefig(os.path.join(save_path, fig_name + '.pdf'), bbox_inches='tight')
+        plt.show()
+        
+                    
     @staticmethod
     def plot_session_counts(df_session_counts: pd.DataFrame, save_path: str, fig_name: str) -> None:
         """
@@ -511,18 +1348,22 @@ class Visualise:
                 color = normalized_color_map.get(pretty_normalized)
             trial_colors[label_name] = color or color_cycle[idx % len(color_cycle)]
 
+        # Calculate optimal grid layout
+        n_cols = min(3, n_subjects)  # Max 3 columns
+        n_rows = int(np.ceil(n_subjects / n_cols))
+
         ctx_fonts = {'font.size': base_font_size}
         with plt.rc_context(ctx_fonts):
             fig, axes = plt.subplots(
-                1,
-                n_subjects,
-                figsize=(5 * n_subjects, 5),
+                n_rows,
+                n_cols,
+                figsize=(5 * n_cols, 5 * n_rows),
                 sharey=True,
                 sharex=True,
                 constrained_layout=False
             )
-            if n_subjects == 1:
-                axes = np.array([axes])
+            # Flatten axes for easier iteration
+            axes = np.atleast_1d(axes).flatten()
 
             global_min, global_max = np.inf, -np.inf
 
@@ -561,7 +1402,8 @@ class Visualise:
 
                 return channel_index, channel_name
 
-            for ax, subject in zip(axes, subjects):
+            for idx, subject in enumerate(subjects):
+                ax = axes[idx]
                 epochs = patients_epochs[subject]
                 pref_value = subject_preferred_channels.get(subject)
                 if pref_value is None:
@@ -633,13 +1475,20 @@ class Visualise:
                         color='gray'
                     )
 
+            # Hide empty subplots if n_subjects doesn't fill the grid
+            for idx in range(n_subjects, len(axes)):
+                axes[idx].set_visible(False)
+
             if np.isfinite(global_min) and np.isfinite(global_max):
                 y_range = global_max - global_min
                 padding = 0.05 * y_range if y_range > 0 else 1.0
-                for ax in axes:
-                    ax.set_ylim(global_min - padding, global_max + padding)
+                for idx in range(n_subjects):
+                    axes[idx].set_ylim(global_min - padding, global_max + padding)
 
-            axes[0].set_ylabel('PSD (dB)')
+            # Set y-label only on leftmost subplots
+            for idx in range(n_subjects):
+                if idx % n_cols == 0:
+                    axes[idx].set_ylabel('PSD (dB)')
 
             legend_handles = [
                 Line2D([0], [0], color=trial_colors[label_name], linewidth=2.0)
