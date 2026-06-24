@@ -56,3 +56,5 @@ else
         sbatch --job-name="$subjects" "$BATCH_SCRIPT" "$HYPERPARAMS_CONFIG" "$subjects" "$RUN_ID" "${extra_args[@]}"
     done
 fi
+
+# srun --partition=gpu-2d --mem=128G --gres=gpu:1 --pty bash

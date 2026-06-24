@@ -1276,8 +1276,12 @@ class Visualise:
         save_path: Optional[str] = None,
         fig_name: Optional[str] = None,
         show_fig: bool = True,
-        base_font_size: int = 14
-    ) -> None:
+        base_font_size: int = 14,
+        beta_band: tuple = (13.0, 30.0),
+        include_group_summary: bool = True,
+        print_beta_summary: bool = True,
+        return_summary: bool = False
+    ) -> Optional[Dict[str, object]]:
         """Plot averaged log PSDs (with standard-deviation shading) for each trial type.
 
         Parameters
@@ -1306,15 +1310,28 @@ class Visualise:
         base_font_size : int, optional
             Base matplotlib font size used via ``rc_context`` to scale every text
             element in the figure, by default 14.
+        beta_band : tuple, optional
+            Beta frequency band boundaries (low, high) in Hz used for summary
+            statistics, by default (13.0, 30.0).
+        include_group_summary : bool, optional
+            If True, also generate a group-level summary figure with average PSD
+            across subjects, by default True.
+        print_beta_summary : bool, optional
+            If True, print the modulation-minus-normal beta-band difference in dB.
+        return_summary : bool, optional
+            If True, return quantitative summary statistics as a dict.
         """
 
         if not patients_epochs:
             raise ValueError("patients_epochs must contain at least one subject")
         if not subject_preferred_channels:
             raise ValueError("subject_preferred_channels must not be empty")
+        if len(beta_band) != 2 or beta_band[0] >= beta_band[1]:
+            raise ValueError("beta_band must be a tuple/list (low, high) with low < high")
 
         subjects = list(patients_epochs.keys())
         n_subjects = len(subjects)
+        beta_low, beta_high = float(beta_band[0]), float(beta_band[1])
 
         def _normalize_label_key(text: str) -> str:
             return text.lower().replace(' ', '').replace('_', '')
@@ -1326,6 +1343,11 @@ class Visualise:
             }
 
         def _prettify_label(label_name: str) -> str:
+            normalized = _normalize_label_key(label_name)
+            if 'normal' in normalized:
+                return 'Steady-State Walking'
+            if 'mod' in normalized:
+                return 'Gait Modulation'
             return label_name.replace('_', ' ').title()
 
         label_value_to_name = {}
@@ -1338,21 +1360,47 @@ class Visualise:
 
         ordered_labels = sorted(label_value_to_name.items(), key=lambda item: item[0])
 
+        # Match the publication color scheme used in
+        # `plot_combined_trial_and_segments_distribution`.
+        class_colors = {'normal': "#298c8c", 'modulation': "#f1a226"}
+
         color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
         trial_colors = {}
         for idx, (_, label_name) in enumerate(ordered_labels):
             normalized_label = _normalize_label_key(label_name)
             pretty_normalized = _normalize_label_key(_prettify_label(label_name))
+            if 'normal' in normalized_label:
+                trial_colors[label_name] = class_colors['normal']
+                continue
+            if 'mod' in normalized_label:
+                trial_colors[label_name] = class_colors['modulation']
+                continue
             color = normalized_color_map.get(normalized_label)
             if color is None:
                 color = normalized_color_map.get(pretty_normalized)
             trial_colors[label_name] = color or color_cycle[idx % len(color_cycle)]
 
+        # Group summary containers
+        group_mean_psd_curves = {label_name: [] for _, label_name in ordered_labels}
+        beta_power_by_label = {label_name: [] for _, label_name in ordered_labels}
+        beta_power_by_subject = {subject: {} for subject in subjects}
+        reference_freqs = None
+
         # Calculate optimal grid layout
         n_cols = min(3, n_subjects)  # Max 3 columns
         n_rows = int(np.ceil(n_subjects / n_cols))
 
-        ctx_fonts = {'font.size': base_font_size}
+        ctx_fonts = {
+            'font.family': 'sans-serif',
+            'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+            'font.size': base_font_size,
+            'axes.labelsize': base_font_size + 1,
+            'axes.titlesize': base_font_size + 1,
+            'xtick.labelsize': base_font_size - 1,
+            'ytick.labelsize': base_font_size - 1,
+            'legend.fontsize': base_font_size - 1,
+            'axes.linewidth': 1.2
+        }
         with plt.rc_context(ctx_fonts):
             fig, axes = plt.subplots(
                 n_rows,
@@ -1438,11 +1486,21 @@ class Visualise:
                     lower = mean_psd - std_psd
                     upper = mean_psd + std_psd
 
+                    if reference_freqs is None:
+                        reference_freqs = freqs.copy()
+                    beta_mask = (freqs >= beta_low) & (freqs <= beta_high)
+                    if np.any(beta_mask):
+                        beta_power_db = float(np.mean(mean_psd[beta_mask]))
+                        beta_power_by_label[label_name].append(beta_power_db)
+                        beta_power_by_subject[subject][label_name] = beta_power_db
+
+                    group_mean_psd_curves[label_name].append(mean_psd)
+
                     ax.plot(
                         freqs,
                         mean_psd,
                         color=trial_colors[label_name],
-                        linewidth=2.0,
+                        linewidth=2.4,
                         alpha=0.9,
                         label=_prettify_label(label_name)
                     )
@@ -1451,7 +1509,7 @@ class Visualise:
                         lower,
                         upper,
                         color=trial_colors[label_name],
-                        alpha=0.15,
+                        alpha=0.20,
                         linewidth=0
                     )
 
@@ -1461,7 +1519,12 @@ class Visualise:
                 ax.set_title(f"{subject}\n{channel_name} (preferred)")
                 ax.set_xlabel('Frequency (Hz)')
                 ax.set_xlim(fmin, fmax)
-                ax.grid(True, alpha=0.3)
+                ax.grid(True, which='major', linestyle='--', linewidth=0.8, alpha=0.35)
+                ax.tick_params(axis='both', width=1.1, length=5)
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_linewidth(1.1)
+                ax.spines['bottom'].set_linewidth(1.1)
 
                 if missing_labels:
                     ax.text(
@@ -1475,9 +1538,8 @@ class Visualise:
                         color='gray'
                     )
 
-            # Hide empty subplots if n_subjects doesn't fill the grid
-            for idx in range(n_subjects, len(axes)):
-                axes[idx].set_visible(False)
+            # Use empty subplot space for legend when available (e.g., 7 subjects on 3x3 grid).
+            empty_axes = [axes[idx] for idx in range(n_subjects, len(axes))]
 
             if np.isfinite(global_min) and np.isfinite(global_max):
                 y_range = global_max - global_min
@@ -1496,32 +1558,156 @@ class Visualise:
             ]
             legend_labels = [_prettify_label(label_name) for _, label_name in ordered_labels]
 
-            fig.suptitle(
-                'Average log PSD by Trial Type (Preferred Channel)',
-                fontsize=base_font_size + 2
-            )
-            fig.legend(
-                legend_handles,
-                legend_labels,
-                loc='upper right',
-                frameon=False,
-                fontsize=base_font_size - 1
-            )
-            plt.tight_layout(rect=[0, 0, 1, 0.92])
+            if len(empty_axes) > 0:
+                legend_ax = empty_axes[0]
+                legend_ax.set_axis_off()
+                legend_ax.legend(
+                    legend_handles,
+                    legend_labels,
+                    loc='center',
+                    frameon=False,
+                    fontsize=base_font_size + 3
+                )
+                for ax_empty in empty_axes[1:]:
+                    ax_empty.set_visible(False)
+            else:
+                fig.legend(
+                    legend_handles,
+                    legend_labels,
+                    loc='upper center',
+                    ncol=max(1, len(legend_labels)),
+                    bbox_to_anchor=(0.5, 1.02),
+                    frameon=False,
+                    fontsize=base_font_size + 2
+                )
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
 
             if save_path:
                 os.makedirs(save_path, exist_ok=True)
                 file_name = fig_name or 'preferred_channel_trial_type_psd'
                 fig.savefig(
                     os.path.join(save_path, file_name + '.png'),
-                    dpi=300,
+                    dpi=600,
                     bbox_inches='tight'
                 )
 
             if show_fig:
                 plt.show()
-            else:
-                plt.close(fig)
+            plt.close(fig)
+
+            def _find_label_by_tokens(tokens: List[str]) -> Optional[str]:
+                for _, label_name in ordered_labels:
+                    normalized = _normalize_label_key(label_name)
+                    if any(token in normalized for token in tokens):
+                        return label_name
+                return None
+
+            normal_label = _find_label_by_tokens(['normal'])
+            modulation_label = _find_label_by_tokens(['mod'])
+
+            mod_minus_normal_summary = None
+            if normal_label is not None and modulation_label is not None:
+                paired_diffs = []
+                per_subject = {}
+                for subject in subjects:
+                    values = beta_power_by_subject.get(subject, {})
+                    if normal_label in values and modulation_label in values:
+                        delta = values[modulation_label] - values[normal_label]
+                        paired_diffs.append(delta)
+                        per_subject[subject] = float(delta)
+                if len(paired_diffs) > 0:
+                    paired_diffs = np.asarray(paired_diffs, dtype=float)
+                    mod_minus_normal_summary = {
+                        'label_modulation': _prettify_label(modulation_label),
+                        'label_normal': _prettify_label(normal_label),
+                        'mean_db': float(np.mean(paired_diffs)),
+                        'std_db': float(np.std(paired_diffs)),
+                        'n_subjects': int(len(paired_diffs)),
+                        'per_subject_db': per_subject
+                    }
+                    if print_beta_summary:
+                        print(
+                            "[plot_preferred_channel_trial_type_psd] "
+                            f"Beta-band ({beta_low:.1f}-{beta_high:.1f} Hz) "
+                            f"{_prettify_label(modulation_label)} - {_prettify_label(normal_label)} = "
+                            f"{mod_minus_normal_summary['mean_db']:+.2f} ± "
+                            f"{mod_minus_normal_summary['std_db']:.2f} dB "
+                            f"(n={mod_minus_normal_summary['n_subjects']})"
+                        )
+
+            if include_group_summary:
+                fig_summary, ax_psd = plt.subplots(
+                    1, 1, figsize=(8, 5), constrained_layout=False
+                )
+
+                for _, label_name in ordered_labels:
+                    curves = group_mean_psd_curves.get(label_name, [])
+                    if len(curves) == 0:
+                        continue
+                    curves_arr = np.vstack(curves)
+                    mean_curve = np.mean(curves_arr, axis=0)
+                    std_curve = np.std(curves_arr, axis=0)
+                    ax_psd.plot(
+                        reference_freqs,
+                        mean_curve,
+                        color=trial_colors[label_name],
+                        linewidth=2.4,
+                        label=_prettify_label(label_name)
+                    )
+                    ax_psd.fill_between(
+                        reference_freqs,
+                        mean_curve - std_curve,
+                        mean_curve + std_curve,
+                        color=trial_colors[label_name],
+                        alpha=0.20,
+                        linewidth=0
+                    )
+
+                ax_psd.axvspan(beta_low, beta_high, color='gray', alpha=0.12, zorder=0)
+                ax_psd.set_xlim(fmin, fmax)
+                ax_psd.set_xlabel('Frequency (Hz)')
+                ax_psd.set_ylabel('PSD (dB)')
+                ax_psd.grid(True, which='major', linestyle='--', linewidth=0.8, alpha=0.35)
+                ax_psd.tick_params(axis='both', width=1.1, length=5)
+                ax_psd.spines['top'].set_visible(False)
+                ax_psd.spines['right'].set_visible(False)
+                ax_psd.spines['left'].set_linewidth(1.1)
+                ax_psd.spines['bottom'].set_linewidth(1.1)
+                ax_psd.legend(frameon=False, fontsize=base_font_size - 2, loc='upper right')
+
+                plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+                if save_path:
+                    os.makedirs(save_path, exist_ok=True)
+                    base_name = fig_name or 'preferred_channel_trial_type_psd'
+                    fig_summary.savefig(
+                        os.path.join(save_path, base_name + '_group_summary.png'),
+                        dpi=600,
+                        bbox_inches='tight'
+                    )
+
+                if show_fig:
+                    plt.show()
+                plt.close(fig_summary)
+
+        summary = {
+            'beta_band_hz': [beta_low, beta_high],
+            'n_subjects': int(n_subjects),
+            'beta_power_db_by_label': {
+                _prettify_label(label_name): {
+                    'mean_db': float(np.mean(vals)),
+                    'std_db': float(np.std(vals)),
+                    'n_subjects': int(len(vals))
+                }
+                for _, label_name in ordered_labels
+                for vals in [beta_power_by_label.get(label_name, [])]
+                if len(vals) > 0
+            },
+            'mod_minus_normal_beta_db': mod_minus_normal_summary
+        }
+        if return_summary:
+            return summary
+        return None
         
     @staticmethod
     def plot_all_patients_trials(subjects_lfp_data_dict: Dict[str, List[np.ndarray]],
