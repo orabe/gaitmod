@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2SeqLSTM_hctsa_betaChs",
+    "experiment_name": "Seq2SeqLSTM_hctsa_betaChs_NO_FC_originalSegments",
     "model_type": "Seq2SeqLSTM",
     "feature_data": {
       "source": "hctsa",
@@ -78,8 +78,8 @@
   "feature_params": {
     "feature_selector__variance_threshold": [0.0001],
     "feature_selector__enabled": [true],
-    "feature_selector__n_features": [20, 50, 100],
-    "feature_selector__selection_method": ["roc_auc"],
+    "feature_selector__n_features": [20],
+    "feature_selector__selection_method": ["mann_whitney"],
     "feature_selector__correlation_threshold": [0.3]
   },
   "Seq2SeqLSTM": {
@@ -94,23 +94,15 @@
         "classifier__dropout": 0.5,
         "classifier__dense_activation": "sigmoid",
         "classifier__optimizer": "adam",
-        "classifier__use_class_weights": true,
-        "classifier__threshold": 0.5
-      },
-      {
-        "classifier__hidden_dims": [16],
-        "classifier__activations": ["tanh"],
-        "classifier__recurrent_activations": ["sigmoid"],
-        "classifier__dropout": 0.5,
-        "classifier__dense_activation": "sigmoid",
-        "classifier__optimizer": "adam",
+        "classifier__head_dense_units": null,
+        "classifier__head_dense_activation": "relu",
         "classifier__use_class_weights": true,
         "classifier__threshold": 0.5
       }
     ],
     "other_params": {
-      "classifier__lr": [0.001, 0.0005],
-      "classifier__batch_size": [4, 8],
+      "classifier__lr": [0.001],
+      "classifier__batch_size": [4],
       "classifier__epochs": [120],
       "classifier__patience": [15]
     }

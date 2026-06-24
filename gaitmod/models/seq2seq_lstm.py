@@ -15,7 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
     def __init__(self, hidden_dims=[64], activations=['tanh'], 
                  recurrent_activations=['sigmoid'],
-                 dropout=0.3, dense_units=1, dense_activation='sigmoid', optimizer='adam',
+                 dropout=0.3, head_dense_units=None, head_dense_activation='relu',
+                 dense_units=1, dense_activation='sigmoid', optimizer='adam',
                  lr=1e-3, patience=10, epochs=50, batch_size=32, threshold=0.5,
                  loss='binary_crossentropy', mask_values=None, 
                  use_class_weights=True, callbacks=None, experiment_dir=None, outer_fold=None, inner_fold=None,
@@ -38,6 +39,8 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
         self.activations = activations
         self.recurrent_activations = recurrent_activations
         self.dropout = dropout
+        self.head_dense_units = head_dense_units
+        self.head_dense_activation = head_dense_activation
         self.dense_units = dense_units
         self.dense_activation = dense_activation
         
@@ -106,9 +109,19 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                            recurrent_activation=self.recurrent_activations[i], 
                            return_sequences=True))  # Always return sequences for sequence-to-sequence
             model.add(Dropout(self.dropout))
+
+        # Optional per-timestep FC layer before output
+        if self.head_dense_units is not None and self.head_dense_units > 0:
+            model.add(TimeDistributed(
+                Dense(self.head_dense_units, activation=self.head_dense_activation),
+                name='td_head_fc'
+            ))
         
         # Add TimeDistributed output layer
-        model.add(TimeDistributed(Dense(self.dense_units, activation=self.dense_activation)))
+        model.add(TimeDistributed(
+            Dense(self.dense_units, activation=self.dense_activation),
+            name='td_output'
+        ))
 
         if self.optimizer == 'adam':
             optimizer = Adam(learning_rate=self.lr)
@@ -466,6 +479,13 @@ class Seq2SeqLSTM(BaseEstimator, ClassifierMixin):
                 name=f'lstm_stateful_{i+1}'
             ))
             stateful_model.add(Dropout(self.dropout, name=f'dropout_{i+1}'))
+
+        # Optional per-timestep FC layer before output
+        if self.head_dense_units is not None and self.head_dense_units > 0:
+            stateful_model.add(TimeDistributed(
+                Dense(self.head_dense_units, activation=self.head_dense_activation),
+                name='td_head_fc'
+            ))
         
         # Output layer
         stateful_model.add(TimeDistributed(

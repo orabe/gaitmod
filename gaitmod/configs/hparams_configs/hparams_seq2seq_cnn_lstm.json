@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs",
+    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs_NO_FC_originalSegments",
     "model_type": "Seq2SeqCNNLSTM",
     "feature_data": {
       "source": "raw",
@@ -86,52 +86,19 @@
         "classifier__activations": ["tanh"],
         "classifier__recurrent_activations": ["sigmoid"],
         "classifier__use_class_weights": true,
-        "classifier__threshold": 0.5
-      },
-      {
-        "classifier__cnn_filters": [8, 16],
-        "classifier__cnn_kernel_sizes": [7, 5],
-        "classifier__cnn_activations": ["relu", "relu"],
-        "classifier__cnn_pool_sizes": [2, 2],
-        "classifier__cnn_use_global_pooling": true,
-        "classifier__hidden_dims": [8],
-        "classifier__activations": ["tanh"],
-        "classifier__recurrent_activations": ["sigmoid"],
-        "classifier__use_class_weights": true,
-        "classifier__threshold": 0.5
-      },
-      {
-        "classifier__cnn_filters": [16],
-        "classifier__cnn_kernel_sizes": [5],
-        "classifier__cnn_activations": ["relu"],
-        "classifier__cnn_pool_sizes": [2],
-        "classifier__cnn_use_global_pooling": true,
-        "classifier__hidden_dims": [12],
-        "classifier__activations": ["tanh"],
-        "classifier__recurrent_activations": ["sigmoid"],
-        "classifier__use_class_weights": true,
-        "classifier__threshold": 0.5
-      },
-      {
-        "classifier__cnn_filters": [16, 16],
-        "classifier__cnn_kernel_sizes": [5, 3],
-        "classifier__cnn_activations": ["relu", "relu"],
-        "classifier__cnn_pool_sizes": [2, 2],
-        "classifier__cnn_use_global_pooling": true,
-        "classifier__hidden_dims": [12],
-        "classifier__activations": ["tanh"],
-        "classifier__recurrent_activations": ["sigmoid"],
-        "classifier__use_class_weights": true,
-        "classifier__threshold": 0.5
+        "classifier__threshold": 0.5,
+        "classifier__head_dense_units": null,
+        "classifier__head_dense_activation": "relu"
+
       }
     ],
     "other_params": {
-      "classifier__dropout": [0.5, 0.6],
+      "classifier__dropout": [0.5],
       "classifier__dense_units": [1],
       "classifier__dense_activation": ["sigmoid"],
       "classifier__optimizer": ["adam"],
-      "classifier__lr": [0.001, 0.0005],
-      "classifier__batch_size": [4, 8],
+      "classifier__lr": [0.0005],
+      "classifier__batch_size": [4],
       "classifier__epochs": [120],
       "classifier__patience": [15]
     }

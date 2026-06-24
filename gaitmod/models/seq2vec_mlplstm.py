@@ -71,6 +71,8 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
         lstm_dense_units=1,
         lstm_dense_activation='sigmoid',
         lstm_head_weights=None,
+        lstm_head_fc_units=None,
+        lstm_head_fc_activation='relu',
         lstm_optimizer='adam',
         lstm_lr=1e-3,
         lstm_patience=10,
@@ -112,6 +114,8 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
         self.lstm_dense_units = lstm_dense_units
         self.lstm_dense_activation = lstm_dense_activation
         self.lstm_head_weights = lstm_head_weights
+        self.lstm_head_fc_units = lstm_head_fc_units
+        self.lstm_head_fc_activation = lstm_head_fc_activation
 
         # lstm training parameters
         self.lstm_optimizer = lstm_optimizer
@@ -170,6 +174,8 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
         self._lstm_final_output = None
         self._lstm_head_weights = None
         self._lstm_head_names = None
+        self._lstm_head_fc_units = None
+        self._lstm_head_fc_activations = None
         self.lstm_train_model = None
 
     def _ensure_configured(self):
@@ -202,6 +208,27 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
             weight_sum = sum(self._lstm_head_weights)
             if not np.isclose(weight_sum, 1.0):
                 raise ValueError("lstm_head_weights must sum to 1.")
+
+        if self.lstm_head_fc_units is None:
+            self._lstm_head_fc_units = [0] * n_heads
+        elif isinstance(self.lstm_head_fc_units, (list, tuple)):
+            if len(self.lstm_head_fc_units) != n_heads:
+                raise ValueError("lstm_head_fc_units must match the number of LSTM heads.")
+            self._lstm_head_fc_units = [int(u) for u in self.lstm_head_fc_units]
+        else:
+            self._lstm_head_fc_units = [int(self.lstm_head_fc_units)] * n_heads
+        if any(u < 0 for u in self._lstm_head_fc_units):
+            raise ValueError("lstm_head_fc_units values must be >= 0.")
+
+        if self.lstm_head_fc_activation is None:
+            self._lstm_head_fc_activations = ['relu'] * n_heads
+        elif isinstance(self.lstm_head_fc_activation, (list, tuple)):
+            if len(self.lstm_head_fc_activation) != n_heads:
+                raise ValueError("lstm_head_fc_activation must match the number of LSTM heads.")
+            self._lstm_head_fc_activations = list(self.lstm_head_fc_activation)
+        else:
+            self._lstm_head_fc_activations = [self.lstm_head_fc_activation] * n_heads
+
         if self.mlp_hidden_units is None:
             self.mlp_hidden_units = [100]
         elif isinstance(self.mlp_hidden_units, (list, tuple)):
@@ -361,6 +388,12 @@ class Seq2VecMLPLSTM(BaseEstimator, ClassifierMixin):
             head_input = x
             if return_sequences:
                 head_input = GlobalAveragePooling1D(name=f"lstm_head_pool_{idx + 1}")(head_input)
+            if self._lstm_head_fc_units[idx] > 0:
+                head_input = Dense(
+                    self._lstm_head_fc_units[idx],
+                    activation=self._lstm_head_fc_activations[idx],
+                    name=f"lstm_head_fc_{idx + 1}",
+                )(head_input)
             head_name = f"lstm_head_{idx + 1}"
             head = Dense(
                 self.lstm_dense_units,

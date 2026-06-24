@@ -1,7 +1,7 @@
 {
   "global_settings": {
-    "experiment_name": "svm_hctsa_betaChs",
-    "model_type": "svm",
+    "experiment_name": "xgb2_hctsa_betaChs",
+    "model_type": "xgb",
     "feature_data": {
       "source": "hctsa",
       "segment_cache_dir": "data/hctsa_segments"
@@ -69,10 +69,10 @@
   },
   "feature_params": {
     "feature_selector__enabled": [true],
-    "feature_selector__selection_method": ["roc_auc"],
-    "feature_selector__n_features": [20, 50, 100],
+    "feature_selector__selection_method": ["mann_whitney"],
+    "feature_selector__n_features": [20],
     "feature_selector__variance_threshold": [0.0001],
-    "feature_selector__correlation_threshold": [0.1, 0.3]
+    "feature_selector__correlation_threshold": [0.3]
   },
 
   "dummy": {
@@ -101,18 +101,24 @@
   },
   "rf": {
     "param_grid": {
-      "classifier__n_estimators": [100,200],
-      "classifier__max_depth": [10, 20],
-      "classifier__min_samples_split": [2],
-      "classifier__min_samples_leaf": [1, 2],
-      "classifier__max_features": ["sqrt", "log2", 0.3, 0.5]
+      "classifier__n_estimators": [200],
+      "classifier__max_depth": [4, 8],
+      "classifier__min_samples_split": [10],
+      "classifier__min_samples_leaf": [5, 10],
+      "classifier__max_features": ["sqrt"],
+      "classifier__class_weight": ["balanced_subsample"]
     }
   }, 
   "xgb": {
     "param_grid": {
       "classifier__n_estimators": [100, 200],
-      "classifier__max_depth": [3, 6],
-      "classifier__learning_rate": [0.01, 0.1]
+      "classifier__max_depth": [2, 3],
+      "classifier__learning_rate": [0.05],
+      "classifier__subsample": [0.8],
+      "classifier__colsample_bytree": [0.8],
+      "classifier__min_child_weight": [5],
+      "classifier__reg_lambda": [5.0],
+      "classifier__gamma": [1.0]
     }
   }, 
   "lda": {

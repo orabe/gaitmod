@@ -39,6 +39,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                  activations=['tanh'], 
                  recurrent_activations=['sigmoid'],
                  dropout=0.3, 
+                 head_dense_units=None,
+                 head_dense_activation='relu',
                  # Output layer parameters
                  dense_units=1, 
                  dense_activation='sigmoid', 
@@ -65,7 +67,7 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
         CNN+LSTM Classifier for sequence-to-sequence binary classification with raw time series data.
         
         Architecture:
-            TimeDistributed(CNN) → LSTM → TimeDistributed(Dense)
+            TimeDistributed(CNN) → LSTM → TimeDistributed(FC, optional) → TimeDistributed(Dense output)
             
         The CNN extracts features from each epoch (125 samples @ 250Hz = 0.5s),
         then LSTM models temporal dynamics across epochs.
@@ -87,6 +89,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
             activations: List of LSTM activation functions
             recurrent_activations: List of LSTM recurrent activation functions
             dropout: Dropout rate after each LSTM layer
+            head_dense_units: Optional units in per-timestep FC layer before output
+            head_dense_activation: Activation for optional per-timestep FC layer
             dense_units: Units in output Dense layer (1 for binary classification)
             dense_activation: Activation for output layer (sigmoid for binary)
             optimizer: Optimizer name ('adam', 'RMSprop', 'SGD')
@@ -120,6 +124,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
         self.activations = activations
         self.recurrent_activations = recurrent_activations
         self.dropout = dropout
+        self.head_dense_units = head_dense_units
+        self.head_dense_activation = head_dense_activation
         self.dense_units = dense_units
         self.dense_activation = dense_activation
         
@@ -283,6 +289,13 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                 name=f'lstm_{i+1}'
             ))
             model.add(Dropout(self.dropout, name=f'dropout_{i+1}'))
+
+        # Optional per-timestep FC layer before output
+        if self.head_dense_units is not None and self.head_dense_units > 0:
+            model.add(TimeDistributed(
+                Dense(self.head_dense_units, activation=self.head_dense_activation),
+                name='td_head_fc'
+            ))
         
         # Add TimeDistributed output layer
         model.add(TimeDistributed(
@@ -698,6 +711,13 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
                 name=f'lstm_{i+1}'
             ))
             stateful_model.add(Dropout(self.dropout, name=f'dropout_{i+1}'))
+
+        # Optional per-timestep FC layer before output
+        if self.head_dense_units is not None and self.head_dense_units > 0:
+            stateful_model.add(TimeDistributed(
+                Dense(self.head_dense_units, activation=self.head_dense_activation),
+                name='td_head_fc'
+            ))
         
         # Output layer
         stateful_model.add(TimeDistributed(
@@ -1197,6 +1217,8 @@ class Seq2SeqCNNLSTM(BaseEstimator, ClassifierMixin):
             'activations': self.activations,
             'recurrent_activations': self.recurrent_activations,
             'dropout': self.dropout,
+            'head_dense_units': self.head_dense_units,
+            'head_dense_activation': self.head_dense_activation,
             'dense_units': self.dense_units,
             'dense_activation': self.dense_activation,
             'optimizer': self.optimizer,
