@@ -44,12 +44,12 @@ def apply_publication_style() -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["DejaVu Sans", "Arial"],
-            "font.size": 16,
-            "axes.titlesize": 18,
-            "axes.labelsize": 17,
-            "xtick.labelsize": 15,
-            "ytick.labelsize": 15,
-            "legend.fontsize": 13,
+            "font.size": 20,
+            "axes.titlesize": 24,
+            "axes.labelsize": 24,
+            "xtick.labelsize": 19,
+            "ytick.labelsize": 19,
+            "legend.fontsize": 18,
             "axes.linewidth": 1.5,
             "lines.linewidth": 2.2,
             "savefig.dpi": PUBLICATION_DPI,
@@ -63,6 +63,28 @@ def _set_square_axis(ax) -> None:
         ax.set_box_aspect(1)
     except Exception:
         pass
+
+
+def _panel_tag(idx: int) -> str:
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return letters[idx] if idx < len(letters) else f"P{idx + 1}"
+
+
+def _annotate_panel(ax, idx: int) -> None:
+    # Use left-aligned axis title so panel tags sit outside the plotting area.
+    ax.set_title(_panel_tag(idx), loc="left", pad=12, fontsize=24, fontweight="bold")
+
+
+def _metric_axis_label(metric_name: str) -> str:
+    mapping = {
+        "f1": "F1 Score",
+        "accuracy": "Accuracy",
+        "balanced_accuracy": "Balanced Accuracy",
+        "precision": "Precision",
+        "recall": "Recall",
+        "specificity": "Specificity",
+    }
+    return mapping.get(metric_name, metric_name.replace("_", " ").title())
 
 
 def _load_scores(score_paths: list[Path]) -> tuple[np.ndarray, np.ndarray]:
@@ -201,29 +223,19 @@ def plot_roc_pr(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ax_roc, ax_pr
         )
 
     ax_roc.plot([0, 1], [0, 1], "--", color="gray", alpha=0.5, linewidth=1)
-    roc_title = (
-        f"ROC (Mean AUC={np.mean(roc_aucs):.3f}±{np.std(roc_aucs):.3f})"
-        if roc_aucs
-        else "ROC"
-    )
-    ax_roc.set_title(roc_title)
     ax_roc.set_xlim(0, 1)
     ax_roc.set_ylim(0, 1)
-    ax_roc.set_xlabel("FPR")
-    ax_roc.set_ylabel("TPR")
+    ax_roc.set_xlabel("False Positive Rate", fontsize=24)
+    ax_roc.set_ylabel("True Positive Rate", fontsize=24)
+    ax_roc.tick_params(axis="both", labelsize=20, width=1.3)
     _set_square_axis(ax_roc)
     ax_roc.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
 
-    pr_title = (
-        f"PR (Mean AUC={np.mean(pr_aucs):.3f}±{np.std(pr_aucs):.3f})"
-        if pr_aucs
-        else "PR"
-    )
-    ax_pr.set_title(pr_title)
     ax_pr.set_xlim(0, 1)
     ax_pr.set_ylim(0, 1)
-    ax_pr.set_xlabel("Recall")
-    ax_pr.set_ylabel("Precision")
+    ax_pr.set_xlabel("Recall", fontsize=24)
+    ax_pr.set_ylabel("Precision", fontsize=24)
+    ax_pr.tick_params(axis="both", labelsize=20, width=1.3)
     _set_square_axis(ax_pr)
     ax_pr.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
 
@@ -315,11 +327,12 @@ def plot_threshold_metrics(grouped: dict[str, tuple[np.ndarray, np.ndarray]], ax
                 label="Best threshold" if metric_idx == 0 else "_nolegend_",
             )
 
-        ax.set_title(metric_name)
+        _annotate_panel(ax, metric_idx)
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
-        ax.set_xlabel("Threshold")
-        ax.set_ylabel("Score")
+        ax.set_xlabel("Threshold", fontsize=24)
+        ax.set_ylabel(_metric_axis_label(metric_name), fontsize=24)
+        ax.tick_params(axis="both", labelsize=20, width=1.3)
         _set_square_axis(ax)
         ax.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
     for idx in range(len(metrics), nrows * ncols):
@@ -375,6 +388,7 @@ def _add_shared_legend(
         fancybox=False,
         edgecolor="black",
         framealpha=0.0,
+        fontsize=18,
     )
 
 
@@ -440,13 +454,17 @@ def main() -> None:
     ax_roc = fig_auc.add_subplot(gs_auc[0, 0])
     ax_pr = fig_auc.add_subplot(gs_auc[0, 1])
     plot_roc_pr(grouped, ax_roc, ax_pr)
+    _annotate_panel(ax_roc, 0)
+    _annotate_panel(ax_pr, 1)
     _add_shared_legend(
         fig=fig_auc,
         subjects=subjects,
         include_aux_labels=["Mean ± 1 SD", "Mean"],
-        bbox_x=0.90,
+        bbox_x=0.86,
     )
-    fig_auc.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
+    fig_auc.subplots_adjust(
+        left=0.08, right=0.84, bottom=0.10, top=0.95, wspace=0.24, hspace=0.28
+    )
     auc_path = out_dir / f"{model_type}_auc_metrics_by_subject.png"
     fig_auc.savefig(
         auc_path,
@@ -467,9 +485,11 @@ def main() -> None:
         fig=fig_thr,
         subjects=[],
         include_aux_labels=["Mean ± 1 SD", "Mean", "Best mean point", "Best threshold"],
-        bbox_x=0.90,
+        bbox_x=0.86,
     )
-    fig_thr.tight_layout(rect=(0.0, 0.0, 0.88, 1.0))
+    fig_thr.subplots_adjust(
+        left=0.08, right=0.84, bottom=0.10, top=0.95, wspace=0.24, hspace=0.34
+    )
     thr_path = out_dir / f"{model_type}_threshold_metrics_by_subject.png"
     fig_thr.savefig(
         thr_path,

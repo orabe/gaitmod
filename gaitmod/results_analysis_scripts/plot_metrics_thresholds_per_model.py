@@ -4,7 +4,7 @@ Compare models by plotting mean performance across thresholds.
 
 Each subplot corresponds to one metric.
 - Threshold metrics: X-axis is threshold, Y-axis is score.
-- ROC/PR metrics: standard curve axes (FPR-TPR / Recall-Precision).
+- ROC/PR metrics: standard curve axes (False Positive Rate-True Positive Rate / Recall-Precision).
 - Each curve: one model, averaged across subjects.
 
 The script does not use CLI. Configure it in the __main__ block via Namespace.
@@ -70,12 +70,12 @@ def apply_publication_style() -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["DejaVu Sans", "Arial"],
-            "font.size": 16,
-            "axes.titlesize": 18,
-            "axes.labelsize": 17,
-            "xtick.labelsize": 15,
-            "ytick.labelsize": 15,
-            "legend.fontsize": 14,
+            "font.size": 20,
+            "axes.titlesize": 24,
+            "axes.labelsize": 24,
+            "xtick.labelsize": 19,
+            "ytick.labelsize": 19,
+            "legend.fontsize": 19,
             "axes.linewidth": 1.5,
             "lines.linewidth": 2.4,
             "savefig.dpi": PUBLICATION_DPI,
@@ -89,6 +89,16 @@ def _set_square_axis(ax) -> None:
         ax.set_box_aspect(1)
     except Exception:
         pass
+
+
+def _panel_tag(idx: int) -> str:
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return letters[idx] if idx < len(letters) else f"P{idx + 1}"
+
+
+def _annotate_panel(ax, idx: int) -> None:
+    # Use left-aligned axis title so panel tags sit outside the plotting area.
+    ax.set_title(_panel_tag(idx), loc="left", pad=12, fontsize=24, fontweight="bold")
 
 
 def get_modern_colors(n: int) -> np.ndarray:
@@ -118,6 +128,30 @@ def _grid(n: int) -> tuple[int, int]:
         ncols = 3
     nrows = int(math.ceil(n / ncols))
     return nrows, ncols
+
+
+def _square_canvas_size(
+    nrows: int,
+    ncols: int,
+    panel_size: float,
+    left: float,
+    right: float,
+    bottom: float,
+    top: float,
+    wspace: float,
+    hspace: float,
+) -> tuple[float, float]:
+    """
+    Compute figure size so each subplot can remain square without introducing large
+    inter-panel gaps.
+    """
+    usable_w = max(1e-6, right - left)
+    usable_h = max(1e-6, top - bottom)
+    grid_w_units = ncols + (ncols - 1) * wspace
+    grid_h_units = nrows + (nrows - 1) * hspace
+    fig_w = panel_size * grid_w_units / usable_w
+    fig_h = panel_size * grid_h_units / usable_h
+    return float(fig_w), float(fig_h)
 
 
 def _load_scores(score_paths: list[Path]) -> tuple[np.ndarray, np.ndarray]:
@@ -327,6 +361,20 @@ def _format_metric_name(metric: str) -> str:
     return metric.replace("_", " ").title()
 
 
+def _metric_axis_label(base_metric: str) -> str:
+    mapping = {
+        "f1": "F1 Score",
+        "accuracy": "Accuracy",
+        "balanced_accuracy": "Balanced Accuracy",
+        "precision": "Precision",
+        "recall": "Recall",
+        "specificity": "Specificity",
+        "roc_auc": "True Positive Rate",
+        "pr_auc": "Precision",
+    }
+    return mapping.get(base_metric, base_metric.replace("_", " ").title())
+
+
 def _order_metrics_for_plot(metrics: list[str]) -> list[str]:
     """Place ROC/PR AUC metrics first so they appear in the first row."""
     auc_metrics = []
@@ -343,6 +391,35 @@ def _order_metrics_for_plot(metrics: list[str]) -> list[str]:
     return auc_metrics + other_metrics
 
 
+def _resolve_f1_anchor_threshold(
+    model_metric_summary: dict[str, dict[str, np.ndarray | float | str | int]],
+    thresholds: np.ndarray,
+    metric_split: str,
+) -> float | None:
+    """
+    Resolve the per-model threshold that maximizes F1.
+
+    Priority of F1 sources:
+      1) <metric_split>_f1 (e.g., test_f1)
+      2) test_f1
+      3) train_f1
+      4) f1
+    """
+    candidate_keys = [f"{metric_split}_f1", "test_f1", "train_f1", "f1"]
+    for key in candidate_keys:
+        info = model_metric_summary.get(key)
+        if not info:
+            continue
+        if info.get("kind") != "curve":
+            continue
+        mean = np.asarray(info.get("mean"), dtype=float)
+        if mean.size == 0 or not np.isfinite(mean).any():
+            continue
+        best_idx = int(np.nanargmax(mean))
+        return float(thresholds[best_idx])
+    return None
+
+
 def plot_models_threshold_curves(
     model_summaries: dict[str, dict[str, dict[str, np.ndarray | float | str | int]]],
     metrics: list[str],
@@ -357,12 +434,24 @@ def plot_models_threshold_curves(
 
     plot_metrics = _order_metrics_for_plot(metrics)
     nrows, ncols = _grid(len(plot_metrics))
-    panel = 7.4
-    legend_space = 3.6
+    left, right, bottom, top = 0.08, 0.86, 0.10, 0.95
+    wspace, hspace = 0.30, 0.30
+    panel_size = 5.2
+    fig_w, fig_h = _square_canvas_size(
+        nrows=nrows,
+        ncols=ncols,
+        panel_size=panel_size,
+        left=left,
+        right=right,
+        bottom=bottom,
+        top=top,
+        wspace=wspace,
+        hspace=hspace,
+    )
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(max(18, ncols * panel + legend_space), max(10, nrows * panel)),
+        figsize=(fig_w, fig_h),
         squeeze=False,
     )
     fig.patch.set_facecolor("white")
@@ -370,6 +459,7 @@ def plot_models_threshold_curves(
 
     model_labels = list(model_summaries.keys())
     colors = get_model_colors(model_labels)
+    f1_anchor_cache: dict[tuple[str, str], float | None] = {}
 
     for metric_idx, metric in enumerate(plot_metrics):
         ax = axes_flat[metric_idx]
@@ -394,10 +484,34 @@ def plot_models_threshold_curves(
                 ax.plot(thresholds, mean, color=color, linewidth=2.2, label=model_label)
                 ax.fill_between(thresholds, lower, upper, color=color, alpha=0.10)
 
-                best_idx = int(np.nanargmax(mean))
-                best_threshold = float(thresholds[best_idx])
-                best_value = float(mean[best_idx])
-                ax.scatter([best_threshold], [best_value], color=color, s=34, zorder=6)
+                cache_key = (model_label, metric_split)
+                if cache_key not in f1_anchor_cache:
+                    f1_anchor_cache[cache_key] = _resolve_f1_anchor_threshold(
+                        model_metric_summary=model_summaries[model_label],
+                        thresholds=thresholds,
+                        metric_split=metric_split,
+                    )
+                f1_anchor_threshold = f1_anchor_cache[cache_key]
+
+                # Show metric value at the model's F1-optimal threshold
+                # (instead of each metric using its own optimum threshold).
+                if f1_anchor_threshold is not None:
+                    anchor_idx = int(np.argmin(np.abs(thresholds - f1_anchor_threshold)))
+                    anchor_value = float(mean[anchor_idx])
+                    ax.scatter([f1_anchor_threshold], [anchor_value], color=color, s=34, zorder=6)
+
+                # Add per-model F1-anchor threshold reference for operating metrics.
+                # Keep excluded for ROC/PR panels (handled as x/y curves, not threshold curves).
+                base_metric_for_curve, _, _ = _parse_metric_name(metric)
+                if base_metric_for_curve not in {"roc_auc", "pr_auc"} and f1_anchor_threshold is not None:
+                    ax.axvline(
+                        f1_anchor_threshold,
+                        linestyle="--",
+                        color=color,
+                        linewidth=1.4,
+                        alpha=0.85,
+                        zorder=2,
+                    )
 
             elif kind in {"roc_curve", "pr_curve"}:
                 x_vals = np.asarray(metric_info["x"], dtype=float)
@@ -409,22 +523,30 @@ def plot_models_threshold_curves(
                 ax.fill_between(x_vals, lower, upper, color=color, alpha=0.10)
 
         base_metric, _, _ = _parse_metric_name(metric)
-        ax.set_title(_format_metric_name(metric), fontsize=18, fontweight="bold")
+        _annotate_panel(ax, metric_idx)
         ax.set_xlim(0.0, 1.0)
         ax.set_ylim(0.0, 1.02)
         ax.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
 
         if base_metric == "roc_auc":
-            ax.set_xlabel("FPR")
-            ax.set_ylabel(f"{metric_split.title()} TPR")
+            ax.set_xlabel("False Positive Rate", fontsize=24)
+            ax.set_ylabel(_metric_axis_label(base_metric), fontsize=24)
             ax.plot([0, 1], [0, 1], "--", color="gray", alpha=0.5, linewidth=1)
         elif base_metric == "pr_auc":
-            ax.set_xlabel("Recall")
-            ax.set_ylabel(f"{metric_split.title()} Precision")
+            ax.set_xlabel("Recall", fontsize=24)
+            ax.set_ylabel(_metric_axis_label(base_metric), fontsize=24)
         else:
-            ax.set_xlabel("Threshold")
-            ax.set_ylabel(f"{metric_split.title()} Score")
-            ax.axvline(0.5, linestyle=":", color="gray", alpha=0.7, linewidth=1.2)
+            ax.set_xlabel("Threshold", fontsize=24)
+            ax.set_ylabel(_metric_axis_label(base_metric), fontsize=24)
+            ax.axvline(
+                0.5,
+                linestyle="-.",
+                color="#111827",
+                alpha=0.95,
+                linewidth=2.2,
+                zorder=5,
+            )
+        ax.tick_params(axis="both", labelsize=20, width=1.3)
         _set_square_axis(ax)
 
         for spine in ax.spines.values():
@@ -448,26 +570,58 @@ def plot_models_threshold_curves(
         axes_flat[idx].axis("off")
 
     handles, legend_labels = axes_flat[0].get_legend_handles_labels()
+    has_threshold_panels = any(
+        _parse_metric_name(metric)[0] not in {"roc_auc", "pr_auc"} for metric in plot_metrics
+    )
+    if has_threshold_panels:
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                color="#111827",
+                linestyle="-.",
+                linewidth=2.2,
+                label="Default threshold (t=0.50)",
+            )
+        )
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                color="#4B5563",
+                linestyle="--",
+                linewidth=1.8,
+                label="Model best thresholds (color-coded)",
+            )
+        )
+        legend_labels = [h.get_label() for h in handles]
     if handles:
         legend = fig.legend(
             handles,
             legend_labels,
             loc="center left",
-            bbox_to_anchor=(0.91, 0.5),
+            bbox_to_anchor=(0.865, 0.5),
             ncol=1,
             frameon=True,
             fancybox=False,
             shadow=False,
-            fontsize=14,
+            fontsize=19,
             edgecolor="black",
             framealpha=0,
             title="Models",
-            title_fontsize=16,
+            title_fontsize=20,
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor("none")
 
-    fig.subplots_adjust(wspace=0.38, hspace=0.44, left=0.06, right=0.86, top=0.95, bottom=0.08)
+    fig.subplots_adjust(
+        wspace=wspace,
+        hspace=hspace,
+        left=left,
+        right=right,
+        top=top,
+        bottom=bottom,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -543,7 +697,18 @@ def main(args: Namespace | None = None) -> None:
     )
     main_metrics_auc = list(getattr(args, "main_metrics_auc", ["test_roc_auc", "test_pr_auc"]))
     main_metrics_threshold = list(
-        getattr(args, "main_metrics_threshold", ["test_f1", "test_precision", "test_recall", "test_specificity"])
+        getattr(
+            args,
+            "main_metrics_threshold",
+            [
+                "test_f1",
+                "test_precision",
+                "test_accuracy",
+                "test_recall",
+                "test_specificity",
+                "test_balanced_accuracy",
+            ],
+        )
     )
     main_model_labels = list(
         getattr(
@@ -668,8 +833,10 @@ if __name__ == "__main__":
         main_metrics_threshold=[
             "test_f1",
             "test_precision",
+            "test_accuracy",
             "test_recall",
             "test_specificity",
+            "test_balanced_accuracy",
         ],
     )
     main(args)

@@ -14,6 +14,7 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 from cycler import cycler
@@ -60,7 +61,19 @@ MODEL_COLOR_MAP = {
     # Baseline
     "Baseline-Dummy": "#6B7280",
 }
+MODEL_ON_X_COLOR = "#3B82F6"
 
+FAMILY_BASELINE = "Baseline"
+FAMILY_DL_INTER = "DL inter-segment"
+FAMILY_DL_INTRA = "DL intra-segment"
+FAMILY_CLASSICAL_INTRA = "Classical ML intra-segment"
+
+FAMILY_COLOR_MAP = {
+    FAMILY_BASELINE: "#6B7280",
+    FAMILY_DL_INTER: "#FF2D55",
+    FAMILY_DL_INTRA: "#22C55E",
+    FAMILY_CLASSICAL_INTRA: "#F59E0B",
+}
 
 def apply_publication_style() -> None:
     """Apply a consistent publication-oriented matplotlib style."""
@@ -68,13 +81,13 @@ def apply_publication_style() -> None:
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["DejaVu Sans", "Arial"],
-            "font.size": 16,
-            "axes.titlesize": 18,
-            "axes.labelsize": 17,
-            "xtick.labelsize": 15,
-            "ytick.labelsize": 15,
-            "legend.fontsize": 14,
-            "figure.titlesize": 18,
+            "font.size": 22,
+            "axes.titlesize": 28,
+            "axes.labelsize": 28,
+            "xtick.labelsize": 22,
+            "ytick.labelsize": 22,
+            "legend.fontsize": 22,
+            "figure.titlesize": 28,
             "axes.linewidth": 1.5,
             "lines.linewidth": 2.4,
             "savefig.dpi": PUBLICATION_DPI,
@@ -97,6 +110,60 @@ def pretty_metric_name(metric: str) -> str:
     }
     return mapping.get(metric, metric.replace("_", " ").title())
 
+
+def metric_axis_label(metric: str) -> str:
+    mapping = {
+        "test_f1": "F1 Score",
+        "test_tuned_f1": "Tuned F1 Score",
+        "test_accuracy": "Accuracy",
+        "test_balanced_accuracy": "Balanced Accuracy",
+        "test_precision": "Precision",
+        "test_recall": "Recall",
+        "test_specificity": "Specificity",
+        "test_roc_auc": "ROC-AUC",
+        "test_pr_auc": "PR-AUC",
+    }
+    return mapping.get(metric, pretty_metric_name(metric))
+
+
+def panel_tag(idx: int) -> str:
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return letters[idx] if idx < len(letters) else f"P{idx + 1}"
+
+
+def annotate_panel(ax, idx: int) -> None:
+    # Use left-aligned axis title so panel tags sit outside the plotting area.
+    ax.set_title(panel_tag(idx), loc="left", pad=12, fontsize=24, fontweight="bold")
+
+
+def style_background_grid(ax, include_x: bool = False) -> None:
+    """Apply a publication-ready, readable background grid."""
+    ax.minorticks_on()
+    ax.grid(axis="y", which="major", linestyle="--", alpha=0.45, linewidth=0.95, color="#94A3B8")
+    ax.grid(axis="y", which="minor", linestyle=":", alpha=0.28, linewidth=0.75, color="#CBD5E1")
+    if include_x:
+        ax.grid(axis="x", which="major", linestyle=":", alpha=0.22, linewidth=0.75, color="#CBD5E1")
+    ax.tick_params(axis="both", which="minor", length=0)
+    ax.set_axisbelow(True)
+
+
+def style_axes_spines(ax, full_box: bool = False) -> None:
+    """Style axis spines; default uses a clean journal style."""
+    if full_box:
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.3)
+            spine.set_edgecolor("#374151")
+        return
+    ax.spines["left"].set_visible(True)
+    ax.spines["bottom"].set_visible(True)
+    ax.spines["left"].set_linewidth(1.2)
+    ax.spines["bottom"].set_linewidth(1.2)
+    ax.spines["left"].set_edgecolor("#374151")
+    ax.spines["bottom"].set_edgecolor("#374151")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
 # Modern color palette - use a professional color scheme
 def get_modern_colors(n):
     """Get a modern, professional color palette."""
@@ -117,6 +184,15 @@ def get_model_colors(labels: List[str]) -> np.ndarray:
             colors.append(FANCY_PALETTE[fallback_idx % len(FANCY_PALETTE)])
             fallback_idx += 1
     return np.asarray(colors, dtype=object)
+
+
+def _display_model_label(label: str) -> str:
+    """Human-readable model label for x-axis/legend."""
+    return "Dummy" if str(label).strip().lower() == "baseline-dummy" else str(label)
+
+
+def _display_model_labels(labels: List[str]) -> List[str]:
+    return [_display_model_label(label) for label in labels]
 
 
 def _find_dummy_index(labels: List[str]) -> Optional[int]:
@@ -160,13 +236,13 @@ def _slugify(text: str) -> str:
 def _infer_family(label: str) -> str:
     lname = str(label).lower()
     if lname.startswith("interseg-"):
-        return "Inter-segment"
+        return FAMILY_DL_INTER
     if lname.startswith("intraseg-"):
-        return "Intra-segment"
+        return FAMILY_DL_INTRA
     if "dummy" in lname or "baseline" in lname:
-        return "Baseline"
+        return FAMILY_BASELINE
     if lname in {"logreg", "rf", "xgb", "svm"}:
-        return "Classical ML"
+        return FAMILY_CLASSICAL_INTRA
     return "Other"
 
 
@@ -182,6 +258,90 @@ def _subset_runs_by_family(
     return out_dfs, out_labels
 
 
+def _family_colors(labels: List[str]) -> np.ndarray:
+    colors: List[str] = []
+    for label in labels:
+        family = _infer_family(label)
+        colors.append(FAMILY_COLOR_MAP.get(family, MODEL_ON_X_COLOR))
+    return np.asarray(colors, dtype=object)
+
+
+def _family_boundary_positions(labels: List[str]) -> List[float]:
+    """Boundary x-positions between adjacent models where family changes."""
+    families = [_infer_family(label) for label in labels]
+    boundaries: List[float] = []
+    for i in range(1, len(families)):
+        if families[i] != families[i - 1]:
+            boundaries.append(i + 0.5)  # bars are positioned at 1..N
+    return boundaries
+
+
+def _family_legend_handles(labels: List[str]) -> List[mpatches.Patch]:
+    ordered_families: List[str] = []
+    for family in DEFAULT_FAMILY_ORDER:
+        if any(_infer_family(label) == family for label in labels):
+            ordered_families.append(family)
+
+    handles: List[mpatches.Patch] = []
+    for family in ordered_families:
+        handles.append(
+            mpatches.Patch(
+                facecolor=FAMILY_COLOR_MAP.get(family, MODEL_ON_X_COLOR),
+                edgecolor="black",
+                label=family,
+            )
+        )
+    return handles
+
+
+def _mean_metric(df: pd.DataFrame, metric: str) -> float:
+    """Return mean of a metric column (NaN-safe)."""
+    if metric not in df.columns:
+        return np.nan
+    vals = pd.to_numeric(df[metric], errors="coerce").dropna().values
+    return float(np.mean(vals)) if vals.size > 0 else np.nan
+
+
+def _order_runs_by_family_and_test_f1(
+    dfs: List[pd.DataFrame],
+    labels: List[str],
+    family_order: Optional[List[str]] = None,
+) -> Tuple[List[pd.DataFrame], List[str]]:
+    """
+    Order runs by family block, then descending mean Test F1 within each family.
+
+    Sorting key:
+      1) family rank (from family_order)
+      2) mean test_f1 (ascending)
+      3) label (ascending) for deterministic tie-break
+    """
+    family_order = family_order or DEFAULT_FAMILY_ORDER
+    family_rank = {name: i for i, name in enumerate(family_order)}
+    fallback_rank = len(family_rank)
+
+    rows = []
+    for idx, (df, label) in enumerate(zip(dfs, labels)):
+        mean_f1 = _mean_metric(df, "test_f1")
+        family = _infer_family(label)
+        rank = family_rank.get(family, fallback_rank)
+        f1_sort_val = mean_f1 if np.isfinite(mean_f1) else -np.inf
+        rows.append(
+            {
+                "idx": idx,
+                "label": label,
+                "family": family,
+                "family_rank": rank,
+                "mean_test_f1": mean_f1,
+                "f1_sort_val": f1_sort_val,
+            }
+        )
+
+    rows.sort(key=lambda r: (r["family_rank"], r["f1_sort_val"], str(r["label"])))
+    ordered_dfs = [dfs[r["idx"]] for r in rows]
+    ordered_labels = [labels[r["idx"]] for r in rows]
+    return ordered_dfs, ordered_labels
+
+
 DEFAULT_METRIC_GROUPS: Dict[str, List[str]] = {
     "primary": ["test_f1"],
     "discrimination": ["test_roc_auc", "test_pr_auc", "test_balanced_accuracy"],
@@ -190,10 +350,10 @@ DEFAULT_METRIC_GROUPS: Dict[str, List[str]] = {
 
 
 DEFAULT_FAMILY_ORDER: List[str] = [
-    "Inter-segment",
-    "Intra-segment",
-    "Classical ML",
-    "Baseline",
+    FAMILY_BASELINE,
+    FAMILY_CLASSICAL_INTRA,
+    FAMILY_DL_INTRA,
+    FAMILY_DL_INTER,
 ]
 
 def parse_args() -> argparse.Namespace:
@@ -311,10 +471,10 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
         [pretty_metric_name(m) for m in metrics],
         rotation=45,
         ha="right",
-        fontsize=15,
+        fontsize=19,
         fontweight='medium',
     )
-    ax.set_ylabel("Score", fontsize=18, fontweight='bold')
+    ax.set_ylabel("Metric Value", fontsize=23)
     ax.set_ylim(0, 1.05)
     
     # Modern grid with horizontal lines only
@@ -329,20 +489,17 @@ def plot_metric_summary(dfs: List[pd.DataFrame], metrics: List[str], labels: Lis
     
     # Minimal legend
     legend = ax.legend(
-        loc="upper left", bbox_to_anchor=(1.02, 1),
+        loc="upper left", bbox_to_anchor=(1.01, 1),
         frameon=True, fancybox=False, shadow=False,
-        fontsize=15, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=16  # Added title
+        fontsize=19, edgecolor='black', framealpha=0,
+        title='Models', title_fontsize=20
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor('none')
     
-    ax.set_title(
-        "Model Performance Across Subjects (Mean ± Std)", 
-        fontsize=19, fontweight='bold', pad=20
-    )
+    annotate_panel(ax, 0)
     
-    fig.tight_layout(rect=[0, 0, 0.88, 1])
+    fig.tight_layout(rect=[0, 0, 0.86, 1])
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -411,15 +568,14 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
                 zorder=4,
             )
         
-        if i % n_cols == 0:
-            ax.set_ylabel("Score", fontsize=17, fontweight='bold')
-        
-        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_ylabel(metric_axis_label(metric), fontsize=23)
+        if n_metrics > 1:
+            annotate_panel(ax, i)
         ax.set_ylim(0, 1.05)
         
         # Set x-axis ticks at the center of each subject group
         ax.set_xticks(group_positions + group_width / 2 - bar_width / 2)
-        ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=14)
+        ax.set_xticklabels(subjects, rotation=45, ha="right", fontsize=18)
         
         # Modern grid with horizontal lines only
         ax.grid(axis="both", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
@@ -440,15 +596,15 @@ def plot_subject_barplots(dfs: List[pd.DataFrame], metrics: List[str], labels: L
     if handles:
         legend = fig.legend(
             handles, legend_labels,
-            loc="center left", bbox_to_anchor=(0.91, 0.5),
+            loc="center left", bbox_to_anchor=(0.86, 0.5),
             frameon=True, fancybox=False, shadow=False,
-            fontsize=15, edgecolor='black', framealpha=0,
-            title='Models', title_fontsize=16  # Added title
+            fontsize=19, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=20
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor('none')
     
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.subplots_adjust(wspace=0.36, hspace=0.62, left=0.07, right=0.84, top=0.95, bottom=0.10)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -512,13 +668,12 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
                 zorder=4,
             )
 
-        if i % n_cols == 0:
-            ax.set_ylabel('Score', fontsize=17, fontweight='bold')
-
-        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_ylabel(metric_axis_label(metric), fontsize=23)
+        if n_metrics > 1:
+            annotate_panel(ax, i)
         ax.set_ylim(0, 1.05)
         ax.set_xticks(x_positions)
-        ax.set_xticklabels(subjects, rotation=45, ha='right', fontsize=14)
+        ax.set_xticklabels(subjects, rotation=45, ha='right', fontsize=18)
 
         ax.grid(axis='both', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
         ax.set_axisbelow(True)
@@ -535,15 +690,15 @@ def plot_subject_lineplots(dfs: List[pd.DataFrame], metrics: List[str], labels: 
     if handles:
         legend = fig.legend(
             handles, legend_labels,
-            loc='center left', bbox_to_anchor=(0.91, 0.5),
+            loc='center left', bbox_to_anchor=(0.86, 0.5),
             frameon=True, fancybox=False, shadow=False,
-            fontsize=15, edgecolor='black', framealpha=0,
-            title='Models', title_fontsize=16,
+            fontsize=19, edgecolor='black', framealpha=0,
+            title='Models', title_fontsize=20,
         )
         legend.get_frame().set_linewidth(1.0)
         legend.get_frame().set_facecolor('none')
 
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.subplots_adjust(wspace=0.36, hspace=0.62, left=0.07, right=0.84, top=0.95, bottom=0.10)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -574,7 +729,8 @@ def plot_model_grouped_subject_barplots(
     n_subjects = len(subjects)
     x_positions = np.arange(n_models)
 
-    model_colors = get_model_colors(labels)
+    model_colors = _family_colors(labels)
+    display_labels = _display_model_labels(labels)
     dummy_means = _dummy_metric_means(dfs, labels, metrics)
 
     for i, metric in enumerate(metrics):
@@ -639,13 +795,20 @@ def plot_model_grouped_subject_barplots(
                 zorder=4,
             )
 
-        if i % n_cols == 0:
-            ax.set_ylabel("Score", fontsize=17, fontweight='bold')
-
-        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_ylabel(metric_axis_label(metric), fontsize=23)
         ax.set_ylim(0, 1.05)
         ax.set_xticks(x_positions)
-        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14)
+        ax.set_xticklabels(display_labels, rotation=45, ha='right', fontsize=18)
+
+        for x_boundary in _family_boundary_positions(labels):
+            ax.axvline(
+                x=x_boundary,
+                linestyle=':',
+                color='#4b5563',
+                linewidth=1.1,
+                alpha=0.8,
+                zorder=1,
+            )
 
         ax.grid(axis="y", linestyle="-", alpha=0.3, linewidth=1.0, color='gray')
         ax.set_axisbelow(True)
@@ -658,19 +821,6 @@ def plot_model_grouped_subject_barplots(
     for j in range(n_metrics, len(axes)):
         fig.delaxes(axes[j])
 
-    model_handles = [
-        plt.Line2D(
-            [0], [0],
-            marker='o',
-            markersize=7,
-            linestyle='None',
-            markerfacecolor=model_colors[idx],
-            markeredgecolor='white',
-            markeredgewidth=0.8,
-            label=label,
-        )
-        for idx, label in enumerate(labels)
-    ]
     baseline_handle = plt.Line2D(
         [0], [0],
         color='black',
@@ -678,18 +828,20 @@ def plot_model_grouped_subject_barplots(
         linewidth=1.8,
         label='Dummy baseline mean',
     )
+    family_handles = _family_legend_handles(labels)
+    legend_handles = family_handles + [baseline_handle]
+    legend_labels = [h.get_label() for h in legend_handles]
     legend = fig.legend(
-        model_handles + [baseline_handle],
-        [*labels, "Dummy baseline mean"],
-        loc="center left", bbox_to_anchor=(0.91, 0.5),
+        legend_handles,
+        legend_labels,
+        loc="center left", bbox_to_anchor=(0.86, 0.5),
         frameon=True, fancybox=False, shadow=False,
-        fontsize=14, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=16
+        fontsize=19, edgecolor='black', framealpha=0,
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor('none')
 
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.subplots_adjust(wspace=0.36, hspace=0.62, left=0.07, right=0.82, top=0.95, bottom=0.10)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -710,7 +862,8 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
     fig.patch.set_facecolor('white')
     axes = axes.flatten()
     
-    colors = get_model_colors(labels)
+    colors = _family_colors(labels)
+    display_labels = _display_model_labels(labels)
     dummy_means = _dummy_metric_means(dfs, labels, metrics)
     
     for i, metric in enumerate(metrics):
@@ -724,7 +877,7 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
             data, positions=positions, widths=0.4,
             patch_artist=True,
             boxprops=dict(facecolor='white', edgecolor='#2c3e50', linewidth=1.5, zorder=2),
-            medianprops=dict(color='#e74c3c', linewidth=2.5, zorder=3),
+            medianprops=dict(color='#111827', linewidth=2.8, zorder=3),
             whiskerprops=dict(color='#2c3e50', linewidth=1.5, zorder=2),
             capprops=dict(color='#2c3e50', linewidth=1.5, zorder=2),
             flierprops=dict(marker='o', markerfacecolor='#95a5a6', markersize=6, 
@@ -744,55 +897,56 @@ def plot_metric_boxplots(dfs: List[pd.DataFrame], metrics: List[str], labels: Li
                 alpha=0.9,
                 zorder=4,
             )
-
         ax.set_xticks(positions)
-        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14, fontweight='medium')
-        ax.set_ylabel("Score", fontsize=17, fontweight='bold')
-        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_xticklabels(display_labels, rotation=45, ha='right', fontsize=20, fontweight='medium')
+        ax.set_ylabel(metric_axis_label(metric), fontsize=27)
+        if n_metrics > 1:
+            annotate_panel(ax, i)
         ax.set_ylim(0, 1.05)
+
+        for x_boundary in _family_boundary_positions(labels):
+            ax.axvline(
+                x=x_boundary,
+                linestyle=':',
+                color='#4b5563',
+                linewidth=1.1,
+                alpha=0.8,
+                zorder=1,
+            )
         
-        # Modern grid with horizontal lines only
-        ax.grid(axis='y', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
-        ax.set_axisbelow(True)
-        
-        # Add rectangular border around each subplot
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(1.5)
-            spine.set_edgecolor('black')
+        style_background_grid(ax, include_x=False)
+        style_axes_spines(ax, full_box=False)
     
     # Hide unused axes
     for j in range(n_metrics, len(axes)):
         fig.delaxes(axes[j])
     
-    # Minimal legend
-    handles = [
-        plt.Line2D([0], [0], marker='o', color='w', 
-                   markerfacecolor=c, markersize=12,
-                   markeredgecolor='white', markeredgewidth=1.5) 
-        for c in colors
-    ]
-    legend_labels = list(labels)
-    handles.append(
-        plt.Line2D(
-            [0], [0],
-            color='black',
-            linestyle='--',
-            linewidth=2.0,
-        )
+    baseline_handle = plt.Line2D(
+        [0], [0],
+        color='black',
+        linestyle='--',
+        linewidth=2.0,
+        label="Dummy baseline mean",
     )
-    legend_labels.append("Dummy baseline mean")
+    family_handles = _family_legend_handles(labels)
+    legend_handles = family_handles + [baseline_handle]
+    legend_labels = [h.get_label() for h in legend_handles]
     legend = fig.legend(
-        handles, legend_labels,
-        loc='center left', bbox_to_anchor=(0.91, 0.5),
-        frameon=True, fancybox=False, shadow=False,
-        fontsize=15, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=16  # Added title
+        legend_handles,
+        legend_labels,
+        loc='center left',
+        bbox_to_anchor=(0.86, 0.5),
+        frameon=True,
+        fancybox=False,
+        shadow=False,
+        fontsize=19,
+        edgecolor='black',
+        framealpha=0.0,
     )
     legend.get_frame().set_linewidth(1.0)
-    legend.get_frame().set_facecolor('none')  # Explicitly set no background color
-    
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    legend.get_frame().set_facecolor('none')
+
+    fig.subplots_adjust(wspace=0.36, hspace=0.62, left=0.07, right=0.85, top=0.95, bottom=0.10)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -813,7 +967,8 @@ def plot_metric_meanstd_bars(dfs: List[pd.DataFrame], metrics: List[str], labels
     fig.patch.set_facecolor('white')
     axes = axes.flatten()
 
-    colors = get_model_colors(labels)
+    colors = _family_colors(labels)
+    display_labels = _display_model_labels(labels)
     dummy_means = _dummy_metric_means(dfs, labels, metrics)
 
     for i, metric in enumerate(metrics):
@@ -864,51 +1019,53 @@ def plot_metric_meanstd_bars(dfs: List[pd.DataFrame], metrics: List[str], labels
             )
 
         ax.set_xticks(positions)
-        ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=14, fontweight='medium')
-        ax.set_ylabel("Score", fontsize=17, fontweight='bold')
-        ax.set_title(pretty_metric_name(metric), fontsize=17, fontweight='bold', pad=10)
+        ax.set_xticklabels(display_labels, rotation=45, ha='right', fontsize=20, fontweight='medium')
+        ax.set_ylabel(metric_axis_label(metric), fontsize=27)
         ax.set_ylim(0, 1.05)
 
-        ax.grid(axis='y', linestyle='-', alpha=0.3, linewidth=1.0, color='gray')
-        ax.set_axisbelow(True)
+        # Visual separators between model families.
+        for x_boundary in _family_boundary_positions(labels):
+            ax.axvline(
+                x=x_boundary,
+                linestyle=':',
+                color='#4b5563',
+                linewidth=1.1,
+                alpha=0.8,
+                zorder=1,
+            )
 
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(1.5)
-            spine.set_edgecolor('black')
+        style_background_grid(ax, include_x=False)
+        style_axes_spines(ax, full_box=False)
 
     for j in range(n_metrics, len(axes)):
         fig.delaxes(axes[j])
 
-    handles = [
-        plt.Line2D(
-            [0], [0], marker='s', color='w',
-            markerfacecolor=c, markersize=11,
-            markeredgecolor='#2c3e50', markeredgewidth=1.2
-        )
-        for c in colors
-    ]
-    legend_labels = list(labels)
-    handles.append(
-        plt.Line2D(
-            [0], [0],
-            color='black',
-            linestyle='--',
-            linewidth=2.0,
-        )
+    baseline_handle = plt.Line2D(
+        [0], [0],
+        color='black',
+        linestyle='--',
+        linewidth=2.0,
+        label="Dummy baseline mean",
     )
-    legend_labels.append("Dummy baseline mean")
+    family_handles = _family_legend_handles(labels)
+    legend_handles = family_handles + [baseline_handle]
+    legend_labels = [h.get_label() for h in legend_handles]
     legend = fig.legend(
-        handles, legend_labels,
-        loc='center left', bbox_to_anchor=(0.91, 0.5),
-        frameon=True, fancybox=False, shadow=False,
-        fontsize=15, edgecolor='black', framealpha=0,
-        title='Models', title_fontsize=16
+        legend_handles,
+        legend_labels,
+        loc='center left',
+        bbox_to_anchor=(0.86, 0.5),
+        frameon=True,
+        fancybox=False,
+        shadow=False,
+        fontsize=19,
+        edgecolor='black',
+        framealpha=0.0,
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor('none')
 
-    fig.subplots_adjust(wspace=0.3, hspace=0.4, left=0.06, right=0.89, top=0.96, bottom=0.08)
+    fig.subplots_adjust(wspace=0.36, hspace=0.62, left=0.07, right=0.85, top=0.95, bottom=0.10)
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches='tight', facecolor='white')
     plt.close(fig)
 
@@ -988,12 +1145,12 @@ def plot_model_spider(dfs: List[pd.DataFrame], metrics: List[str], labels: List[
         )
 
     ax.set_xticks(angles)
-    ax.set_xticklabels([_format_metric_label(m) for m in valid_metrics], fontsize=14, fontweight="medium")
+    ax.set_xticklabels([_format_metric_label(m) for m in valid_metrics], fontsize=18, fontweight="medium")
 
     ax.set_ylim(0.0, 1.0)
     radial_ticks = [0.2, 0.4, 0.6, 0.8, 1.0]
     ax.set_yticks(radial_ticks)
-    ax.set_yticklabels([f"{tick:.1f}" for tick in radial_ticks], fontsize=13)
+    ax.set_yticklabels([f"{tick:.1f}" for tick in radial_ticks], fontsize=17)
     ax.yaxis.grid(True, linestyle="-", alpha=0.3, linewidth=1.0, color="gray")
     ax.xaxis.grid(True, linestyle="-", alpha=0.25, linewidth=1.0, color="gray")
 
@@ -1003,18 +1160,18 @@ def plot_model_spider(dfs: List[pd.DataFrame], metrics: List[str], labels: List[
         frameon=True,
         fancybox=False,
         shadow=False,
-        fontsize=14,
+        fontsize=19,
         edgecolor="black",
         framealpha=0,
         title="Models",
-        title_fontsize=16,
+        title_fontsize=20,
     )
     legend.get_frame().set_linewidth(1.0)
     legend.get_frame().set_facecolor("none")
 
-    ax.set_title("Model Performance Radar (Median Across Subjects)", fontsize=19, fontweight="bold", pad=25)
+    annotate_panel(ax, 0)
 
-    fig.tight_layout(rect=[0, 0, 0.84, 1])
+    fig.tight_layout(rect=[0, 0, 0.83, 1])
     fig.savefig(output_path, dpi=PUBLICATION_DPI, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -1180,6 +1337,19 @@ def main(args=None):
     else:
         metrics = [m for m in args.metrics if all(m in df.columns for df in dfs)]
 
+    if not all("test_f1" in df.columns for df in dfs):
+        raise RuntimeError(
+            "Cannot sort models by family and Test F1: one or more runs are missing 'test_f1'."
+        )
+
+    # Enforce consistent ordering in all plots:
+    # family blocks, then descending mean Test F1 within each family.
+    dfs, labels = _order_runs_by_family_and_test_f1(
+        dfs,
+        labels,
+        family_order=getattr(args, "family_order", DEFAULT_FAMILY_ORDER),
+    )
+
     plot_metric_boxplots(dfs, metrics, labels, os.path.join(output_dir, "metrics_boxplots_compare.png"))
     plot_metric_meanstd_bars(dfs, metrics, labels, os.path.join(output_dir, "metrics_meanstd_bars_compare.png"))
     plot_subject_barplots(dfs, metrics, labels, os.path.join(output_dir, "subject_barplots_compare.png"))
@@ -1227,17 +1397,25 @@ def build_default_namespace(
 ) -> argparse.Namespace:
     """Build a local, reproducible default configuration."""
     run_specs = [
-        ("dummy_raw_betaChs", "Baseline-Dummy"),
-        ("logreg_hctsa_betaChs", "LogReg"),
-        ("rf_hctsa_betaChs", "RF"),
-        ("xgb_hctsa_betaChs", "XGB"),
-        ("svm_hctsa_betaChs", "SVM"),
-        ("Seq2VecMLP_hctsa_betaChs", "IntraSeg-MLP"),
-        ("Seq2VecCNN_raw_betaChs", "IntraSeg-CNN"),
-        ("Seq2VecLSTM_raw_betaChs", "IntraSeg-LSTM"),
-        ("Seq2VecMLPLSTM_betaChs", "IntraSeg-MLP-LSTM"),
+        # ("dummy_raw_betaChs", "Baseline-Dummy"),
+        # ("logreg_hctsa_betaChs", "LogReg"),
+        # ("rf_hctsa_betaChs", "RF"),
+        # ("xgb_hctsa_betaChs", "XGB"),
+        # ("svm_hctsa_betaChs", "SVM"),
+        # ("Seq2VecMLP_hctsa_betaChs", "IntraSeg-MLP"),
+        # ("Seq2VecCNN_raw_betaChs", "IntraSeg-CNN"),
+        # ("Seq2VecLSTM_raw_betaChs", "IntraSeg-LSTM"),
+        # ("Seq2VecMLPLSTM_betaChs", "IntraSeg-MLP-LSTM"),
+        # ("Seq2VecMLPLSTM_betaChs_FC", "IntraSeg-MLP-LSTM-FC"),
+        # ("Seq2VecMLPLSTM_betaChs_FC_regularized", "IntraSeg-MLP-LSTM-FC-Regularized"),
+        
         ("Seq2SeqLSTM_hctsa_betaChs", "InterSeg-LSTM"),
+        ("Seq2SeqLSTM_hctsa_betaChs_FC", "InterSeg-LSTM-FC"),
+        ("Seq2SeqLSTM_hctsa_betaChs_NO_FC_originalSegments", "InterSeg-LSTM-NO-FC-Original-Segments"),
+        
         ("Seq2SeqCNNLSTM_raw_betaChs", "InterSeg-CNN-LSTM"),
+        ("Seq2SeqCNNLSTM_raw_betaChs_FC", "InterSeg-CNN-LSTM-FC"),
+        ("Seq2SeqCNNLSTM_raw_betaChs_NO_FC_originalSegments", "InterSeg-CNN-LSTM-NO-FC-Original-Segments"),
     ]
 
     test_metrics = [
@@ -1301,7 +1479,12 @@ if __name__ == "__main__":
         "discrimination": ["test_roc_auc", "test_pr_auc", "test_balanced_accuracy"],
         "operating_point": ["test_precision", "test_recall", "test_specificity", "test_tuned_f1"],
     }
-    FAMILY_ORDER = ["Inter-segment", "Intra-segment", "Classical ML", "Baseline"]
+    FAMILY_ORDER = [
+        FAMILY_BASELINE,
+        FAMILY_CLASSICAL_INTRA,
+        FAMILY_DL_INTRA,
+        FAMILY_DL_INTER,
+    ]
 
     cfg = build_default_namespace(
         base_path=BASE_PATH,
