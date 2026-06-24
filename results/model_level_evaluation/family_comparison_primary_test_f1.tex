@@ -1,0 +1,15 @@
+\begingroup
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.03}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.23\textwidth}c p{0.19\textwidth}cc p{0.17\textwidth}}
+\toprule
+Family & $n$ & Best Model & Best F1 & Family Mean F1 & $\Delta$ vs Dummy \\
+\midrule
+\textbf{Inter-segment (DL)} & 2 & \textbf{InterSeg-CNN-LSTM} & \textbf{0.64$\pm$0.15} & \textbf{0.54$\pm$0.10} & \textbf{0.31 (94.32\%)} \\
+Intra-segment (DL) & 4 & IntraSeg-CNN & 0.45$\pm$0.07 & 0.41$\pm$0.04 & 0.12 (37.13\%) \\
+Intra-segment (Classical ML) & 4 & LogReg & 0.38$\pm$0.04 & 0.22$\pm$0.12 & 0.05 (13.64\%) \\
+Dummy (Baseline) & 1 & Baseline-Dummy & 0.33$\pm$0.04 & 0.33$\pm$0.00 & 0.00 (0.00\%) \\
+\bottomrule
+\end{tabular*}
+\endgroup

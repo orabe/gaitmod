@@ -1,0 +1,20 @@
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lcccc}
+\toprule
+Model & $\mathrm{F1}$ & ROC-AUC & PR-AUC & Balanced Acc. \\
+\midrule
+\textbf{InterSeg-CNN-LSTM} & \textbf{0.64$\pm$0.15} & \textbf{0.82$\pm$0.09} & \textbf{0.65$\pm$0.22} & \textbf{0.74$\pm$0.10} \\
+InterSeg-LSTM & 0.44$\pm$0.10 & 0.59$\pm$0.10 & 0.40$\pm$0.08 & 0.57$\pm$0.09 \\
+\midrule
+IntraSeg-CNN & 0.45$\pm$0.07 & 0.52$\pm$0.02 & 0.34$\pm$0.06 & 0.51$\pm$0.01 \\
+IntraSeg-MLP & 0.42$\pm$0.04 & 0.50$\pm$0.03 & 0.35$\pm$0.05 & 0.50$\pm$0.02 \\
+IntraSeg-LSTM & 0.41$\pm$0.07 & 0.50$\pm$0.01 & 0.34$\pm$0.06 & 0.50$\pm$0.02 \\
+IntraSeg-MLP-LSTM & 0.35$\pm$0.05 & 0.48$\pm$0.04 & 0.33$\pm$0.08 & 0.50$\pm$0.03 \\
+\midrule
+LogReg & 0.38$\pm$0.04 & 0.50$\pm$0.05 & 0.33$\pm$0.07 & 0.49$\pm$0.03 \\
+RF & 0.31$\pm$0.09 & 0.49$\pm$0.03 & 0.32$\pm$0.07 & 0.50$\pm$0.02 \\
+XGB & 0.11$\pm$0.10 & 0.50$\pm$0.02 & 0.33$\pm$0.06 & 0.50$\pm$0.01 \\
+SVM & 0.10$\pm$0.07 & 0.50$\pm$0.04 & 0.33$\pm$0.07 & 0.49$\pm$0.03 \\
+\midrule
+Baseline-Dummy & 0.33$\pm$0.04 & 0.50$\pm$0.02 & 0.33$\pm$0.07 & 0.50$\pm$0.02 \\
+\bottomrule
+\end{tabular*}

@@ -1,0 +1,185 @@
+\section{Model-Level Evaluation}
+\label{sec:model_level_evaluation}
+
+% Local float-tuning for dense results layout.
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{1}
+\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.95}
+\renewcommand{\bottomfraction}{0.80}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.75}
+\setlength{\textfloatsep}{8pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+
+\subsection{Evaluation Protocol}
+\label{sec:evaluation_protocol}
+All model-level results in this chapter are reported on held-out outer-fold test subjects from a nested leave-one-subject-out (LOSO) cross-validation design with seven outer folds (subjects: PW\_EM59, PW\_FH57, PW\_HK59, PW\_HZ58, PW\_SN61, PW\_SN66, and PW\_US68). Hyperparameter tuning and feature-selection decisions were restricted to inner-loop training/validation data. Accordingly, no outer-test subject information was used during model selection. The primary endpoint is Test F1. Secondary endpoints are Test ROC-AUC, Test PR-AUC, Test Balanced Accuracy, Test Precision, Test Recall, and Test Specificity; threshold-tuned variants are used only in the threshold-sensitivity subsection.
+
+\subsection{Overall Cross-Model Performance}
+\label{sec:overall_cross_model_performance}
+Table~\ref{tab:model_comparison_primary_test_f1} reports mean $\pm$ standard deviation over outer folds for the primary and key secondary metrics across all evaluated models. Ranking by Test F1 yields InterSeg-CNN-LSTM as the best-performing model with mean Test F1=0.64$\pm$0.15, followed by IntraSeg-CNN (0.45$\pm$0.07) and InterSeg-LSTM (0.44$\pm$0.10). The absolute margin between first and second rank is 0.19 in Test F1, corresponding to a relative gain of 41.70\% with respect to IntraSeg-CNN (denominator: IntraSeg-CNN Test F1). Relative to Baseline-Dummy (0.33$\pm$0.04), the best model improves Test F1 by 0.31 (94.32\%).
+A complementary mean $\pm$ standard deviation bar summary with baseline overlay is provided in the supplementary appendix (Figure~\hyperref[fig:model_eval_supp_metrics_meanstd_bars_all_models]{\ref*{fig:model_eval_supp_metrics_meanstd_bars_all_models}}).
+
+Secondary metrics show the same ordering trend at the top of the table. InterSeg-CNN-LSTM attains Test ROC-AUC=0.82$\pm$0.09 and Test PR-AUC=0.65$\pm$0.22, compared with 0.52$\pm$0.02 and 0.34$\pm$0.06 for IntraSeg-CNN. For Test Balanced Accuracy, the corresponding values are 0.74$\pm$0.10 (InterSeg-CNN-LSTM) versus 0.51$\pm$0.01 (IntraSeg-CNN), indicating consistent ranking across threshold-independent and threshold-dependent summaries.
+
+Statistical comparisons were performed on outer-fold test results at subject level. For each model pair, paired Test F1 values were formed across the same held-out subjects (\(n=7\)), and a two-sided Wilcoxon signed-rank test was used to test whether the median paired difference was zero. Because multiple pairwise comparisons were evaluated, raw p-values were adjusted with the Holm procedure; significance was assessed at adjusted \(p<0.05\).
+(Plain-language interpretation: the null hypothesis states that, across subjects, neither model tends to score higher; rejecting it indicates a consistent directional advantage.)
+
+Paired outer-fold comparisons of Test F1 confirm these ranking differences. For InterSeg-CNN-LSTM versus IntraSeg-CNN, Wilcoxon signed-rank testing gives $W=0.00$, $p=0.02$ (Holm-adjusted $p=0.03$); the comparison against InterSeg-LSTM gives $W=0.00$, $p=0.02$ (Holm-adjusted $p=0.03$), with InterSeg-CNN-LSTM scoring higher in 7/7 and 7/7 folds, respectively.
+Family-aggregated contrasts are reported in Section~\ref{sec:architecture_family_comparison}. Supplementary appendix figures provide split views by family and by metric group (threshold-independent vs threshold-dependent).
+
+\begin{table}[!t]
+    \centering
+    \caption{Cross-model performance on held-out outer-fold test subjects (nested LOSO, 7 subjects). Values are mean $\pm$ standard deviation across folds; higher values indicate better performance. Models are grouped by family (Inter-segment (DL), Intra-segment (DL), Intra-segment (Classical ML), Dummy (Baseline)) and ordered by Test F1 within each family. Bold entries mark the best mean value in each metric column, and the top-ranked model name is boldfaced.}
+    \label{tab:model_comparison_primary_test_f1}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lcccc}
+\toprule
+Model & $\mathrm{F1}$ & ROC-AUC & PR-AUC & Balanced Acc. \\
+\midrule
+\textbf{InterSeg-CNN-LSTM} & \textbf{0.64$\pm$0.15} & \textbf{0.82$\pm$0.09} & \textbf{0.65$\pm$0.22} & \textbf{0.74$\pm$0.10} \\
+InterSeg-LSTM & 0.44$\pm$0.10 & 0.59$\pm$0.10 & 0.40$\pm$0.08 & 0.57$\pm$0.09 \\
+\midrule
+IntraSeg-CNN & 0.45$\pm$0.07 & 0.52$\pm$0.02 & 0.34$\pm$0.06 & 0.51$\pm$0.01 \\
+IntraSeg-MLP & 0.42$\pm$0.04 & 0.50$\pm$0.03 & 0.35$\pm$0.05 & 0.50$\pm$0.02 \\
+IntraSeg-LSTM & 0.41$\pm$0.07 & 0.50$\pm$0.01 & 0.34$\pm$0.06 & 0.50$\pm$0.02 \\
+IntraSeg-MLP-LSTM & 0.35$\pm$0.05 & 0.48$\pm$0.04 & 0.33$\pm$0.08 & 0.50$\pm$0.03 \\
+\midrule
+LogReg & 0.38$\pm$0.04 & 0.50$\pm$0.05 & 0.33$\pm$0.07 & 0.49$\pm$0.03 \\
+RF & 0.31$\pm$0.09 & 0.49$\pm$0.03 & 0.32$\pm$0.07 & 0.50$\pm$0.02 \\
+XGB & 0.11$\pm$0.10 & 0.50$\pm$0.02 & 0.33$\pm$0.06 & 0.50$\pm$0.01 \\
+SVM & 0.10$\pm$0.07 & 0.50$\pm$0.04 & 0.33$\pm$0.07 & 0.49$\pm$0.03 \\
+\midrule
+Baseline-Dummy & 0.33$\pm$0.04 & 0.50$\pm$0.02 & 0.33$\pm$0.07 & 0.50$\pm$0.02 \\
+\bottomrule
+\end{tabular*}
+
+\end{table}
+
+\subsection{Architecture-Family Comparison}
+\label{sec:architecture_family_comparison}
+Using the predefined family groups from Section~\ref{sec:evaluation_protocol}, Table~\ref{tab:family_comparison_primary_test_f1} summarizes family-level aggregation under the primary endpoint. Inter-segment (DL) ranks first, followed by Intra-segment (DL) and Intra-segment (Classical ML). Model-level rankings remain in Table~\ref{tab:model_comparison_primary_test_f1}; this subsection reports only family-level contrasts.
+
+Relative to Baseline-Dummy (Dummy baseline), the best model in Inter-segment (DL) improves Test F1 by 0.31 (94.32\% relative to baseline), while the best models in Intra-segment (DL) and Intra-segment (Classical ML) improve by 0.12 (37.13\% relative to baseline) and 0.05 (13.64\% relative to baseline), respectively.
+
+Using the same paired Wilcoxon + Holm procedure described above, family-level contrasts show: best Inter-segment (DL) vs best Intra-segment (DL) ($W=0.00$, $p=0.02$, Holm-adjusted $p=0.05$), best DL (best of Inter-segment (DL)/Intra-segment (DL)) vs best Intra-segment (Classical ML) ($W=0.00$, $p=0.02$, Holm-adjusted $p=0.05$), and best overall vs Dummy (Baseline) ($W=0.00$, $p=0.02$, Holm-adjusted $p=0.05$).
+
+\begin{table}[!t]
+    \centering
+    \caption{Architecture-family comparison under the primary endpoint (Test F1). ``Best Model'' values are outer-fold mean $\pm$ standard deviation; ``Family Mean'' summarizes model-level means within each family (not fold-level uncertainty). The final column reports gain of each family's best model relative to Baseline-Dummy (dummy classifier baseline), with percentages computed against Baseline-Dummy Test F1. Bold entries mark the leading family and best values in key columns.}
+    \label{tab:family_comparison_primary_test_f1}
+\begingroup
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.03}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}p{0.23\textwidth}c p{0.19\textwidth}cc p{0.17\textwidth}}
+\toprule
+Family & $n$ & Best Model & Best F1 & Family Mean F1 & $\Delta$ vs Dummy \\
+\midrule
+\textbf{Inter-segment (DL)} & 2 & \textbf{InterSeg-CNN-LSTM} & \textbf{0.64$\pm$0.15} & \textbf{0.54$\pm$0.10} & \textbf{0.31 (94.32\%)} \\
+Intra-segment (DL) & 4 & IntraSeg-CNN & 0.45$\pm$0.07 & 0.41$\pm$0.04 & 0.12 (37.13\%) \\
+Intra-segment (Classical ML) & 4 & LogReg & 0.38$\pm$0.04 & 0.22$\pm$0.12 & 0.05 (13.64\%) \\
+Dummy (Baseline) & 1 & Baseline-Dummy & 0.33$\pm$0.04 & 0.33$\pm$0.00 & 0.00 (0.00\%) \\
+\bottomrule
+\end{tabular*}
+\endgroup
+
+\end{table}
+
+\subsection{Train--Test Generalization Gap}
+\label{sec:train_test_generalization_gap}
+To quantify generalization behavior, the Train--Test F1 gap was computed as
+$F1_{\text{train}} - F1_{\text{test}}$
+from outer-fold summaries. Low-gap models were Baseline-Dummy (0.00), IntraSeg-LSTM (0.02), IntraSeg-CNN (0.06), and IntraSeg-MLP (0.09). Moderate-gap models were LogReg (0.11), IntraSeg-MLP-LSTM (0.11), InterSeg-CNN-LSTM (0.13), and XGB (0.17). High-gap models were RF (0.24), SVM (0.25), and InterSeg-LSTM (0.35).
+
+To complement this gap summary, Figure~\hyperref[fig:interseg_cnn_lstm_epoch_curves_train_test]{\ref*{fig:interseg_cnn_lstm_epoch_curves_train_test}} reports epoch-wise train and test trajectories for the best-performing model (InterSeg-CNN-LSTM) across F1, ROC-AUC, and loss. Curves summarize mean behavior across held-out subjects with standard-deviation shading, enabling direct inspection of train--test divergence over epochs.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{img/interseg_cnn_lstm_epoch_curves_train_test.png}
+    \caption{Epoch-wise training and test dynamics for InterSeg-CNN-LSTM across F1, ROC-AUC, and loss. Solid curves show mean trajectories across subjects; shaded regions indicate standard deviation.}
+    \label{fig:interseg_cnn_lstm_epoch_curves_train_test}
+\end{figure}
+
+
+\subsection{Subject-Level Generalization}
+\label{sec:subject_level_generalization}
+Subject-level behavior is summarized jointly by Figure~\hyperref[fig:metrics_boxplots_all_models]{\ref*{fig:metrics_boxplots_all_models}} and Table~\ref{tab:subject_level_top_models_test_f1}. Figure~\hyperref[fig:metrics_boxplots_all_models]{\ref*{fig:metrics_boxplots_all_models}} shows fold-level Test F1 distributions across models, while Table~\ref{tab:subject_level_top_models_test_f1} reports per-subject Test F1 and Test ROC-AUC using a hierarchical header (top row: metrics; second row: models) for the selected models (InterSeg-CNN-LSTM, IntraSeg-CNN, InterSeg-LSTM, Baseline-Dummy). InterSeg-CNN-LSTM is the highest Test F1 model for each held-out subject (7/7 subject wins). For InterSeg-CNN-LSTM, Test F1 ranges from 0.42 to 0.84 (range=0.42). For comparison, IntraSeg-CNN ranges from 0.38 to 0.54 (range=0.17), and InterSeg-LSTM ranges from 0.25 to 0.56 (range=0.31).
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{img/metrics_boxplots_all_models.png}
+    \caption{Distribution of outer-fold Test F1 across models in nested LOSO evaluation (7 held-out subjects). Each box summarizes per-subject test scores for one model; the dashed line marks the Baseline-Dummy mean Test F1.}
+    \label{fig:metrics_boxplots_all_models}
+\end{figure}
+
+\begin{table}[!t]
+    \centering
+    \caption{Per-subject Test F1 and Test ROC-AUC for the top three models plus Baseline-Dummy. The header is hierarchical: top row groups metrics (F1, ROC-AUC), and the second row lists model names under each metric group. Values are held-out outer-fold test scores; bold values indicate the highest value within each metric block (F1 and ROC-AUC) for each subject row.}
+    \label{tab:subject_level_top_models_test_f1}
+\begingroup
+\scriptsize
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lcccccccc}
+\toprule
+ & \multicolumn{4}{c}{\textbf{F1}} & \multicolumn{4}{c}{\textbf{ROC-AUC}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+Subject & \shortstack{InterSeg-\\CNN-\\LSTM} & \shortstack{IntraSeg-\\CNN} & \shortstack{InterSeg-\\LSTM} & \shortstack{Baseline-\\Dummy} & \shortstack{InterSeg-\\CNN-\\LSTM} & \shortstack{IntraSeg-\\CNN} & \shortstack{InterSeg-\\LSTM} & \shortstack{Baseline-\\Dummy} \\
+\midrule
+PW\_EM59 & \textbf{0.57} & 0.39 & 0.56 & 0.28 & \textbf{0.79} & 0.58 & 0.73 & 0.50 \\
+PW\_FH57 & \textbf{0.82} & 0.50 & 0.52 & 0.34 & \textbf{0.94} & 0.51 & 0.62 & 0.49 \\
+PW\_HK59 & \textbf{0.42} & 0.40 & 0.25 & 0.28 & \textbf{0.66} & 0.52 & 0.39 & 0.48 \\
+PW\_HZ58 & \textbf{0.84} & 0.54 & 0.49 & 0.34 & \textbf{0.92} & 0.51 & 0.59 & 0.49 \\
+PW\_SN61 & \textbf{0.54} & 0.43 & 0.34 & 0.37 & \textbf{0.79} & 0.50 & 0.53 & 0.51 \\
+PW\_SN66 & \textbf{0.54} & 0.38 & 0.49 & 0.33 & \textbf{0.74} & 0.50 & 0.68 & 0.53 \\
+PW\_US68 & \textbf{0.79} & 0.54 & 0.44 & 0.38 & \textbf{0.88} & 0.50 & 0.57 & 0.51 \\
+\bottomrule
+\end{tabular*}
+\endgroup
+
+\end{table}
+
+\subsection{Threshold-Sensitivity Analysis}
+\label{sec:threshold_sensitivity_analysis}
+Threshold-sensitivity results are reported in three complementary views. Figure~\hyperref[fig:threshold_metrics_auc_all_models]{\ref*{fig:threshold_metrics_auc_all_models}A} and Figure~\hyperref[fig:threshold_metrics_auc_all_models]{\ref*{fig:threshold_metrics_auc_all_models}B} summarize ROC and PR behavior, Figure~\hyperref[fig:threshold_metrics_operating_all_models]{\ref*{fig:threshold_metrics_operating_all_models}} summarizes threshold-dependent operating metrics (F1, Precision, Recall, Specificity), and Figure~\hyperref[fig:threshold_metrics_subjects_best_model]{\ref*{fig:threshold_metrics_subjects_best_model}} reports subject-wise threshold curves for the best-ranked model (InterSeg-CNN-LSTM). This split reduces visual crowding while preserving direct comparison.
+
+Here, the decision threshold \(t\) converts continuous model scores to class labels via \(\hat{y}=1\) if score \(\ge t\), else \(\hat{y}=0\). Threshold tuning denotes choosing \(t\) to optimize an operating metric; in this subsection, threshold sweeps are applied to held-out score files as a sensitivity analysis.
+
+Using per-fold threshold sweeps on the saved score files, the mean F1-optimal operating threshold for InterSeg-CNN-LSTM is \(0.46\pm0.29\), with mean best-achievable F1 \(=0.69\pm0.12\) (\(\Delta\) vs \(t=0.50\): \(+0.05\pm0.05\)) and corresponding Balanced Accuracy \(=0.78\pm0.07\) (\(\Delta\): \(+0.03\pm0.03\)). For IntraSeg-CNN, the corresponding values are threshold \(0.26\pm0.17\), best F1 \(=0.49\pm0.07\) (\(\Delta\): \(+0.04\pm0.03\)), and Balanced Accuracy \(=0.51\pm0.01\) (\(\Delta\): \(+0.00\pm0.01\)). For InterSeg-LSTM, the values are threshold \(0.33\pm0.27\), best F1 \(=0.54\pm0.05\) (\(\Delta\): \(+0.10\pm0.07\)), and Balanced Accuracy \(=0.58\pm0.08\) (\(\Delta\): \(+0.01\pm0.06\)).
+
+At the tuned operating points, InterSeg-CNN-LSTM reaches Precision \(=0.61\pm0.20\), Recall \(=0.85\pm0.05\), and Specificity \(=0.70\pm0.17\); for IntraSeg-CNN: \(0.33\pm0.06\), \(0.98\pm0.04\), \(0.05\pm0.06\); and for InterSeg-LSTM: \(0.40\pm0.06\), \(0.90\pm0.09\), \(0.26\pm0.25\). Relative to \(t=0.50\), the corresponding changes for InterSeg-CNN-LSTM are Precision \(+0.01\pm0.05\), Recall \(+0.09\pm0.21\), and Specificity \(-0.02\pm0.16\).
+
+Figure~\hyperref[fig:threshold_metrics_auc_all_models]{\ref*{fig:threshold_metrics_auc_all_models}} provides the threshold-independent ranking view: InterSeg-CNN-LSTM attains Test ROC-AUC \(=0.82\pm0.09\) and Test PR-AUC \(=0.65\pm0.22\), compared with \(0.52\pm0.02\), \(0.34\pm0.06\) for IntraSeg-CNN and \(0.59\pm0.10\), \(0.40\pm0.08\) for InterSeg-LSTM.
+
+Figure~\hyperref[fig:threshold_metrics_operating_all_models]{\ref*{fig:threshold_metrics_operating_all_models}} shows why threshold sweeps matter for operating metrics: the best-F1 threshold is not fixed at \(0.50\) and varies across folds (InterSeg-CNN-LSTM: \(0.03\) to \(0.87\)). At subject level (Figure~\hyperref[fig:threshold_metrics_subjects_best_model]{\ref*{fig:threshold_metrics_subjects_best_model}}), this variability appears as distinct threshold-response curves, reinforcing that operating-point choice changes F1/precision/recall/specificity trade-offs across held-out subjects.
+
+Together, these threshold figures quantify both ranking quality (ROC/PR) and operating-point sensitivity (F1/Precision/Recall/Specificity), which are complementary for deployment-relevant model assessment.
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{img/threshold_metrics_auc_all_models.png}
+    \caption{Model-level threshold-independent discrimination summary. This panel includes ROC and PR curves to compare ranking performance across models.}
+    \label{fig:threshold_metrics_auc_all_models}
+\end{figure}
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{img/threshold_metrics_operating_all_models.png}
+    \caption{Model-level operating-point sensitivity. Curves report F1, Precision, Recall, and Specificity as functions of decision threshold.}
+    \label{fig:threshold_metrics_operating_all_models}
+\end{figure}
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth,height=0.72\textheight,keepaspectratio]{img/threshold_metrics_subjects_best_model.png}
+    \caption{Subject-level operating-point sensitivity for the best-ranked model (InterSeg-CNN-LSTM). Per-subject curves show how threshold-dependent metrics vary with the decision threshold on held-out test subjects, highlighting between-subject operating-point variability.}
+    \label{fig:threshold_metrics_subjects_best_model}
+\end{figure}
+
+\subsection{Cross-Model Comparison Synthesis}
+\label{sec:cross_model_comparison_synthesis}
+Under the primary endpoint (Test F1), model-level ranking, family-level aggregation, subject-level spread, and threshold sensitivity are consistent in identifying InterSeg-CNN-LSTM as the leading configuration on held-out subjects. Family-aggregated contrasts indicate strongest performance for Inter-segment (DL), while threshold analyses show that operating-point choice materially affects threshold-dependent metrics. These results establish the comparative predictive profile and set up interpretation of mechanisms and trade-offs in the Discussion.

@@ -1,0 +1,273 @@
+\chapter{Reproducibility}
+\label{sec:reproducibility}
+
+\section{Software Environment}
+\label{sec:reproducibility_software_environment}
+Raw recordings and behavioral annotations were provided in MATLAB (\texttt{.mat}) format. Feature extraction with the HCTSA framework was performed in MATLAB R2021a. Subsequent preprocessing, modeling, and statistical analyses were executed in Python using the project dependency specification in \texttt{pyproject.toml} and the reference Conda environment in \texttt{environment.yml}. The environment file specifies Python 3.10 and TensorFlow 2.16.2 (platform-specific variants), while \texttt{pyproject.toml} specifies the core scientific stack (NumPy, SciPy, scikit-learn, pandas, matplotlib, MNE, and TensorFlow). A reproducible setup can be created with:
+\begin{verbatim}
+conda env create -f environment.yml
+conda activate gaitmod
+pip install .
+\end{verbatim}
+The package source code is publicly available on GitHub: \texttt{https://github.com/orabe/gaitmod}.
+
+\section{Data Snapshot and Cohort}
+\label{sec:reproducibility_data_snapshot}
+The analysis uses seven held-out subjects: PW\_EM59, PW\_FH57, PW\_HK59, PW\_HZ58, PW\_SN61, PW\_SN66, and PW\_US68. Data manifests are stored in \texttt{data/raw\_segments/manifest.json} and \texttt{data/hctsa\_segments/manifest.json}. In this snapshot, each channel contains 6,296 segments across the seven-subject cohort. The raw segment representation has feature dimension 125 per epoch, and the HCTSA representation has feature dimension 7,770 per epoch.
+
+Segment-level metadata and labels (including trial, epoch index, class label, and subject identifiers) are provided in \texttt{segments\_index.csv} files under \texttt{data/raw\_segments} and \texttt{data/hctsa\_segments}. The target classes are binary (\texttt{normal\_walking} vs \texttt{gait\_modulation}).
+
+\section{Cross-Validation Design and Leakage Control}
+\label{sec:reproducibility_cv_design}
+Model selection and evaluation follow a nested leave-one-subject-out (LOSO) protocol implemented in \texttt{gaitmod/train.py}. The outer loop holds out one subject for testing (7 outer folds). Within each outer training partition, an inner LOSO loop is used for hyperparameter selection and feature-selection decisions. Thus, outer-test subjects are never used for hyperparameter tuning.
+
+Preprocessing and feature-selection steps are fitted on inner/outer training partitions only and then applied to validation/test partitions, preventing train--test leakage in both classical and deep-learning branches. Performance is reported at subject level using outer-fold held-out predictions.
+
+\section{Configuration Files}
+\label{sec:reproducibility_configuration_files}
+Each experiment is driven by a JSON configuration in \texttt{gaitmod/configs/hparams\_configs}. These files define the full experiment specification, including:
+\begin{itemize}
+\item \texttt{global\_settings}: experiment name, model type, feature source, callback settings, threshold-sweep settings, channel-selection policy, and selection metrics.
+\item \texttt{feature\_params}: feature-selection and preprocessing hyperparameters shared across model runs.
+\item Model-specific blocks (e.g., \texttt{interSegCNNLSTM}, \texttt{intraSegLSTM}, \texttt{intraSegMLPLSTM}, or baseline model grids): architecture and optimization search spaces.
+\end{itemize}
+Representative files include \texttt{hparams\_seq2seq\_cnn\_lstm.json}, \texttt{hparams\_seq2seq\_lstm.json}, \texttt{hparams\_seq2vec\_cnn.json}, \texttt{hparams\_seq2vec\_lstm.json}, \texttt{hparams\_seq2vec\_mlp.json}, \texttt{hparams\_seq2vec\_mlplstm.json}, and \texttt{hparams\_baselines.json}. Treat these JSON files as the canonical, version-controlled provenance for each experiment definition.
+
+\section{Package Feature Set}
+\label{sec:reproducibility_package_features}
+The package provides the following integrated feature set:
+\begin{itemize}
+\item \textbf{Multi-modal signal support}: processing workflows for LFP-centered pipelines with project structure designed to accommodate EEG/EMG/IMU-style time-series analysis.
+\item \textbf{Segment cache workflows}: loading and alignment of raw-segment and HCTSA-segment caches, including subject/channel-indexed metadata handling.
+\item \textbf{Preprocessing utilities}: sequence formatting, trial grouping, padding/truncation controls, masking-aware sequence handling, and configurable scaling/filtering.
+\item \textbf{Feature engineering and selection}: support for engineered feature spaces (HCTSA) plus configurable feature filtering/selection controls through JSON-driven parameters.
+\item \textbf{Model families}: classical ML baselines (dummy, logistic regression, random forest, SVM, XGBoost, and additional baseline variants) and deep models (interSeg LSTM, interSeg CNN-LSTM, intraSeg LSTM/CNN/MLP, and fused MLP-LSTM variants).
+\item \textbf{Nested CV experimentation}: subject-wise nested LOSO training/evaluation, inner-loop hyperparameter selection, and outer-loop held-out subject testing.
+\item \textbf{Threshold-aware evaluation}: operating-threshold sweeps with threshold-dependent and threshold-independent metrics (e.g., F1, precision/recall/specificity, balanced accuracy, ROC-AUC, PR-AUC).
+\item \textbf{Artifact persistence}: fold-level JSON outputs (\texttt{evaluation\_results.json}, \texttt{refit\_results.json}), run-level CSV/JSON summaries, and structured logs suitable for audit trails.
+\item \textbf{Analysis and reporting scripts}: utilities for aggregation, cross-run comparison, summary report generation, and manuscript-ready table/figure production.
+\item \textbf{Visualization stack}: per-model, per-subject, and cross-model plots for metrics, thresholds, and comparative analyses.
+\item \textbf{Compute support}: multiprocessing through configurable parallel workers (\texttt{n\_jobs}), with execution on CPU and optional GPU acceleration for TensorFlow-based models when available.
+\item \textbf{Multi-channel capability}: all model interfaces support multi-LFP-channel inputs (native channel-aware tensors or channel-concatenated feature representations), including configurations not exhaustively evaluated in this manuscript.
+\item \textbf{Execution surfaces}: command-line training pipeline, SLURM batch scripts for HPC execution, and a desktop client scaffold for interactive workflows.
+\item \textbf{Documentation and testing}: Sphinx documentation structure and unit tests for core data/model utility components.
+\end{itemize}
+
+\section{Implemented Models}
+\label{sec:reproducibility_implemented_models}
+The package implements a unified set of classical and deep-learning classifiers under the same training/evaluation interface (\texttt{gaitmod/pipelines.py}).
+
+Classical/baseline models include:
+\begin{itemize}
+\item \texttt{dummy} (DummyClassifier)
+\item \texttt{logreg} (Logistic Regression)
+\item \texttt{rf} (Random Forest)
+\item \texttt{svm} (Support Vector Machine)
+\item \texttt{xgb} (XGBoost, when the optional dependency is available)
+\item \texttt{lda} (Linear Discriminant Analysis)
+\item \texttt{knn} (k-Nearest Neighbors)
+\end{itemize}
+
+Deep models include:
+\begin{itemize}
+\item \texttt{interSegLSTM}: inter-segment LSTM with masking-aware loss/metrics and threshold optimization.
+\item \texttt{interSegCNNLSTM}: TimeDistributed CNN feature extractor followed by inter-segment sequence LSTM, with optional stateful epoch-by-epoch test inference for deployment-style simulation.
+\item \texttt{intraSegLSTM}: intra-segment LSTM classifier for trial-level decoding from segmented features.
+\item \texttt{intraSegCNN}: intra-segment CNN classifier for trial-level decoding.
+\item \texttt{intraSegMLP}: intra-segment MLP classifier.
+\item \texttt{intraSegMLPLSTM}: fused architecture combining raw-segment and HCTSA representations via an MLP+LSTM pathway.
+\end{itemize}
+
+Model choice is configuration-driven via \texttt{global\_settings.model\_type}, while model-specific search spaces are defined in the corresponding \texttt{hparams\_*.json} files. All implemented model paths accept multi-channel LFP data either natively or via channel-concatenated features. This allows direct cross-model benchmarking under an identical nested-LOSO protocol, preprocessing stack, and artifact schema.
+
+\section{Modularity}
+\label{sec:reproducibility_modularity}
+The package is organized as interchangeable pipeline blocks rather than a single fixed processing path. The main modular components are:
+\begin{itemize}
+\item \textbf{Data-source module}: raw-segment, HCTSA-segment, or fused raw+HCTSA inputs can be selected through configuration.
+\item \textbf{Preprocessing module}: scaling, masking, padding/sequence formatting, and feature filtering/selection are configurable independently of model choice.
+\item \textbf{Model module}: classical baselines and deep sequence architectures are swap-in alternatives under the same experiment interface.
+\item \textbf{Validation module}: nested LOSO structure separates inner-loop selection from outer-loop held-out testing, independent of the chosen estimator family.
+\item \textbf{Threshold/metric module}: threshold sweeps, selection metrics, and reporting metrics are configurable without rewriting training code.
+\item \textbf{Execution module}: identical experiment semantics can run locally via CLI or on SLURM via \texttt{HPC\_scripts}.
+\item \textbf{Analysis/reporting module}: aggregation, comparison, plotting, and LaTeX artifact generation are separated from model training and can be rerun on saved outputs.
+\end{itemize}
+This modularity supports controlled ablations and method substitution while keeping the evaluation protocol and artifact schema consistent.
+
+\section{Use Cases and Rationale for Using \texttt{gaitmod}}
+\label{sec:reproducibility_use_cases}
+The package is most useful when researchers need a single, reproducible framework to compare signal-processing and modeling strategies under a subject-aware validation design. Typical use cases include:
+\begin{itemize}
+\item \textbf{Closed-loop DBS research prototyping}: evaluating candidate biomarkers and classifiers for gait-modulation prediction using held-out subject testing.
+\item \textbf{Cross-model benchmarking}: comparing deep sequence models and classical baselines under the same preprocessing, feature-selection, and evaluation protocol.
+\item \textbf{Operating-threshold studies}: quantifying deployment-relevant trade-offs among precision, recall, specificity, and F1 via threshold sweeps.
+\item \textbf{Ablation and sensitivity analyses}: testing channel-selection policies, feature sources (raw vs HCTSA vs fused), and hyperparameter configurations in a controlled manner.
+\item \textbf{HPC-scale experimentation}: running subject-wise outer-fold jobs on SLURM while preserving a common artifact format for downstream aggregation.
+\item \textbf{Method transfer to related domains}: reusing the experimental backbone for other supervised signal-analysis tasks with compatible segmented inputs.
+\end{itemize}
+
+The primary reasons to use \texttt{gaitmod} are methodological consistency and traceability. It enforces a unified training/evaluation interface, stores fold- and run-level artifacts systematically, and supports manuscript-ready aggregation scripts. This reduces ad hoc analysis code, lowers leakage risk through nested LOSO conventions, and shortens the path from experiment execution to auditable results reporting.
+
+\section{Model Execution}
+\label{sec:reproducibility_model_execution}
+The training entry point is:
+\begin{verbatim}
+python gaitmod/train.py --hyperparams-config <CONFIG_JSON>
+\end{verbatim}
+For baseline/classical models, \texttt{--model-type} overrides can be used with \texttt{hparams\_baselines.json}:
+\begin{verbatim}
+python gaitmod/train.py --hyperparams-config gaitmod/configs/hparams_configs/hparams_baselines.json --model-type dummy
+python gaitmod/train.py --hyperparams-config gaitmod/configs/hparams_configs/hparams_baselines.json --model-type logreg
+python gaitmod/train.py --hyperparams-config gaitmod/configs/hparams_configs/hparams_baselines.json --model-type rf
+python gaitmod/train.py --hyperparams-config gaitmod/configs/hparams_configs/hparams_baselines.json --model-type svm
+python gaitmod/train.py --hyperparams-config gaitmod/configs/hparams_configs/hparams_baselines.json --model-type xgb
+\end{verbatim}
+Deep model runs are executed analogously with their dedicated config files.
+
+\section{TensorFlow and TensorBoard Integration}
+\label{sec:reproducibility_tf_tensorboard}
+Deep-learning experiments are implemented with TensorFlow/Keras in \texttt{gaitmod/train.py}. At startup, the training pipeline initializes TensorFlow runtime settings (device discovery, GPU memory-growth configuration when available, threading controls, and non-eager execution) to stabilize training behavior across environments.
+
+Training instrumentation uses Keras callbacks for checkpointing and convergence control (\texttt{ModelCheckpoint}, \texttt{EarlyStopping}, \texttt{ReduceLROnPlateau}, \texttt{CSVLogger}) together with TensorBoard logging. Per-fold TensorBoard event files are written in each fold's \texttt{tensorboard} directory, and test metrics are logged in a dedicated TensorBoard substream to separate them from training/validation traces.
+
+Hyperparameter-trial visualization is integrated through TensorBoard HParams logging when the plugin is available; if unavailable, model training proceeds normally with reduced HParams visualization only. This design provides consistent, inspectable learning curves and trial-level metadata without changing the core experiment interface.
+
+For hyperparameter optimization tracking, the TensorBoard \textbf{HParams} panel is the primary interface. In this package, each trial logs its parameter set and resulting metrics, enabling side-by-side comparison across folds and configurations. The panel is typically used through three complementary views:
+\begin{itemize}
+\item \textbf{Table view}: lists each trial as a row with hyperparameters and metric outcomes. This view is useful for sorting/filtering runs (e.g., highest validation F1/ROC-AUC), identifying the current best configuration, and checking trial completeness or failed/degenerate runs.
+\item \textbf{Parallel coordinates view}: displays each trial as a polyline across parameter and metric axes. This view is useful for detecting sensitivity patterns (which parameters shift performance strongly), identifying robust parameter regions, and spotting trade-offs between competing metrics.
+\item \textbf{Scatter matrix view}: provides pairwise scatter plots between selected hyperparameters and metrics. This view is useful for revealing interactions (e.g., learning-rate/batch-size coupling), non-linear trends, and clusters of high-performing trials that may not be visible in one-dimensional summaries.
+\end{itemize}
+Operationally, these views are used iteratively: first rank and filter in the table, then inspect stable/high-performing regions in parallel coordinates, and finally validate pairwise interactions in the scatter matrix. This workflow improves search-space refinement, supports principled hyperparameter narrowing, and makes optimization decisions auditable.
+
+\section{Real-Time Decoding}
+\label{sec:reproducibility_real_time_decoding}
+To characterize deployment-style inference for adaptive DBS simulation, we report \textbf{stateful held-out test inference only} (outer-fold test stage), excluding inner-CV search and training-time runtimes. Stateful test mode is enabled in the experiment configuration (\texttt{stateful\_testing.use\_stateful\_mode=true}), and runtime traces were extracted from:
+\begin{verbatim}
+logs/Seq2SeqCNNLSTM_raw_betaChs/PW_*/seq_model_training_*.log
+\end{verbatim}
+For each held-out subject, decoding runtime was measured as the interval from the final:
+\begin{itemize}
+\item \texttt{[CV\_TEST] Using STATEFUL mode ...}
+\item to \texttt{[PREDICT\_EPOCH] Prediction complete}
+\end{itemize}
+with valid decoded epoch counts from \texttt{[PREDICT\_EPOCH] Valid predictions: ...}.
+
+Per-subject stateful test decoding results were:
+\begin{itemize}
+\item \texttt{PW\_EM59}: 14\,s over 319 valid epochs (0.0439\,s/epoch)
+\item \texttt{PW\_FH57}: 54\,s over 1,222 valid epochs (0.0442\,s/epoch)
+\item \texttt{PW\_HK59}: 12\,s over 280 valid epochs (0.0429\,s/epoch)
+\item \texttt{PW\_HZ58}: 41\,s over 982 valid epochs (0.0418\,s/epoch)
+\item \texttt{PW\_SN61}: 41\,s over 909 valid epochs (0.0451\,s/epoch)
+\item \texttt{PW\_SN66}: 18\,s over 345 valid epochs (0.0522\,s/epoch)
+\item \texttt{PW\_US68}: 24\,s over 589 valid epochs (0.0407\,s/epoch)
+\end{itemize}
+
+Summary statistics for stateful test decoding:
+\begin{itemize}
+\item Mean runtime: 29.14\,s per held-out fold
+\item Median runtime: 24.0\,s
+\item Range: 12--54\,s
+\item Mean latency per valid decoded epoch (subject-wise): 0.0444\,s (approximately 44\,ms/epoch)
+\item Median latency per valid decoded epoch: 0.0439\,s
+\item Per-subject latency range per valid decoded epoch: 0.0407--0.0522\,s
+\item Pooled latency across all valid decoded epochs: 0.0439\,s/epoch (204\,s over 4,646 epochs)
+\end{itemize}
+Observed memory usage (actual logged process RSS, not SLURM-requested memory) from the same runs was:
+\begin{itemize}
+\item \texttt{PW\_EM59}: 0.73\,GB
+\item \texttt{PW\_FH57}: 0.73\,GB
+\item \texttt{PW\_HK59}: 0.72\,GB
+\item \texttt{PW\_HZ58}: 0.73\,GB
+\item \texttt{PW\_SN61}: 0.71\,GB
+\item \texttt{PW\_SN66}: 0.71\,GB
+\item \texttt{PW\_US68}: 0.71\,GB
+\end{itemize}
+Across subjects, the maximum logged RSS ranged from 0.71 to 0.73\,GB (mean 0.72\,GB). These values come from \texttt{[MEMORY] Current RAM usage} checkpoints and therefore represent sampled process memory, not a continuous peak-memory trace during the stateful test interval.
+Performance metrics for these same stateful test runs are persisted in each fold's \texttt{refit\_results.json}; runtime and valid-epoch counters are taken from the corresponding log file lines above.
+
+\section{Continuous-Signal Preprocessing During Streaming}
+\label{sec:reproducibility_streaming_preprocessing}
+For the reported stateful ``real-time-style'' decoding benchmarks, the timed stage starts after test data are already segmented into epoch tensors. In the current repository workflow, continuous raw signals are windowed/epoched during preprocessing and cache generation (for example via \texttt{DataProcessor.segment\_and\_label\_trials(...)} and epoch settings in \texttt{gaitmod/configs/data\_preprocessing.yaml}).
+
+During stateful test evaluation, preprocessing is restricted to deployment-compatible transforms that were fitted on outer-training data and then applied to held-out test epochs (feature-selection transform + mask-aware scaling), followed by padding-mask handling. The stateful decoder then consumes valid epochs sequentially via \texttt{predict\_epoch\_by\_epoch(...)}.
+
+Therefore, the reported mean latency of 0.0444\,s/epoch (about 44\,ms) should be interpreted as epoch-level model-serving latency on pre-windowed epochs, not full acquisition-to-decision latency on an unsegmented continuous stream. A full online latency budget would additionally include continuous buffering, causal filtering/artifact suppression, and online window extraction before decoding.
+
+\section{End-to-End Pipeline}
+\label{sec:reproducibility_end_to_end}
+Within this repository, the package provides an end-to-end experimental pipeline from prepared segment caches to publication-ready evaluation artifacts. Concretely, a single configuration-driven workflow covers data loading, preprocessing/feature handling, nested LOSO model selection, outer-fold held-out testing, threshold analysis, fold-level artifact serialization, and cross-model aggregation/figure generation.
+
+The end-to-end scope is bounded to computational experimentation. Raw signal acquisition, clinical annotation workflows, and deployment/integration with external DBS hardware-control systems are outside the package boundary. Therefore, the present work is end-to-end for model-development and evaluation reproducibility, but not for full clinical device-operation infrastructure.
+
+\section{Applicability to Other Signal Analysis Tasks}
+\label{sec:reproducibility_applicability_other_signals}
+The framework can be reused for other signal-analysis problems beyond the current gait-modulation application, provided data are available as segmented time-series with consistent labels/metadata. Core components that transfer directly include configuration-driven preprocessing, feature handling (raw and engineered feature spaces), model training, nested cross-validation, threshold analysis, and result aggregation.
+
+For a new domain, the main required adaptations are: (i) input data/metadata loaders and cache generation, (ii) task-specific label definitions, (iii) channel mappings and feature-selection settings, and (iv) endpoint/metric definitions when moving beyond binary subject-level classification. Accordingly, the package should be interpreted as a general experimental backbone for supervised signal analysis, with domain-specific data interfaces and evaluation criteria supplied per use case.
+
+\section{Pipeline Flexibility}
+\label{sec:reproducibility_flexibility}
+The experimental framework is intentionally configurable at multiple levels to support methodological variation without changing core training code. First, model families are selectable through configuration (\texttt{global\_settings.model\_type}) and include inter-segment sequence models, intra-segment deep models, and classical baselines. Second, the feature source can be switched among raw segments, HCTSA features, or a fused raw+HCTSA pathway by modifying \texttt{global\_settings.feature\_data}.
+
+Third, channel handling is flexible: subject-specific channel priors and optional channel overrides are defined in \texttt{global\_settings.channel\_selection}. Fourth, evaluation scope can be restricted to selected outer-test subjects using \texttt{--outer-subjects}, enabling partial reruns for debugging or incremental validation. Fifth, decision-threshold sweeps, metric targets, and selection-score aggregation rules are configurable in JSON (\texttt{decision\_threshold\_search}, \texttt{selection\_metrics}), allowing consistent comparison of operating-point-sensitive and threshold-independent behavior.
+
+Finally, fixed-parameter reruns are supported via \texttt{--global-params}, which bypasses inner-loop tuning while preserving the same outer-fold protocol. This combination of configuration-driven model choice, data-source switching, channel-control policies, and evaluation controls provides high experimental flexibility while maintaining a single reproducible execution interface.
+
+\section{HPC Scripts}
+\label{sec:reproducibility_hpc_scripts}
+The repository includes SLURM utilities under \texttt{HPC\_scripts/} for subject-wise batch execution on a cluster. The helper script \texttt{submit\_subject\_batches.sh} submits one job per subject (or optionally one job for all subjects) using:
+\begin{verbatim}
+sbatch HPC_scripts/outer_subject_batch.sbatch <CONFIG_PATH> <SUBJECTS> [RUN_ID] [GLOBAL_PARAMS]
+\end{verbatim}
+where \texttt{<SUBJECTS>} is a comma-separated list passed to \texttt{--outer-subjects} in \texttt{gaitmod/train.py}.
+
+The batch script \texttt{outer\_subject\_batch.sbatch} sets cluster resources (currently \texttt{--partition=cpu-7d}, \texttt{--mem=64gb}), writes scheduler logs to \texttt{logs/slurm/}, activates a Conda environment (\texttt{gaitmod-cluster}), and then runs:
+\begin{verbatim}
+python gaitmod/train.py --hyperparams-config <CONFIG_PATH> --run-id <RUN_ID> --outer-subjects <SUBJECTS> [--global-params <JSON>]
+\end{verbatim}
+This ensures HPC runs and local runs share the same training entry point and configuration semantics. For strict reproducibility, archive the submitted config JSON, run ID, SLURM stdout/stderr logs, and produced fold-level \texttt{refit\_results.json} files.
+
+\section{Desktop Application}
+\label{sec:reproducibility_desktop_app}
+The repository includes a local desktop client (\texttt{desktop\_client/app.py}, PySide6) that provides a graphical interface for configuration editing and local training launch. The app is not a separate modeling backend; it wraps the same command-line training entry point used elsewhere.
+
+Operationally, the desktop client supports browsing and editing JSON hyperparameter files, selecting run metadata (e.g., run ID, optional outer-subject filters), and launching:
+\begin{verbatim}
+python gaitmod/train.py --hyperparams-config <CONFIG_PATH> [--run-id <RUN_ID>] [--outer-subjects <CSV>] [--global-params <JSON>]
+\end{verbatim}
+with live console output streamed in the interface.
+
+This interface is useful for interactive local experimentation and configuration management, while HPC scheduling and large-scale orchestration remain handled by the SLURM scripts in \texttt{HPC\_scripts/}. Consequently, the desktop app should be interpreted as a convenience execution surface over the same reproducible training pipeline and artifact schema.
+
+\section{Run Artifacts and Aggregation}
+\label{sec:reproducibility_artifacts}
+For each outer fold, refit outputs are written under:
+\begin{verbatim}
+logs/<experiment_name>/<subject>/outer_fold_<k>_test_<subject>/refit/*/refit_results.json
+\end{verbatim}
+Each \texttt{refit\_results.json} contains fold metadata, selected hyperparameters, threshold information, and train/test metrics.
+
+Model-level summaries are aggregated into:
+\begin{verbatim}
+logs/results/<run_id>/summary/nested_cv_results.csv
+logs/results/<run_id>/summary/final_summary.json
+\end{verbatim}
+Cross-model publication artifacts are generated by:
+\begin{verbatim}
+python gaitmod/results_analysis_scripts/generate_model_level_evaluation_artifacts.py
+\end{verbatim}
+which writes tables/figures and chapter text into \texttt{results/model\_level\_evaluation/}. This script expects run IDs in \texttt{logs/results} to be mapped in its internal \texttt{RUN\_LABELS} dictionary; if additional experimental folders are present, either filter them or extend the mapping before execution.
+
+\section{Statistical Procedure}
+\label{sec:reproducibility_statistics}
+Pairwise model and family comparisons use two-sided Wilcoxon signed-rank tests on paired outer-fold subject-level metrics (\(n=7\)); p-values are Holm-adjusted for multiple comparisons. The primary endpoint is Test F1, with ROC-AUC, PR-AUC, Balanced Accuracy, Precision, Recall, and Specificity reported as secondary metrics.
+
+\section{Determinism and Expected Variability}
+\label{sec:reproducibility_determinism}
+Classical models use fixed \texttt{random\_state} values in pipeline construction where applicable. Deep-learning paths use TensorFlow with deterministic controls focused on runtime stability (e.g., device/memory configuration), but no global end-to-end random seed is enforced in the training driver. Consequently, exact bitwise replication is not guaranteed across hardware/software stacks; the nested-LOSO subject-level summary (mean\(\pm\)SD across folds) is the intended reproducibility target.
+
+\section{Frozen Outputs Used in This Manuscript}
+\label{sec:reproducibility_frozen_outputs}
+The exact model-comparison artifacts used in this manuscript are stored in \texttt{results/model\_level\_evaluation/}, with provenance summarized in \texttt{results/model\_level\_evaluation/model\_level\_evaluation\_summary.json}. This includes the final model tables, family tables, subject-level tables, and figure file paths used in the chapter text.
