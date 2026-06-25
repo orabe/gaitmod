@@ -516,7 +516,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Fixed configuration (edit here for different permutations)
     # ------------------------------------------------------------------
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     features_dir = Path("results/figures/selected_features")
     output_dir = Path("results/figures/selected_features/combined_grid")
 

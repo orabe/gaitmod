@@ -300,7 +300,7 @@ def main() -> None:
     # User-editable settings (no CLI).
     # -------------------------------------------------------------------------
     logs_root = Path("logs/Seq2SeqCNNLSTM_raw_betaChs")
-    segments_index_csv = Path("data/raw_segments/segments_index.csv")
+    segments_index_csv = Path("4646_data/raw_segments/segments_index.csv")
     hparams_config = Path("gaitmod/configs/hparams_configs/hparams_seq2seq_cnn_lstm.json")
     channel_selection_method = "beta"
     nested_cv_summary_csv: Path | None = None

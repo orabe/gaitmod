@@ -243,7 +243,7 @@ class BetaBandPowerCacheBuilder:
 
 def build_beta_band_power_cache(
     patient_epochs_path: Path | str,
-    segment_cache_dir: Path | str = Path("data/beta_segments"),
+    segment_cache_dir: Path | str = Path("4646_data/beta_segments"),
     *,
     beta_band: Tuple[float, float] = DEFAULT_BETA_BAND,
     log_epsilon: float = 1e-12,
@@ -291,7 +291,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--segment-cache-dir",
         type=Path,
-        default=Path("data/beta_segments"),
+        default=Path("4646_data/beta_segments"),
         help="Output directory for the beta feature cache (default keeps the HCTSA cache untouched).",
     )
     parser.add_argument(

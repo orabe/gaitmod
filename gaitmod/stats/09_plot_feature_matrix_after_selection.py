@@ -10,7 +10,7 @@ What this script does:
   the same visualization functions from `08_plot_feature_matrix.py`.
 
 Required input:
-- HCTSA data root directory (default: `data/hctsa`).
+- HCTSA data root directory (default: `4646_data/hctsa`).
 - Channel mapping from `CHANNEL_METHODS` in this file.
 - Grid-search settings in `main()`:
   `variance_thresholds`, `selection_methods`, `correlation_thresholds`,
@@ -227,7 +227,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Fixed configuration (edit here for your permutations)
     # ------------------------------------------------------------------
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""
     channel_method = "beta"  # "beta" or "logRegF1"
 

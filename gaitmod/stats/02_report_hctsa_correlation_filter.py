@@ -10,7 +10,7 @@ What this script does:
 - Exports selected feature indices and names to JSON files.
 
 Required input:
-- HCTSA data root directory (default: `data/hctsa`).
+- HCTSA data root directory (default: `4646_data/hctsa`).
 - Channel-to-subject mapping from `CHANNEL_METHODS` in this file.
 - Valid HCTSA operations metadata (feature names) available in loaded data.
 - Grid-search settings configured in `main()` (thresholds, methods, top-k).
@@ -82,7 +82,7 @@ def _resolve_channel_dir(data_root: Path, channel_label: str) -> Path:
 
 def main() -> None:
     # -------------------- config --------------------
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     

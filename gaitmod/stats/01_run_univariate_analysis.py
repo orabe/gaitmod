@@ -10,7 +10,7 @@ What this script does:
   on distribution assumptions.
 
 Required input:
-- HCTSA segment cache directory (default: `data/hctsa_segments`).
+- HCTSA segment cache directory (default: `4646_data/hctsa_segments`).
 - Channel selection summary JSON (default: `results/channel_selection_summary.json`).
 - Optional configuration via constants in this file (normalization, thresholds,
   output directory, selection method labels).
@@ -59,7 +59,7 @@ DEFAULT_UNIVARIATE_RANDOM_STATE = 42
 DEFAULT_UNIVARIATE_TOP_K = 20
 DEFAULT_VIS_TOP_K = 100
 DEFAULT_VIS_WORST_K = 100
-DEFAULT_SEGMENT_CACHE_DIR = Path("data/hctsa_segments")
+DEFAULT_SEGMENT_CACHE_DIR = Path("4646_data/hctsa_segments")
 DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/channel_selection_summary.json")
 DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
 MAX_FEATURE_NAME_LENGTH = 48

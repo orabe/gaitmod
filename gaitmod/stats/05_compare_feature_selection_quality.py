@@ -10,7 +10,7 @@ What this script does:
 - Reports classification quality (accuracy, F1, ROC-AUC) per configuration.
 
 Required input:
-- HCTSA data directory (default: `data/hctsa`).
+- HCTSA data directory (default: `4646_data/hctsa`).
 - Valid HCTSA feature matrix and binary labels from `load_hctsa_data`.
 - Feature-selection settings in `main()` (variance threshold, method,
   correlation threshold, number of features).
@@ -102,7 +102,7 @@ def evaluate_feature_selection(X, y, var_thresh, n_feat, corr_thresh, selection_
 
 def main():
     # Load data (same as report_hctsa_correlation_filter.py)
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     channel_method = "beta"
     selection_method = "cliffs_delta"
     

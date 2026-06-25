@@ -10,7 +10,7 @@ What this script does:
 - Creates summary visualizations plus a clustered feature-correlation heatmap.
 
 Required input:
-- HCTSA data root directory (default: `data/hctsa`).
+- HCTSA data root directory (default: `4646_data/hctsa`).
 - Preferred channel mapping (`CHANNEL_METHODS` in this file).
 - Selected-feature JSON files in
   `results/figures/selected_features/` named like:
@@ -249,7 +249,7 @@ def main() -> None:
     correlation_thresholds = [0.3] #[0.01, 0.3, 0.5, 0.7, 0.9]
     n_features_list = [20]
     
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     output_dir = Path("results/figures/selected_features")

@@ -4,8 +4,8 @@ Compare PCA explained-variance profiles between HCTSA and raw segment matrices.
 
 What this script does:
 - Loads beta-selected channel data from both caches:
-  1) `data/hctsa_segments`
-  2) `data/raw_segments`
+  1) `4646_data/hctsa_segments`
+  2) `4646_data/raw_segments`
 - Applies the same preprocessing to both matrices.
 - Computes PCA on each matrix.
 - Saves a single figure with two aligned panels:
@@ -200,8 +200,8 @@ def _plot_comparison(
 
 def main() -> int:
     # -------------------- configuration (edit here) --------------------
-    hctsa_cache_dir = Path("data/hctsa_segments")
-    raw_cache_dir = Path("data/raw_segments")
+    hctsa_cache_dir = Path("4646_data/hctsa_segments")
+    raw_cache_dir = Path("4646_data/raw_segments")
     beta_selection_json = Path("results/beta_channel_selection/beta_channel_selection.json")
     outdir = Path("results/feature_space_analysis")
     output_figure_name = "pca_variance_comparison_raw_vs_hctsa.png"

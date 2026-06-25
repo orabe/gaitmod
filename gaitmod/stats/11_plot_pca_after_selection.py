@@ -10,7 +10,7 @@ What this script does:
   1) PC1 vs PC2 scatter colored by class labels.
 
 Required input:
-- HCTSA data root directory (default: `data/hctsa`).
+- HCTSA data root directory (default: `4646_data/hctsa`).
 - Subject-to-channel mapping from `CHANNEL_METHODS` in this file.
 - Grid configuration in `main()`:
   `variance_thresholds`, `selection_methods`, `correlation_thresholds`, `n_features_list`.
@@ -154,7 +154,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Fixed configuration (edit here for your permutations)
     # ------------------------------------------------------------------
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""
     channel_method = "beta"  # "beta" or "logRegF1"
 

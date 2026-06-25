@@ -10,7 +10,7 @@ What this script does:
   1) PC1 vs PC2 scatter colored by class labels.
 
 Required input:
-- Segment cache directory (default: `data/hctsa_segments`).
+- Segment cache directory (default: `4646_data/hctsa_segments`).
 - Beta channel-selection JSON
   (default: `results/beta_channel_selection/beta_channel_selection.json`).
 
@@ -164,7 +164,7 @@ def plot_pca_overview(
 
 def main() -> int:
     # -------------------- configuration (edit here) --------------------
-    segment_cache_dir = Path("data/raw_segments")
+    segment_cache_dir = Path("4646_data/raw_segments")
     beta_selection_json = Path("results/beta_channel_selection/beta_channel_selection.json")
     outdir = Path("results/raw_segments_datamatrix")
 

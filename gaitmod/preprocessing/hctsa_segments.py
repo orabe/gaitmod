@@ -498,14 +498,14 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--hctsa-root",
         type=Path,
-        default=Path("6296_data/hctsa"),
-        help="Root directory containing the channel_* folders (default: data/hctsa).",
+        default=Path("4646_data/hctsa"),
+        help="Root directory containing the channel_* folders (default: 4646_data/hctsa).",
     )
     parser.add_argument(
         "--segment-cache-dir",
         type=Path,
-        default=Path("6296_data/hctsa_segments"),
-        help="Output directory for the segment cache (default: data/hctsa_segments).",
+        default=Path("4646_data/hctsa_segments"),
+        help="Output directory for the segment cache (default: 4646_data/hctsa_segments).",
     )
     parser.add_argument(
         "--data-variant",

@@ -474,7 +474,7 @@ def main(argv: Optional[Tuple[str, ...]] = None):
         cache_dir = config_cache_dir
         feature_source = config_feature_source or "custom"
     else:
-        cache_dir = Path("data/hctsa_segments").expanduser()
+        cache_dir = Path("4646_data/hctsa_segments").expanduser()
         feature_source = "default"
 
     fs_params = _apply_cli_feature_selector_overrides(args, fs_params)

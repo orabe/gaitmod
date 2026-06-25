@@ -11,7 +11,7 @@ What this script does:
 - Saves comparison results and generates summary comparison plots.
 
 Required input:
-- HCTSA data root directory (default: `data/hctsa`).
+- HCTSA data root directory (default: `4646_data/hctsa`).
 - Subject-to-channel mapping (`CHANNEL_METHODS` in this file).
 - Feature-selection parameters defined in `main()` (variance threshold,
   selection method, correlation threshold, number of features).
@@ -332,7 +332,7 @@ def plot_comparison(results, output_dir):
 
 def main():
     # Configuration
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""  # "", "F", or "N"
     channel_method = "beta"  # "beta" or "logRegF1"
     selection_method = "mann_whitney"

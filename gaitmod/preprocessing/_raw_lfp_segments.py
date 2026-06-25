@@ -203,7 +203,7 @@ class RawLFPSegmentCacheBuilder:
 
 def build_raw_lfp_cache(
     patient_epochs_path: Path | str,
-    segment_cache_dir: Path | str = Path("data/raw_segments"),
+    segment_cache_dir: Path | str = Path("4646_data/raw_segments"),
     *,
     label_mapping: Optional[Mapping[int, str]] = None,
     reset_cache: bool = False,
@@ -240,7 +240,7 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--segment-cache-dir",
         type=Path,
-        default=Path("data/raw_segments"),
+        default=Path("4646_data/raw_segments"),
         help="Destination directory for the raw segment cache.",
     )
     parser.add_argument(

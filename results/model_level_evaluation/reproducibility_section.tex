@@ -13,9 +13,9 @@ The package source code is publicly available on GitHub: \texttt{https://github.
 
 \section{Data Snapshot and Cohort}
 \label{sec:reproducibility_data_snapshot}
-The analysis uses seven held-out subjects: PW\_EM59, PW\_FH57, PW\_HK59, PW\_HZ58, PW\_SN61, PW\_SN66, and PW\_US68. Data manifests are stored in \texttt{data/raw\_segments/manifest.json} and \texttt{data/hctsa\_segments/manifest.json}. In this snapshot, each channel contains 6,296 segments across the seven-subject cohort. The raw segment representation has feature dimension 125 per epoch, and the HCTSA representation has feature dimension 7,770 per epoch.
+The analysis uses seven held-out subjects: PW\_EM59, PW\_FH57, PW\_HK59, PW\_HZ58, PW\_SN61, PW\_SN66, and PW\_US68. Data manifests are stored in \texttt{4646\_data/raw\_segments/manifest.json} and \texttt{4646\_data/hctsa\_segments/manifest.json}. In this snapshot, each channel contains 4,646 segments across the seven-subject cohort. The raw segment representation has feature dimension 125 per epoch, and the HCTSA representation has feature dimension 7,770 per epoch.
 
-Segment-level metadata and labels (including trial, epoch index, class label, and subject identifiers) are provided in \texttt{segments\_index.csv} files under \texttt{data/raw\_segments} and \texttt{data/hctsa\_segments}. The target classes are binary (\texttt{normal\_walking} vs \texttt{gait\_modulation}).
+Segment-level metadata and labels (including trial, epoch index, class label, and subject identifiers) are provided in \texttt{segments\_index.csv} files under \texttt{4646\_data/raw\_segments} and \texttt{4646\_data/hctsa\_segments}. The target classes are binary (\texttt{normal\_walking} vs \texttt{gait\_modulation}).
 
 \section{Cross-Validation Design and Leakage Control}
 \label{sec:reproducibility_cv_design}

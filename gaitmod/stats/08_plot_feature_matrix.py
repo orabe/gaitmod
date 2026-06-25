@@ -900,7 +900,7 @@ def plot_data_matrix_color_groups_mixed(
 
 def main() -> int:
     # -------------------- configuration (edit here) --------------------
-    segment_cache_dir = Path("data/hctsa_segments")
+    segment_cache_dir = Path("4646_data/hctsa_segments")
     beta_selection_json = Path("results/beta_channel_selection/beta_channel_selection.json")
     outdir = Path("results/hctsa_segments_datamatrix")
 

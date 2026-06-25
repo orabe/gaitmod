@@ -3,7 +3,7 @@
 Analyze and visualize HCTSA class distributions, feature means, and variances.
 
 How to run:
-1. Ensure the HCTSA segment cache (default: data/hctsa_segments) and channel
+1. Ensure the HCTSA segment cache (default: 4646_data/hctsa_segments) and channel
    selection summary (default: results/channel_selection_summary.json) exist.
 2. Adjust the defaults near the top of this file if you need different paths or
    selection method names.
@@ -49,7 +49,7 @@ DEFAULT_UNIVARIATE_RANDOM_STATE = 42
 DEFAULT_UNIVARIATE_TOP_K = 100
 DEFAULT_VIS_TOP_K = 100
 DEFAULT_VIS_WORST_K = 100
-DEFAULT_SEGMENT_CACHE_DIR = Path("data/hctsa_segments")
+DEFAULT_SEGMENT_CACHE_DIR = Path("4646_data/hctsa_segments")
 DEFAULT_CHANNEL_SELECTION_SUMMARY = Path("results/channel_selection_summary.json")
 DEFAULT_CHANNEL_SELECTION_METHOD = "beta_channel_selection"
 MAX_FEATURE_NAME_LENGTH = 48

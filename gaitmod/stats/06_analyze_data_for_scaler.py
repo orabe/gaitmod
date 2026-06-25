@@ -806,7 +806,7 @@ os.makedirs(experiment_dir, exist_ok=True)
 
 try:
     # Load HCTSA data using subject-specific preferred channels
-    segment_cache_dir = Path("6296_data/hctsa_segments")
+    segment_cache_dir = Path("4646_data/hctsa_segments")
 
     channel_selection = {
         "default_method": "beta",

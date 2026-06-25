@@ -406,7 +406,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Fixed configuration (edit here)
     # ------------------------------------------------------------------
-    data_root = Path("data/hctsa")
+    data_root = Path("4646_data/hctsa")
     variant = ""
     channel_method = "beta"  # "beta" | "logRegF1"
     output_dir = Path("results/hctsa_segments_datamatrix")
