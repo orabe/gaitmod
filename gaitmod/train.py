@@ -1850,6 +1850,16 @@ def create_nested_cv_callbacks(experiment_dir=None, outer_fold=None, inner_fold=
     return callbacks, effective_monitor
 
 
+def get_checkpoint_path_from_nested_cv_paths(paths):
+    if not paths:
+        return None
+    models_dir = paths.get('models_dir')
+    unique_id = paths.get('unique_id')
+    if not models_dir or not unique_id:
+        return None
+    return os.path.join(models_dir, f"best_model_{unique_id}.h5")
+
+
 def _prepare_sequence_model_callbacks(
     model_type: str,
     params: Optional[Dict[str, Any]],
@@ -4739,31 +4749,34 @@ def run_loso_cv_dl(
             refit_epochs = max(trained_epoch_candidates) if trained_epoch_candidates else lstm_classifier.epochs
             refit_epochs = max(int(refit_epochs), 1)
             
-            # Preserve logging callbacks for refit so CSV/TensorBoard logs are produced.
-            preserved_callbacks = []
-            for cb in getattr(lstm_classifier, 'callbacks', []):
-                if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger, LearningRateLoggingCallback)):
-                    preserved_callbacks.append(cb)
-
-            if not preserved_callbacks:
-                new_callbacks, _ = create_nested_cv_callbacks(
-                    experiment_dir=experiment_dir,
-                    outer_fold=outer_fold + 1,
-                    inner_fold=None,
-                    outer_test_subject=test_subject_name,
-                    hyperparameters=best_params,
-                    inner_validation_subject=None,
-                    patience=refit_epochs,
-                    monitor=DEFAULT_CALLBACK_MONITOR,
-                    save_models=False,
-                    progress_frequency=1,
-                    has_validation_data=False,
-                    is_refit=True
+            # Create fresh refit callbacks so refit artifacts are written under the refit directory.
+            new_callbacks, _ = create_nested_cv_callbacks(
+                experiment_dir=experiment_dir,
+                outer_fold=outer_fold + 1,
+                inner_fold=None,
+                outer_test_subject=test_subject_name,
+                hyperparameters=best_params,
+                inner_validation_subject=None,
+                patience=refit_epochs,
+                monitor=DEFAULT_CALLBACK_MONITOR,
+                save_models=True,
+                progress_frequency=1,
+                has_validation_data=False,
+                is_refit=True
+            )
+            preserved_callbacks = [
+                cb for cb in new_callbacks
+                if isinstance(
+                    cb,
+                    (
+                        CSVLogger,
+                        TensorBoard,
+                        ProgressTrainingLogger,
+                        LearningRateLoggingCallback,
+                        ModelCheckpoint,
+                    ),
                 )
-                preserved_callbacks = [
-                    cb for cb in new_callbacks
-                    if isinstance(cb, (CSVLogger, TensorBoard, ProgressTrainingLogger, LearningRateLoggingCallback))
-                ]
+            ]
 
             lstm_classifier.callbacks = preserved_callbacks
             lstm_classifier._validation_data = None
@@ -4909,12 +4922,14 @@ def run_loso_cv_dl(
             else:
                 last_history = None
 
+            refit_paths = None
+            refit_model_path = None
             if last_history:
-                refit_paths = None
                 for cb in preserved_callbacks:
                     refit_paths = getattr(cb, '_nested_cv_paths', None)
                     if refit_paths:
                         break
+                refit_model_path = get_checkpoint_path_from_nested_cv_paths(refit_paths)
                 if refit_paths:
                     try:
                         save_fold_history(
@@ -5229,6 +5244,10 @@ def run_loso_cv_dl(
                     if hctsa_payload:
                         comprehensive_sklearn_refit_results['feature_selection']['hctsa'] = hctsa_payload
                 comprehensive_sklearn_refit_results.update(result_metadata)
+                comprehensive_sklearn_refit_results['saved_model_path'] = refit_model_path
+                comprehensive_sklearn_refit_results['saved_model_exists'] = bool(
+                    refit_model_path and os.path.exists(refit_model_path)
+                )
                 
                 # Store test evaluation mode in results (BEFORE saving)
                 if model_type in ('Seq2SeqLSTM', 'Seq2SeqCNNLSTM'):

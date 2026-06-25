@@ -1,6 +1,6 @@
 {
   "global_settings": {
-    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs_NO_FC_originalSegments",
+    "experiment_name": "Seq2SeqCNNLSTM_raw_betaChs_4646_baseline",
     "model_type": "Seq2SeqCNNLSTM",
     "feature_data": {
       "source": "raw",
